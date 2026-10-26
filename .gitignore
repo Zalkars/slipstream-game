@@ -1,0 +1,26 @@
+# Godot import cache
+.godot/
+godot/.godot/
+
+# Build artifacts
+*.apk
+*.aab
+*.pck
+*.idsig
+
+# Signing keys and the legacy WebView build
+android/
+*.keystore
+*.jks
+
+# Local dev screenshots (published copies live in docs/screenshots)
+godot/shots/
+
+# Legacy prototype and duplicate root fonts
+/index.html
+/fonts/
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
