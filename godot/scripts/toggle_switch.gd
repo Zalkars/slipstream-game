@@ -7,6 +7,8 @@ var on := true
 var label_font: Font
 var accent := Color("#e23b30")
 var _anim := 1.0
+var _down := false
+var _pointer_id := -1
 
 
 func _ready() -> void:
@@ -35,7 +37,7 @@ func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var rad := size.y * 0.5
 	var bg := Color("#3a4046").lerp(accent, _anim)
-	Art.rr(self, Rect2(Vector2(0.0, 2.0), size), bg, rad)
+	Art.rr(self, Rect2(Vector2(0.0, 2.0), size), Color(0.0, 0.0, 0.0, 0.28), rad)
 	Art.rr(self, r, bg, rad)
 	Art.rr(self, Rect2(Vector2(2.0, 2.0), size - Vector2(4.0, 4.0)), Color(1, 1, 1, 0.06), rad - 2.0)
 	var kr := size.y * 0.5 - 6.0
@@ -54,11 +56,27 @@ func _draw() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		if not event.pressed:
-			_toggle()
+		if event.pressed:
+			_down = true
+			_pointer_id = event.index
+			accept_event()
+		elif _down and (_pointer_id == event.index or _pointer_id == -1):
+			_down = false
+			_pointer_id = -1
+			accept_event()
+			if Rect2(Vector2.ZERO, size).grow(24.0).has_point(event.position):
+				_toggle()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if not event.pressed:
-			_toggle()
+		if event.pressed:
+			_down = true
+			_pointer_id = -1
+			accept_event()
+		elif _down:
+			_down = false
+			_pointer_id = -1
+			accept_event()
+			if Rect2(Vector2.ZERO, size).grow(24.0).has_point(event.position):
+				_toggle()
 
 
 func _toggle() -> void:

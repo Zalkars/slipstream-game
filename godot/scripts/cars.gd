@@ -87,15 +87,15 @@ static func get_car(i: int) -> Dictionary:
 
 
 static func speed_rating(car: Dictionary) -> int:
-	var t := clampf((float(car.top) - 1050.0) / 380.0, 0.0, 1.0)
+	var t := clampf((float(car.top) - 1050.0) / 330.0, 0.0, 1.0)
 	return 1 + int(round(9.0 * t))
 
 
 static func accel_rating(car: Dictionary) -> int:
-	var t := clampf((float(car.grow) - 320.0) / 100.0, 0.0, 1.0)
+	var t := clampf((float(car.grow) - 320.0) / 90.0, 0.0, 1.0)
 	return 1 + int(round(9.0 * t))
 
 
 static func grip_rating(car: Dictionary) -> int:
-	var t := clampf((float(car.handling) - 11.0) / 3.2, 0.0, 1.0)
+	var t := clampf((float(car.handling) - 11.0) / 2.8, 0.0, 1.0)
 	return 1 + int(round(9.0 * t))

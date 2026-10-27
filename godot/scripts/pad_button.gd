@@ -43,10 +43,10 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	var c := size * 0.5
 	var r := minf(size.x, size.y) * 0.5 - 2.0
-	var base_alpha := 0.46 if _down else 0.34
+	var base_alpha := 0.72 if _down else 0.58
 	var bg := Color(0.03, 0.04, 0.05, base_alpha)
 	if kind == "brake" and _down:
-		bg = Color(0.42, 0.24, 0.06, 0.55)
+		bg = Color(0.42, 0.24, 0.06, 0.75)
 	draw_circle(c, r + 2.0, Color(0, 0, 0, 0.20))
 	draw_circle(c, r, bg)
 	draw_arc(c, r - 1.0, 0.0, TAU, 48, Color(1, 1, 1, 0.16 if _down else 0.12), 1.6, true)
@@ -77,7 +77,7 @@ func _draw() -> void:
 			draw_line(Vector2(c.x - r * 0.22, ly), Vector2(c.x + r * 0.22, ly), Color(0.10, 0.11, 0.12, 0.50), 2.0, true)
 		if label_font:
 			var txt := "ТОРМОЗ"
-			var fs := 15
+			var fs := maxi(15, int(roundf(r * 0.28)))
 			var tw := label_font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs).x
 			draw_string(label_font, c + Vector2(-tw * 0.5, r * 0.70), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs, col)
 		if _down:
@@ -112,8 +112,10 @@ func _gui_input(event: InputEvent) -> void:
 			_press()
 		else:
 			_release()
+		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_press()
 		else:
 			_release()
+		accept_event()

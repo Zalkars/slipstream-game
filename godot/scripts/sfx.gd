@@ -16,6 +16,7 @@ var chime_snd: AudioStreamPlayer
 var coin_snd: AudioStreamPlayer
 var pickup_snd: AudioStreamPlayer
 var boost_snd: AudioStreamPlayer
+var brake_snd: AudioStreamPlayer
 var music_player: AudioStreamPlayer
 
 var sfx_bus := 0
@@ -23,9 +24,12 @@ var music_bus := 0
 var sfx_on := true
 var music_on := true
 var muted := false
+var sfx_volume := 0.9
+var music_volume := 0.75
 
 var _engine_on := false
 var _boost := false
+var _braking := false
 var _paused := false
 
 var _music_buf := PackedFloat32Array()
@@ -39,6 +43,7 @@ func _ready() -> void:
 	engine = _player(_make_engine(), -16.0)
 	wind = _player(_make_wind(), -26.0)
 	nitro_snd = _player(_make_nitro(), -60.0)
+	brake_snd = _player(_make_brake(), -60.0)
 	crash_snd = _player(_make_crash(), -4.0)
 	whoosh_snd = _player(_make_whoosh(), -11.0)
 	click_snd = _player(_make_click(), -17.0)
@@ -78,16 +83,42 @@ func _player(stream: AudioStream, vol: float, bus := "SFX") -> AudioStreamPlayer
 func set_sfx_enabled(on: bool) -> void:
 	sfx_on = on
 	muted = not on
-	AudioServer.set_bus_mute(sfx_bus, not on)
+	if sfx_bus < 0 or sfx_bus >= AudioServer.bus_count:
+		sfx_bus = AudioServer.get_bus_index("SFX")
+	if sfx_bus >= 0 and sfx_bus < AudioServer.bus_count:
+		AudioServer.set_bus_mute(sfx_bus, not on)
+		if on:
+			AudioServer.set_bus_volume_db(sfx_bus, linear_to_db(maxf(sfx_volume, 0.0001)))
+
+
+func set_sfx_volume(v: float) -> void:
+	sfx_volume = clampf(v, 0.0, 1.0)
+	if sfx_bus < 0 or sfx_bus >= AudioServer.bus_count:
+		sfx_bus = AudioServer.get_bus_index("SFX")
+	if sfx_bus >= 0 and sfx_bus < AudioServer.bus_count:
+		AudioServer.set_bus_volume_db(sfx_bus, linear_to_db(maxf(sfx_volume, 0.0001)))
 
 
 func set_music_enabled(on: bool) -> void:
 	music_on = on
-	AudioServer.set_bus_mute(music_bus, not on)
+	if music_bus < 0 or music_bus >= AudioServer.bus_count:
+		music_bus = AudioServer.get_bus_index("Music")
+	if music_bus >= 0 and music_bus < AudioServer.bus_count:
+		AudioServer.set_bus_mute(music_bus, not on)
+		if on:
+			AudioServer.set_bus_volume_db(music_bus, linear_to_db(maxf(music_volume, 0.0001)))
 	if on:
 		play_music()
 	elif music_player != null:
 		music_player.stop()
+
+
+func set_music_volume(v: float) -> void:
+	music_volume = clampf(v, 0.0, 1.0)
+	if music_bus < 0 or music_bus >= AudioServer.bus_count:
+		music_bus = AudioServer.get_bus_index("Music")
+	if music_bus >= 0 and music_bus < AudioServer.bus_count:
+		AudioServer.set_bus_volume_db(music_bus, linear_to_db(maxf(music_volume, 0.0001)))
 
 
 func set_muted(m: bool) -> void:
@@ -114,6 +145,13 @@ func _start_music_build() -> void:
 
 func _music_worker() -> void:
 	_music_buf = _render_music_loop()
+
+
+func _exit_tree() -> void:
+	if _music_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_music_task)
+		_music_task = -1
+		_music_busy = false
 
 
 func _process(_delta: float) -> void:
@@ -143,20 +181,25 @@ func play_engine() -> void:
 		return
 	_engine_on = true
 	_boost = false
+	_braking = false
 	_paused = false
 	engine.volume_db = -18.0
 	wind.volume_db = -28.0
 	nitro_snd.volume_db = -60.0
+	brake_snd.volume_db = -60.0
 	engine.play()
 	wind.play()
 	nitro_snd.play()
+	brake_snd.play()
 
 
 func stop_engine() -> void:
 	_engine_on = false
+	_braking = false
 	engine.stop()
 	wind.stop()
 	nitro_snd.stop()
+	brake_snd.stop()
 
 
 func set_paused(p: bool) -> void:
@@ -168,6 +211,8 @@ func set_paused(p: bool) -> void:
 	engine.volume_db = -42.0 if p else (-16.0 + _speed_ratio() * 5.0)
 	wind.volume_db = -46.0 if p else (-26.0 + _speed_ratio() * 8.0)
 	nitro_snd.volume_db = -60.0 if p else (-15.0 if _boost else -60.0)
+	if p:
+		brake_snd.volume_db = -60.0
 
 
 func _speed_ratio() -> float:
@@ -185,10 +230,11 @@ func _find_game() -> Node:
 	return root.get_node_or_null("Game")
 
 
-func update_engine(kmh: float, boost: bool) -> void:
+func update_engine(kmh: float, boost: bool, is_braking := false) -> void:
 	if not _engine_on:
 		return
 	_boost = boost
+	_braking = is_braking
 	if _paused:
 		return
 	var ratio := clampf((kmh - 120.0) / 210.0, 0.0, 1.0)
@@ -196,6 +242,14 @@ func update_engine(kmh: float, boost: bool) -> void:
 	engine.volume_db = -16.0 + ratio * 5.0
 	wind.volume_db = -26.0 + ratio * 8.0
 	nitro_snd.volume_db = -13.0 if boost else -60.0
+
+	if is_braking and kmh > 45.0:
+		var k := clampf(kmh / 260.0, 0.35, 1.0)
+		var target_vol := -14.0 + (k - 1.0) * 4.0
+		brake_snd.volume_db = lerpf(brake_snd.volume_db, target_vol, 0.35)
+		brake_snd.pitch_scale = 0.88 + k * 0.28
+	else:
+		brake_snd.volume_db = lerpf(brake_snd.volume_db, -60.0, 0.28)
 
 
 # --- one-shots --------------------------------------------------------------
@@ -222,6 +276,10 @@ func pickup_coin() -> void:
 
 
 func pickup_nitro() -> void:
+	pickup_snd.play()
+
+
+func pickup() -> void:
 	pickup_snd.play()
 
 
@@ -252,7 +310,7 @@ func _loop_wav(f: PackedFloat32Array, loop_len: int, fade: int) -> AudioStreamWA
 	return _wav(_loop_samples(f, loop_len, fade), true)
 
 
-func _loop_samples(f: PackedFloat32Array, loop_len: int, fade: int) -> PackedFloat32Array:
+static func _loop_samples(f: PackedFloat32Array, loop_len: int, fade: int) -> PackedFloat32Array:
 	for i in range(fade):
 		var a := float(i) / float(fade)
 		f[i] = f[i] * a + f[loop_len + i] * (1.0 - a)
@@ -324,6 +382,32 @@ func _make_nitro() -> AudioStreamWAV:
 		var hiss := lp - lp2 * 0.85
 		var rumble := sin(TAU * 70.0 * tt) * 0.10
 		f[i] = clampf(hiss * 0.9 + rumble, -1.0, 1.0)
+	return _loop_wav(f, loop_len, fade)
+
+
+func _make_brake() -> AudioStreamWAV:
+	var loop_len := int(RATE * 1.1)
+	var fade := 2500
+	var n := loop_len + fade
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var lp1 := 0.0
+	var lp2 := 0.0
+	var hp := 0.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 8841
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var raw := rng.randf_range(-1.0, 1.0)
+		lp1 = lerpf(lp1, raw, 0.32)
+		lp2 = lerpf(lp2, lp1, 0.32)
+		hp = lp2 - lerpf(hp, lp2, 0.05)
+		var f_chirp := 820.0 + sin(TAU * 11.0 * tt) * 42.0
+		var tone := sin(TAU * f_chirp * tt) * 0.14
+		var tone2 := sin(TAU * (f_chirp * 1.48) * tt) * 0.06
+		var grip := sin(TAU * 105.0 * tt) * 0.08
+		var v := hp * 0.58 + tone + tone2 + grip
+		f[i] = clampf(v * 0.85, -1.0, 1.0)
 	return _loop_wav(f, loop_len, fade)
 
 
@@ -450,8 +534,8 @@ func _make_boost() -> AudioStreamWAV:
 
 
 # --- music ------------------------------------------------------------------
-
-func _render_music_loop() -> PackedFloat32Array:
+ 
+static func _render_music_loop() -> PackedFloat32Array:
 	var beat := 60.0 / 118.0
 	var bar := beat * 4.0
 	var loop_len := int(round(bar * 4.0 * RATE))
@@ -502,7 +586,7 @@ func _render_music_loop() -> PackedFloat32Array:
 	return _loop_samples(buf, loop_len, fade)
 
 
-func _tone(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: float, attack: float, release: float, tbl: PackedFloat32Array, harm: float) -> void:
+static func _tone(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: float, attack: float, release: float, tbl: PackedFloat32Array, harm: float) -> void:
 	var s0 := int(start * RATE)
 	var n := int(dur * RATE)
 	var inc := freq * float(TBL) / float(RATE)
@@ -529,7 +613,7 @@ func _tone(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: 
 		ph += inc
 
 
-func _bass(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: float, tbl: PackedFloat32Array) -> void:
+static func _bass(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: float, tbl: PackedFloat32Array) -> void:
 	var s0 := int(start * RATE)
 	var n := int(dur * RATE)
 	var inc := freq * float(TBL) / float(RATE)
@@ -547,7 +631,7 @@ func _bass(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: 
 		ph += inc
 
 
-func _pluck(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: float, tbl: PackedFloat32Array) -> void:
+static func _pluck(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp: float, tbl: PackedFloat32Array) -> void:
 	var s0 := int(start * RATE)
 	var n := int(dur * RATE)
 	var inc := freq * float(TBL) / float(RATE)
@@ -565,7 +649,7 @@ func _pluck(buf: PackedFloat32Array, start: float, dur: float, freq: float, amp:
 		ph += inc
 
 
-func _kick(buf: PackedFloat32Array, start: float, amp: float) -> void:
+static func _kick(buf: PackedFloat32Array, start: float, amp: float) -> void:
 	var s0 := int(start * RATE)
 	var n := int(0.26 * RATE)
 	for i in range(n):
@@ -577,7 +661,7 @@ func _kick(buf: PackedFloat32Array, start: float, amp: float) -> void:
 		buf[idx] += sin(ph) * exp(-10.0 * tt) * amp
 
 
-func _hat(buf: PackedFloat32Array, start: float, amp: float, rng: RandomNumberGenerator) -> void:
+static func _hat(buf: PackedFloat32Array, start: float, amp: float, rng: RandomNumberGenerator) -> void:
 	var s0 := int(start * RATE)
 	var n := int(0.055 * RATE)
 	var prev := 0.0

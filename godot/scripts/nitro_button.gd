@@ -59,7 +59,7 @@ func _draw() -> void:
 	var c := size * 0.5
 	var r := minf(size.x, size.y) * 0.5 - 4.0
 	draw_circle(c + Vector2(0, 3), r, Color(0, 0, 0, 0.32))
-	draw_circle(c, r, Color(0.03, 0.04, 0.05, 0.42))
+	draw_circle(c, r, Color(0.04, 0.05, 0.06, 0.88))
 	draw_arc(c, r - 1.5, 0.0, TAU, 48, Color(1, 1, 1, 0.13), 1.5, true)
 
 	if active:
@@ -124,6 +124,7 @@ func _gui_input(event: InputEvent) -> void:
 			_down = false
 			queue_redraw()
 			tapped.emit()
+		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_down = true
@@ -132,3 +133,4 @@ func _gui_input(event: InputEvent) -> void:
 			_down = false
 			queue_redraw()
 			tapped.emit()
+		accept_event()

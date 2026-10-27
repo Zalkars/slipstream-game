@@ -2,9 +2,10 @@ extends Node2D
 
 # Screen manager: menu, garage, settings, HUD, pause, result + persistence.
 
-const VERSION := "0.2.0"
+const VERSION := "0.2.1"
 const SAVE_PATH := "user://slipstream.cfg"
 const START_COINS := 300
+const VolumeSlider = preload("res://scripts/volume_slider.gd")
 
 var game: Game
 var ui: CanvasLayer
@@ -17,6 +18,7 @@ var how: Control
 var pause_panel: Control
 var result_panel: Control
 var confirm_panel: Control
+var exit_panel: Control
 
 var score_label: Label
 var combo_label: Label
@@ -27,6 +29,7 @@ var nitro_btn: NitroButton
 var pad_left: PadButton
 var pad_right: PadButton
 var brake_btn: PadButton
+var zones_pad: ZonesPad
 
 var menu_best: Label
 var menu_car: Label
@@ -45,9 +48,22 @@ var g_bars: Array = []
 
 var settings_coins: Label
 var sfx_switch: ToggleSwitch
+var sfx_slider: VolumeSlider
 var music_switch: ToggleSwitch
+var music_slider: VolumeSlider
+var ctrl_zones: Button
 var ctrl_buttons: Button
 var ctrl_swipe: Button
+var ctrl_desc: Label
+
+var tutorial_panel: Control
+var tutorial_title: Label
+var tutorial_text: Label
+var tutorial_active := false
+var tutorial_step := 0
+var tutorial_timer := 0.0
+var tutorial_done := false
+var _step2_prompted := false
 
 var result_score: Label
 var result_record: Label
@@ -73,7 +89,9 @@ var selected := 0
 
 var sfx_on := true
 var music_on := true
-var control_mode := "buttons"
+var sfx_volume := 0.90
+var music_volume := 0.75
+var control_mode := "zones"
 
 var garage_index := 0
 var settings_from_pause := false
@@ -94,6 +112,8 @@ func _ready() -> void:
 	game.run_ended.connect(_on_crashed)
 	game.near_miss.connect(_on_near)
 	game.pickup_taken.connect(_on_pickup)
+	game.lane_changed.connect(_on_game_lane_changed)
+	game.brake_state_changed.connect(_on_game_brake_changed)
 
 	ui = CanvasLayer.new()
 	ui.layer = 5
@@ -107,12 +127,19 @@ func _ready() -> void:
 	_build_pause()
 	_build_result()
 	_build_confirm()
+	_build_exit_panel()
+	_build_tutorial()
 
 	show_menu()
+	Sfx.set_sfx_volume(sfx_volume)
+	Sfx.set_music_volume(music_volume)
 	Sfx.set_sfx_enabled(sfx_on)
 	Sfx.set_music_enabled(music_on)
 
+	get_tree().set_quit_on_go_back(false)
 	get_tree().set_auto_accept_quit(false)
+	get_window().go_back_requested.connect(_on_back)
+	get_window().close_requested.connect(_on_back)
 	if "--shots" in OS.get_cmdline_user_args():
 		_shots = true
 		_capture_seq()
@@ -123,6 +150,51 @@ func _process(delta: float) -> void:
 		_hint_t = maxf(0.0, _hint_t - delta)
 		if _hint_t <= 0.0 and swipe_hint != null:
 			swipe_hint.visible = false
+
+	if tutorial_active:
+		tutorial_timer += delta
+		if tutorial_step == 1:
+			if tutorial_timer >= 1.4:
+				if tutorial_panel != null and not tutorial_panel.visible:
+					tutorial_panel.visible = true
+					tutorial_title.text = "ОБУЧЕНИЕ · ПЕРЕСТРОЕНИЕ"
+					tutorial_title.add_theme_color_override("font_color", amber)
+					match control_mode:
+						"zones":
+							tutorial_text.text = "Нажмите ПРАВУЮ или ЛЕВУЮ зону экрана для перестроения"
+						"buttons":
+							tutorial_text.text = "Нажмите КНОПКУ СО СТРЕЛКОЙ для перестроения"
+						"swipe":
+							tutorial_text.text = "СВАЙПНИТЕ вправо или влево для перестроения"
+					if game != null:
+						game.spawn_tutorial_car(game.lane)
+						game.time_scale = 0.16
+		elif tutorial_step == 2:
+			if tutorial_timer >= 2.0 and not _step2_prompted:
+				_step2_prompted = true
+				if tutorial_panel != null:
+					tutorial_panel.visible = true
+					tutorial_title.text = "ОБУЧЕНИЕ · ТОРМОЖЕНИЕ"
+					tutorial_title.add_theme_color_override("font_color", amber)
+					match control_mode:
+						"zones":
+							tutorial_text.text = "Нажмите ОБЕ СТОРОНЫ экрана одновременно для тормоза"
+						"buttons":
+							tutorial_text.text = "Зажмите кнопку «ТОРМОЗ», чтобы сбросить скорость"
+						"swipe":
+							tutorial_text.text = "СВАЙПНИТЕ ВНИЗ для включения тормоза"
+				if game != null:
+					game.spawn_tutorial_car(game.lane)
+					game.time_scale = 0.16
+		elif tutorial_step == 3:
+			if tutorial_timer >= 2.0:
+				if tutorial_panel != null:
+					tutorial_panel.visible = false
+				tutorial_active = false
+				tutorial_done = true
+				if game != null:
+					game.time_scale = 1.0
+				_save()
 
 
 func _setup_fonts() -> void:
@@ -161,8 +233,11 @@ func _load() -> void:
 		var legacy_muted := bool(cf.get_value("audio", "muted", false))
 		sfx_on = bool(cf.get_value("audio", "sfx", not legacy_muted))
 		music_on = bool(cf.get_value("audio", "music", true))
-		var mode := str(cf.get_value("controls", "mode", "buttons"))
-		control_mode = mode if mode in ["buttons", "swipe"] else "buttons"
+		sfx_volume = float(cf.get_value("audio", "sfx_vol", 0.90))
+		music_volume = float(cf.get_value("audio", "music_vol", 0.75))
+		var mode := str(cf.get_value("controls", "mode", "zones"))
+		control_mode = mode if mode in ["zones", "buttons", "swipe"] else "zones"
+		tutorial_done = bool(cf.get_value("game", "tutorial_done", false))
 	if "--mute" in OS.get_cmdline_user_args():
 		sfx_on = false
 		music_on = false
@@ -177,7 +252,10 @@ func _save() -> void:
 	cf.set_value("profile", "car", selected)
 	cf.set_value("audio", "sfx", sfx_on)
 	cf.set_value("audio", "music", music_on)
+	cf.set_value("audio", "sfx_vol", sfx_volume)
+	cf.set_value("audio", "music_vol", music_volume)
 	cf.set_value("controls", "mode", control_mode)
+	cf.set_value("game", "tutorial_done", tutorial_done)
 	cf.save(SAVE_PATH)
 
 
@@ -187,6 +265,8 @@ func _hide_screens() -> void:
 	for s in [menu, garage, settings, how]:
 		if s != null:
 			s.visible = false
+	if exit_panel != null:
+		exit_panel.visible = false
 
 
 func show_menu() -> void:
@@ -262,12 +342,14 @@ func _hide_settings() -> void:
 		show_menu()
 
 
-func start_game() -> void:
+func start_game(force_tutorial := false) -> void:
 	Sfx.click()
 	_hide_screens()
 	pause_panel.visible = false
 	result_panel.visible = false
 	confirm_panel.visible = false
+	if exit_panel != null:
+		exit_panel.visible = false
 	hud.visible = true
 	in_game = true
 	paused = false
@@ -276,8 +358,23 @@ func start_game() -> void:
 	game.control_mode = control_mode
 	nitro_btn.reset()
 	_apply_control_ui()
-	_hint_t = 5.0 if control_mode == "swipe" else 0.0
-	swipe_hint.visible = control_mode == "swipe"
+	_hint_t = 6.0 if control_mode == "swipe" else 0.0
+	if swipe_hint != null:
+		swipe_hint.visible = control_mode == "swipe"
+
+	if force_tutorial or not tutorial_done:
+		tutorial_active = true
+		tutorial_step = 1
+		tutorial_timer = 0.0
+		_step2_prompted = false
+		if tutorial_panel != null:
+			tutorial_panel.visible = false
+	else:
+		tutorial_active = false
+		_step2_prompted = false
+		if tutorial_panel != null:
+			tutorial_panel.visible = false
+
 	game.start_run()
 	Sfx.set_paused(false)
 	Sfx.play_engine()
@@ -285,17 +382,31 @@ func start_game() -> void:
 
 
 func _apply_control_ui() -> void:
+	if zones_pad != null:
+		zones_pad.visible = (control_mode == "zones")
+		if not zones_pad.visible:
+			zones_pad.reset()
+
 	var button_mode := control_mode == "buttons"
 	pad_left.visible = button_mode
 	pad_right.visible = button_mode
-	if button_mode:
-		_place_bottom(brake_btn, 276.0, 34.0, 108.0, 108.0)
-	else:
-		_place_bottom(brake_btn, 34.0, 34.0, 108.0, 108.0)
+	brake_btn.visible = button_mode
+
+	if control_mode == "zones":
+		_place_bottom(nitro_btn, 286.0, 26.0, 148.0, 148.0)
+	elif button_mode:
+		_place_bottom(pad_left, 20.0, 28.0, 136.0, 136.0)
+		_place_bottom(pad_right, 170.0, 28.0, 136.0, 136.0)
+		_place_bottom(brake_btn, 330.0, 28.0, 128.0, 128.0)
+		_place_bottom(nitro_btn, 544.0, 24.0, 152.0, 152.0)
+	else: # swipe
+		_place_bottom(nitro_btn, 544.0, 24.0, 152.0, 152.0)
+
 	if game != null:
 		game.control_mode = control_mode
 	if swipe_hint != null:
-		swipe_hint.visible = (not button_mode) and _hint_t > 0.0
+		swipe_hint.visible = (control_mode == "swipe") and _hint_t > 0.0
+		swipe_hint.text = "← → ПОЛОСЫ   |   ↓ ТОРМОЗ   |   ↑ НИТРО"
 
 
 func _toggle_pause() -> void:
@@ -309,8 +420,47 @@ func _toggle_pause() -> void:
 	if paused:
 		game.set_braking(false)
 		brake_btn.reset()
+		if zones_pad != null:
+			zones_pad.reset()
 	else:
 		_apply_control_ui()
+
+
+func _on_game_lane_changed(_new_lane: int) -> void:
+	if tutorial_active and tutorial_step == 1:
+		tutorial_step = 2
+		tutorial_timer = 0.0
+		_step2_prompted = false
+		if game != null:
+			game.time_scale = 1.0
+		if tutorial_panel != null:
+			tutorial_title.text = "ОТЛИЧНО!"
+			tutorial_title.add_theme_color_override("font_color", Color("#5ddb75"))
+			tutorial_text.text = "Полоса свободна! Набираем скорость."
+		Sfx.pickup()
+
+
+func _on_game_brake_changed(is_braking: bool) -> void:
+	if is_braking and tutorial_active and tutorial_step == 2:
+		tutorial_step = 3
+		tutorial_timer = 0.0
+		if game != null:
+			game.time_scale = 1.0
+		if tutorial_panel != null:
+			tutorial_title.text = "ПРЕВОСХОДНО!"
+			tutorial_title.add_theme_color_override("font_color", Color("#5ddb75"))
+			tutorial_text.text = "Тормоз спасает от аварий в плотном потоке!"
+		Sfx.record()
+
+
+func _skip_tutorial() -> void:
+	tutorial_active = false
+	tutorial_done = true
+	if tutorial_panel != null:
+		tutorial_panel.visible = false
+	if game != null:
+		game.time_scale = 1.0
+	_save()
 
 
 func _tap_nitro() -> void:
@@ -341,10 +491,16 @@ func _on_hud(score: int, kmh: int, nitro: float, combo: int, run_coins: int, boo
 		combo_label.text = "×%d СЕРИЯ" % combo
 	else:
 		combo_label.text = ""
-	Sfx.update_engine(kmh, boosting)
+	Sfx.update_engine(kmh, boosting, game.braking)
 
 
 func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
+	if tutorial_active:
+		tutorial_active = false
+		if tutorial_panel != null:
+			tutorial_panel.visible = false
+		if game != null:
+			game.time_scale = 1.0
 	Sfx.crash()
 	Sfx.stop_engine()
 	await get_tree().create_timer(1.05).timeout
@@ -378,16 +534,22 @@ func _show_result(score: int, dist: int, near: int, run_coins: int) -> void:
 
 
 func _on_back() -> void:
-	if confirm_panel.visible:
+	if exit_panel != null and exit_panel.visible:
+		_hide_exit_panel()
+		return
+	if confirm_panel != null and confirm_panel.visible:
 		_hide_confirm()
 		return
-	if how.visible:
+	if tutorial_active:
+		_skip_tutorial()
+		return
+	if how != null and how.visible:
 		_hide_how()
 		return
-	if settings.visible:
+	if settings != null and settings.visible:
 		_hide_settings()
 		return
-	if garage.visible:
+	if garage != null and garage.visible:
 		show_menu()
 		return
 	if result_open:
@@ -396,11 +558,11 @@ func _on_back() -> void:
 	if in_game:
 		_toggle_pause()
 		return
-	get_tree().quit()
+	_show_exit_panel()
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_on_back()
 	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
 		if in_game and not paused and not result_open and not _shots:
@@ -414,8 +576,9 @@ func _input(event: InputEvent) -> void:
 		return
 	if event.pressed:
 		match event.keycode:
-			KEY_ESCAPE:
+			KEY_BACK, KEY_ESCAPE:
 				_on_back()
+				get_viewport().set_input_as_handled()
 			KEY_LEFT, KEY_A:
 				if in_game and not paused and not result_open:
 					game.move_lane(-1)
@@ -629,7 +792,7 @@ func _build_menu() -> void:
 
 	menu_coins = _coin_chip(menu, 430.0, 46.0, 246.0)
 
-	var tag := _label("А Р К А Д Н Ы Й   Р Е Й С", 21, accent, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	var tag := _label("А Р К А Д Н Ы Е   Г О Н К И", 21, accent, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
 	_place(tag, 60, 230, 600, 30)
 	menu.add_child(tag)
 
@@ -647,7 +810,7 @@ func _build_menu() -> void:
 	_place(bar, 310, 388, 100, 5)
 	menu.add_child(bar)
 
-	var sub := _label("РЕАЛИСТИЧНЫЙ РЕЙС · v" + VERSION, 22, Color(0.76, 0.79, 0.79), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	var sub := _label("РЕАЛИСТИЧНЫЙ ТРАФИК · v" + VERSION, 22, Color(0.76, 0.79, 0.79), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
 	_place(sub, 60, 406, 600, 30)
 	menu.add_child(sub)
 
@@ -745,35 +908,57 @@ func _build_hud() -> void:
 	_place_bottom(bot, 0, 0, 720, 330)
 	hud.add_child(bot)
 
+	zones_pad = ZonesPad.new()
+	zones_pad.font_bold = font_bold
+	zones_pad.font_ui = font_ui
+	zones_pad.lane_left.connect(func(): game.move_lane(-1))
+	zones_pad.lane_right.connect(func(): game.move_lane(1))
+	zones_pad.brake_changed.connect(func(on: bool): game.set_braking(on))
+	_place_bottom(zones_pad, 0, 0, 720, 260)
+	hud.add_child(zones_pad)
+
 	pad_left = PadButton.new()
 	pad_left.kind = "left"
 	pad_left.label_font = font_bold
 	pad_left.pressed.connect(func(): game.move_lane(-1))
-	_place_bottom(pad_left, 34, 34, 108, 108)
+	_place_bottom(pad_left, 20, 28, 136, 136)
 	hud.add_child(pad_left)
 
 	pad_right = PadButton.new()
 	pad_right.kind = "right"
 	pad_right.label_font = font_bold
 	pad_right.pressed.connect(func(): game.move_lane(1))
-	_place_bottom(pad_right, 150, 34, 108, 108)
+	_place_bottom(pad_right, 170, 28, 136, 136)
 	hud.add_child(pad_right)
 
 	brake_btn = PadButton.new()
 	brake_btn.kind = "brake"
 	brake_btn.label_font = font_bold
 	brake_btn.held_changed.connect(func(on: bool): game.set_braking(on))
-	_place_bottom(brake_btn, 276, 34, 108, 108)
+	_place_bottom(brake_btn, 330, 28, 128, 128)
 	hud.add_child(brake_btn)
 
 	nitro_btn = NitroButton.new()
 	nitro_btn.label_font = font_bold
 	nitro_btn.tapped.connect(_tap_nitro)
-	_place_bottom(nitro_btn, 548, 30, 148, 148)
+	_place_bottom(nitro_btn, 544, 24, 152, 152)
 	hud.add_child(nitro_btn)
 
-	swipe_hint = _label("СВАЙП  ←  →", 21, Color(1, 1, 1, 0.42), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
-	_place_bottom(swipe_hint, 160, 74, 380, 30)
+	swipe_hint = _label("← → ПОЛОСЫ   |   ↓ ТОРМОЗ   |   ↑ НИТРО", 19, Color(0.92, 0.94, 0.96, 0.92), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	var hint_sb := StyleBoxFlat.new()
+	hint_sb.bg_color = Color(0.04, 0.05, 0.06, 0.78)
+	hint_sb.set_corner_radius_all(14)
+	hint_sb.border_width_left = 1
+	hint_sb.border_width_right = 1
+	hint_sb.border_width_top = 1
+	hint_sb.border_width_bottom = 1
+	hint_sb.border_color = Color(1.0, 1.0, 1.0, 0.12)
+	hint_sb.content_margin_left = 14
+	hint_sb.content_margin_right = 14
+	hint_sb.content_margin_top = 4
+	hint_sb.content_margin_bottom = 4
+	swipe_hint.add_theme_stylebox_override("normal", hint_sb)
+	_place_bottom(swipe_hint, 60, 200, 600, 36)
 	swipe_hint.visible = false
 	hud.add_child(swipe_hint)
 
@@ -985,31 +1170,61 @@ func _build_settings() -> void:
 	sfx_switch.toggled.connect(_on_sfx_toggled)
 	vb.add_child(_setting_row("ЗВУКИ", "Двигатель, удары, интерфейс", sfx_switch))
 
+	sfx_slider = VolumeSlider.new()
+	sfx_slider.label_font = font_bold
+	sfx_slider.value = sfx_volume
+	sfx_slider.visible = sfx_on
+	sfx_slider.value_changed.connect(_on_sfx_volume_changed)
+	vb.add_child(sfx_slider)
+
 	music_switch = ToggleSwitch.new()
 	music_switch.label_font = font_bold
 	music_switch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	music_switch.toggled.connect(_on_music_toggled)
 	vb.add_child(_setting_row("МУЗЫКА", "Спокойный фон без слов", music_switch))
 
+	music_slider = VolumeSlider.new()
+	music_slider.label_font = font_bold
+	music_slider.value = music_volume
+	music_slider.visible = music_on
+	music_slider.value_changed.connect(_on_music_volume_changed)
+	vb.add_child(music_slider)
+
 	vb.add_child(_divider())
 	vb.add_child(_label("УПРАВЛЕНИЕ", 17, accent, font_bold))
 
 	var modes := HBoxContainer.new()
-	modes.add_theme_constant_override("separation", 10)
+	modes.add_theme_constant_override("separation", 8)
+	ctrl_zones = _mode_button("ДВЕ ЗОНЫ")
+	ctrl_zones.pressed.connect(func(): _set_control_mode("zones"))
+	modes.add_child(ctrl_zones)
+
 	ctrl_buttons = _mode_button("КНОПКИ")
 	ctrl_buttons.pressed.connect(func(): _set_control_mode("buttons"))
 	modes.add_child(ctrl_buttons)
+
 	ctrl_swipe = _mode_button("СВАЙПЫ")
 	ctrl_swipe.pressed.connect(func(): _set_control_mode("swipe"))
 	modes.add_child(ctrl_swipe)
 	vb.add_child(modes)
 
-	var hint := _label("КНОПКИ — стрелки внизу экрана. СВАЙПЫ — веди пальцем влево или вправо. Тормоз и нитро работают в обоих режимах.", 17, Color(0.55, 0.60, 0.63), font_ui)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.custom_minimum_size = Vector2(0, 54)
-	vb.add_child(hint)
+	ctrl_desc = _label("", 16, Color(0.68, 0.72, 0.75), font_ui)
+	ctrl_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	ctrl_desc.custom_minimum_size = Vector2(0, 48)
+	vb.add_child(ctrl_desc)
 
 	vb.add_child(_divider())
+
+	var replay_tut := _text_button("ПОВТОРИТЬ ОБУЧЕНИЕ")
+	replay_tut.add_theme_color_override("font_color", amber)
+	replay_tut.add_theme_color_override("font_hover_color", Color(1.0, 0.85, 0.40))
+	replay_tut.pressed.connect(func():
+		tutorial_done = false
+		_save()
+		_hide_settings()
+		start_game(true)
+	)
+	vb.add_child(replay_tut)
 
 	var reset := _text_button("СБРОСИТЬ ПРОГРЕСС")
 	reset.add_theme_color_override("font_color", Color(0.86, 0.38, 0.32))
@@ -1018,10 +1233,16 @@ func _build_settings() -> void:
 	vb.add_child(reset)
 
 
-func _setting_row(title: String, sub: String, ctrl: Control) -> HBoxContainer:
+func _setting_row(title: String, sub: String, ctrl: Control) -> Control:
+	var root := Control.new()
+	root.custom_minimum_size = Vector2(0, 68)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
 	var row := HBoxContainer.new()
+	row.set_anchors_preset(Control.PRESET_FULL_RECT)
 	row.add_theme_constant_override("separation", 14)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 	var box := VBoxContainer.new()
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_theme_constant_override("separation", 0)
@@ -1031,7 +1252,20 @@ func _setting_row(title: String, sub: String, ctrl: Control) -> HBoxContainer:
 		box.add_child(_label(sub, 16, Color(0.52, 0.57, 0.60), font_ui))
 	row.add_child(box)
 	row.add_child(ctrl)
-	return row
+	root.add_child(row)
+
+	if ctrl is ToggleSwitch:
+		var btn := Button.new()
+		btn.flat = true
+		btn.set_anchors_preset(Control.PRESET_FULL_RECT)
+		btn.offset_right = -124
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.pressed.connect(func():
+			ctrl._toggle()
+		)
+		root.add_child(btn)
+
+	return root
 
 
 func _divider() -> ColorRect:
@@ -1045,7 +1279,7 @@ func _divider() -> ColorRect:
 func _mode_button(txt: String) -> Button:
 	var b := _button(txt, false)
 	b.custom_minimum_size = Vector2(0, 66)
-	b.add_theme_font_size_override("font_size", 24)
+	b.add_theme_font_size_override("font_size", 22)
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	return b
 
@@ -1066,27 +1300,61 @@ func _style_mode_btn(b: Button, on: bool) -> void:
 func _update_settings_ui() -> void:
 	if sfx_switch != null:
 		sfx_switch.set_on(sfx_on)
+	if sfx_slider != null:
+		sfx_slider.visible = sfx_on
+		sfx_slider.set_value_no_signal(sfx_volume)
 	if music_switch != null:
 		music_switch.set_on(music_on)
+	if music_slider != null:
+		music_slider.visible = music_on
+		music_slider.set_value_no_signal(music_volume)
+	_style_mode_btn(ctrl_zones, control_mode == "zones")
 	_style_mode_btn(ctrl_buttons, control_mode == "buttons")
 	_style_mode_btn(ctrl_swipe, control_mode == "swipe")
+	if ctrl_desc != null:
+		match control_mode:
+			"zones":
+				ctrl_desc.text = "Левая/правая половина — руль. Обе вместе — тормоз. Отдельная кнопка — нитро."
+			"buttons":
+				ctrl_desc.text = "Крупные кнопки: стрелки для поворотов, педаль тормоза и кнопка нитро."
+			"swipe":
+				ctrl_desc.text = "Свайп влево/вправо — руль, свайп вниз — тормоз, свайп вверх — нитро."
 
 
 func _on_sfx_toggled(v: bool) -> void:
 	sfx_on = v
+	if sfx_slider != null:
+		sfx_slider.visible = v
 	Sfx.set_sfx_enabled(v)
 	_save()
+	if v:
+		Sfx.click()
 
 
 func _on_music_toggled(v: bool) -> void:
 	music_on = v
+	if music_slider != null:
+		music_slider.visible = v
 	Sfx.set_music_enabled(v)
+	_save()
+
+
+func _on_sfx_volume_changed(val: float) -> void:
+	sfx_volume = val
+	Sfx.set_sfx_volume(val)
+	_save()
+
+
+func _on_music_volume_changed(val: float) -> void:
+	music_volume = val
+	Sfx.set_music_volume(val)
 	_save()
 
 
 func _set_control_mode(mode: String) -> void:
 	if control_mode == mode:
 		return
+	Sfx.click()
 	control_mode = mode
 	_apply_control_ui()
 	_save()
@@ -1126,25 +1394,33 @@ func _build_how() -> void:
 	vb.add_child(gap)
 
 	var items := [
-		["УПРАВЛЕНИЕ", "Стрелки внизу экрана или свайпы — режим выбирается в настройках."],
-		["ТОРМОЗ", "Держи ТОРМОЗ, чтобы сбросить скорость и разорвать плотный поток."],
-		["НИТРО", "Копится за близкие обгоны и синие баллоны. Нажми, чтобы потратить заряд."],
-		["МОНЕТЫ", "Золото на дороге и дистанция пополняют кошелёк. Машины покупаются в гараже."],
-		["ФИНИШ", "Столкновение завершает заезд. Рекорд, монеты и гараж сохраняются."],
+		["3 РЕЖИМА УПРАВЛЕНИЯ", "Две зоны (руль по бокам, обе — тормоз), крупные кнопки или свайпы (вниз — тормоз, вверх — нитро). Выбор в настройках."],
+		["ТОРМОЖЕНИЕ", "Сбрасывай скорость, чтобы пропустить плотную волну трафика и перестроиться."],
+		["НИТРО", "Копится за близкие обгоны и синие баллоны. Даёт мощный рывок вперёд."],
+		["МОНЕТЫ", "Золото на дороге и дистанция пополняют кошелёк. Новые машины открываются в гараже."],
+		["ОБУЧЕНИЕ", "В начале игры подскажет, как маневрировать в потоке с замедлением времени."],
 	]
 	for it in items:
 		vb.add_child(_label(it[0], 19, accent, font_bold))
-		var body := _label(it[1], 23, Color(0.86, 0.88, 0.89), font_ui)
+		var body := _label(it[1], 22, Color(0.86, 0.88, 0.89), font_ui)
 		body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		body.custom_minimum_size = Vector2(0, 54)
+		body.custom_minimum_size = Vector2(0, 52)
 		vb.add_child(body)
 
 	var gap2 := Control.new()
 	gap2.custom_minimum_size = Vector2(0, 4)
 	vb.add_child(gap2)
 
+	var tut_btn := _button("ПРОЙТИ ОБУЧЕНИЕ", false)
+	tut_btn.custom_minimum_size = Vector2(0, 76)
+	tut_btn.pressed.connect(func():
+		_hide_how()
+		start_game(true)
+	)
+	vb.add_child(tut_btn)
+
 	var ok := _button("ПОНЯТНО", true)
-	ok.custom_minimum_size = Vector2(0, 90)
+	ok.custom_minimum_size = Vector2(0, 84)
 	ok.pressed.connect(_hide_how)
 	vb.add_child(ok)
 
@@ -1354,10 +1630,125 @@ func _do_reset() -> void:
 	selected = 0
 	best = 0
 	garage_index = 0
+	tutorial_done = false
 	_save()
 	confirm_panel.visible = false
 	Sfx.click()
 	_update_all_labels()
+
+
+# --- exit confirmation ------------------------------------------------------
+
+func _build_exit_panel() -> void:
+	exit_panel = Control.new()
+	_full(exit_panel)
+	exit_panel.visible = false
+	exit_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	exit_panel.z_index = 100
+	ui.add_child(exit_panel)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.01, 0.015, 0.02, 0.88)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(dim)
+	exit_panel.add_child(dim)
+
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(center)
+	exit_panel.add_child(center)
+
+	var card := _card(560)
+	center.add_child(card)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 16)
+	card.add_child(vb)
+
+	vb.add_child(_label("ВЫХОД", 38, ink, font_num, HORIZONTAL_ALIGNMENT_CENTER))
+
+	var sub := _label(
+		"Вы действительно хотите выйти из игры?",
+		22, Color(0.82, 0.85, 0.87), font_ui, HORIZONTAL_ALIGNMENT_CENTER
+	)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(sub)
+
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 8)
+	vb.add_child(gap)
+
+	var quit_btn := _button("ВЫЙТИ", true)
+	quit_btn.custom_minimum_size = Vector2(0, 88)
+	quit_btn.pressed.connect(func():
+		get_tree().quit()
+	)
+	vb.add_child(quit_btn)
+
+	var cancel_btn := _button("ОТМЕНА", false)
+	cancel_btn.custom_minimum_size = Vector2(0, 88)
+	cancel_btn.pressed.connect(_hide_exit_panel)
+	vb.add_child(cancel_btn)
+
+
+func _show_exit_panel() -> void:
+	Sfx.click()
+	if exit_panel != null:
+		exit_panel.visible = true
+		if exit_panel.get_parent() != null:
+			exit_panel.get_parent().move_child(exit_panel, -1)
+
+
+func _hide_exit_panel() -> void:
+	Sfx.click()
+	if exit_panel != null:
+		exit_panel.visible = false
+
+
+# --- tutorial ---------------------------------------------------------------
+
+func _build_tutorial() -> void:
+	tutorial_panel = Control.new()
+	_place(tutorial_panel, 36, 216, 648, 170)
+	tutorial_panel.visible = false
+	tutorial_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(tutorial_panel)
+
+	var card := _card(648)
+	card.set_anchors_preset(Control.PRESET_FULL_RECT)
+	card.offset_left = 0
+	card.offset_top = 0
+	card.offset_right = 0
+	card.offset_bottom = 0
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tutorial_panel.add_child(card)
+
+	var vb := VBoxContainer.new()
+	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vb.offset_left = 22
+	vb.offset_top = 16
+	vb.offset_right = -22
+	vb.offset_bottom = -16
+	vb.add_theme_constant_override("separation", 6)
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(vb)
+
+	var top_row := HBoxContainer.new()
+	top_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tutorial_title = _label("ОБУЧЕНИЕ", 24, amber, font_bold)
+	tutorial_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top_row.add_child(tutorial_title)
+
+	var skip_btn := _text_button("ПРОПУСТИТЬ")
+	skip_btn.add_theme_font_size_override("font_size", 18)
+	skip_btn.pressed.connect(_skip_tutorial)
+	top_row.add_child(skip_btn)
+	vb.add_child(top_row)
+
+	tutorial_text = _label("", 21, ink, font_ui)
+	tutorial_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tutorial_text.custom_minimum_size = Vector2(0, 56)
+	vb.add_child(tutorial_text)
 
 
 # --- misc -------------------------------------------------------------------
@@ -1387,6 +1778,8 @@ func _fmt(n: int) -> String:
 		count += 1
 		if count % 3 == 0 and i > 0:
 			out = " " + out
+	if n < 0:
+		out = "-" + out
 	return out
 
 
@@ -1448,6 +1841,12 @@ func _capture_seq() -> void:
 	lift.position = Vector2(420.0, 762.0)
 	lift.pressed = false
 	Input.parse_input_event(lift)
+	await get_tree().create_timer(0.25).timeout
+
+	control_mode = "buttons"
+	start_game()
+	await get_tree().create_timer(1.2).timeout
+	await _shot("game_buttons")
 	await get_tree().create_timer(0.25).timeout
 	get_tree().quit()
 

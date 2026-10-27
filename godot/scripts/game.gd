@@ -7,6 +7,8 @@ signal hud_changed(score: int, kmh: int, nitro: float, combo: int, coins: int, b
 signal run_ended(score: int, distance: int, near: int, coins: int)
 signal near_miss(combo: int)
 signal pickup_taken(kind: int)
+signal lane_changed(new_lane: int)
+signal brake_state_changed(is_braking: bool)
 
 const LANES := 4
 const DEMO_SPEED := 620.0
@@ -50,11 +52,17 @@ var item_t := 1.4
 var demo := true
 var running := false
 var paused := false
+var time_scale := 1.0
 var crashed := false
 var shake := 0.0
 var flash := 0.0
 var particles: Array = []
 var decor: Array = []
+var skid_marks: Array = []
+var _has_prev_skid := false
+var _prev_skid_l := Vector2.ZERO
+var _prev_skid_r := Vector2.ZERO
+var _nitro_cooldown := 0.0
 
 var car_index := 0
 var base_speed := 740.0
@@ -181,9 +189,10 @@ func start_run() -> void:
 	near = 0
 	combo = 0
 	combo_t = 0.0
-	nitro = NITRO_SEG
+	nitro = 0.0
 	boosting = false
 	boost_t = 0.0
+	_nitro_cooldown = 0.0
 	braking = false
 	lane = 1
 	player_x = _lane_x(lane)
@@ -191,6 +200,8 @@ func start_run() -> void:
 	cars.clear()
 	items.clear()
 	particles.clear()
+	skid_marks.clear()
+	_has_prev_skid = false
 	spawn_t = 1.0
 	item_t = 1.2
 	pickup_coins = 0
@@ -200,6 +211,7 @@ func start_run() -> void:
 	demo = false
 	running = true
 	paused = false
+	time_scale = 1.0
 	shake = 0.0
 	flash = 0.0
 	hud_changed.emit(0, int(speed * 0.3), nitro, 0, 0, false)
@@ -210,6 +222,9 @@ func start_demo() -> void:
 	cars.clear()
 	items.clear()
 	particles.clear()
+	skid_marks.clear()
+	_has_prev_skid = false
+	_nitro_cooldown = 0.0
 	lane = 1
 	player_x = _lane_x(lane)
 	crashed = false
@@ -234,26 +249,34 @@ func stop_run() -> void:
 func move_lane(dir: int) -> void:
 	if not running or paused or crashed:
 		return
+	var old_lane := lane
 	lane = clampi(lane + dir, 0, LANES - 1)
+	if lane != old_lane:
+		lane_changed.emit(lane)
 
 
 func set_braking(on: bool) -> void:
 	if not running or paused or crashed:
-		braking = false
+		if braking:
+			braking = false
+			brake_state_changed.emit(false)
 		return
-	braking = on
+	if braking != on:
+		braking = on
+		brake_state_changed.emit(braking)
 
 
 func tap_nitro() -> bool:
 	if not running or paused or crashed:
 		return false
-	if boost_t > 0.0:
+	if boost_t > 0.0 or _nitro_cooldown > 0.0:
 		return false
 	if nitro < NITRO_SEG - 0.002:
 		return false
 	nitro = maxf(0.0, nitro - NITRO_SEG)
 	boost_t = BOOST_TIME
 	boosting = true
+	_nitro_cooldown = 0.35
 	return true
 
 
@@ -264,26 +287,67 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.pressed:
 			swipe_start = event.position
 			swipe_used = false
-		elif not swipe_used:
-			_try_swipe(event.position)
+		else:
+			if braking:
+				set_braking(false)
+			if not swipe_used:
+				_try_swipe(event.position)
 	elif event is InputEventScreenDrag and not swipe_used:
+		_try_swipe(event.position)
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			swipe_start = event.position
+			swipe_used = false
+		else:
+			if braking:
+				set_braking(false)
+			if not swipe_used:
+				_try_swipe(event.position)
+	elif event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) and not swipe_used:
 		_try_swipe(event.position)
 
 
 func _try_swipe(pos: Vector2) -> void:
 	var d := pos - swipe_start
-	if absf(d.x) < 52.0:
+	var abs_x := absf(d.x)
+	var abs_y := absf(d.y)
+	if abs_x < 44.0 and abs_y < 44.0:
 		return
-	if absf(d.x) < absf(d.y) * 1.15:
-		return
-	swipe_used = true
-	move_lane(1 if d.x > 0.0 else -1)
+	if abs_x > abs_y * 1.1:
+		swipe_used = true
+		move_lane(1 if d.x > 0.0 else -1)
+	elif abs_y > abs_x * 1.1:
+		swipe_used = true
+		if d.y > 0.0:
+			set_braking(true)
+		else:
+			if tap_nitro():
+				Sfx.boost_burst()
+
+
+func spawn_tutorial_car(target_lane: int) -> void:
+	for c in cars:
+		if c.get("lane", -1) == target_lane and c.get("y", 0.0) < player_y and c.get("y", 0.0) > player_y - 700.0:
+			return
+	var c := {
+		"lane": target_lane,
+		"x": _lane_x(target_lane),
+		"y": player_y - 500.0,
+		"w": car_w,
+		"h": car_h,
+		"kind": 0,
+		"color": TRAFFIC_COLORS[randi() % TRAFFIC_COLORS.size()],
+		"rel": 0.70,
+		"demo_speed": 0.0,
+		"near": false,
+	}
+	cars.append(c)
 
 
 # --- simulation -------------------------------------------------------------
 
 func _process(delta: float) -> void:
-	var dt := minf(delta, 0.05)
+	var dt := minf(delta, 0.05) * time_scale
 	_tick(dt)
 	queue_redraw()
 
@@ -311,11 +375,15 @@ func _tick(dt: float) -> void:
 		return
 
 	t += dt
+	if _nitro_cooldown > 0.0:
+		_nitro_cooldown = maxf(0.0, _nitro_cooldown - dt)
+
 	if boost_t > 0.0:
 		boost_t -= dt
 		if boost_t <= 0.0:
 			boost_t = 0.0
 			boosting = false
+			_nitro_cooldown = 0.35
 
 	var ramp := clampf(t / 70.0, 0.0, 1.0)
 	var ref := lerpf(base_speed, top_speed, ramp)
@@ -335,9 +403,47 @@ func _tick(dt: float) -> void:
 	scroll += travel
 	distance += travel / 12.0
 
+	# Update existing skid marks with road travel
+	for i in range(skid_marks.size() - 1, -1, -1):
+		var sk: Dictionary = skid_marks[i]
+		sk.p1.y += travel
+		sk.p2.y += travel
+		sk.life -= dt
+		if sk.life <= 0.0 or (sk.p1.y > H + 80.0 and sk.p2.y > H + 80.0):
+			skid_marks.remove_at(i)
+
+	var is_skidding := braking and running and not crashed and speed > 130.0
+	if is_skidding:
+		var wheel_y := player_y + car_h * 0.34
+		var curr_l := Vector2(player_x - car_w * 0.31, wheel_y)
+		var curr_r := Vector2(player_x + car_w * 0.31, wheel_y)
+		if _has_prev_skid:
+			var max_life := 3.2
+			skid_marks.append({
+				"p1": _prev_skid_l + Vector2(0.0, travel),
+				"p2": curr_l,
+				"life": max_life,
+				"max": max_life,
+			})
+			skid_marks.append({
+				"p1": _prev_skid_r + Vector2(0.0, travel),
+				"p2": curr_r,
+				"life": max_life,
+				"max": max_life,
+			})
+			if skid_marks.size() > 160:
+				skid_marks.remove_at(0)
+				skid_marks.remove_at(0)
+		_prev_skid_l = curr_l
+		_prev_skid_r = curr_r
+		_has_prev_skid = true
+	else:
+		_has_prev_skid = false
+
 	var target_x := _lane_x(lane)
-	player_x = lerpf(player_x, target_x, minf(1.0, dt * handling))
-	player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * 0.0022, -0.10, 0.10), minf(1.0, dt * 9.0))
+	var handle_k := handling if time_scale >= 0.9 else handling * (1.0 / maxf(0.12, time_scale))
+	player_x = lerpf(player_x, target_x, minf(1.0, dt * handle_k))
+	player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * 0.0022, -0.10, 0.10), minf(1.0, dt * 9.0 * (2.5 if time_scale < 0.5 else 1.0)))
 
 	if combo_t > 0.0:
 		combo_t -= dt
@@ -403,14 +509,15 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 			_crash()
 			return
 
-		if not c.near and prev_y < py and c.y >= py:
+		if not c.get("near", false) and prev_y < py and c.y >= py:
 			if absf(float(c.x) - player_x) < lane_w * 1.22:
-				c.near = true
+				c["near"] = true
 				near += 1
 				combo += 1
 				combo_t = 2.6
 				bonus += 10 * combo
-				nitro = minf(1.0, nitro + NITRO_SEG)
+				var gain := 0.045 if combo < 3 else 0.070
+				nitro = minf(1.0, nitro + gain)
 				near_miss.emit(combo)
 
 
@@ -427,7 +534,7 @@ func _move_items(dt: float) -> void:
 				pickup_coins += 12
 				pickup_taken.emit(0)
 			else:
-				nitro = minf(1.0, nitro + NITRO_SEG)
+				nitro = minf(1.0, nitro + 0.20)
 				pickup_taken.emit(1)
 			items.remove_at(i)
 
@@ -458,7 +565,7 @@ func _spawn_item() -> void:
 		"lane": chosen,
 		"x": _lane_x(chosen),
 		"y": -50.0,
-		"kind": 1 if randf() < 0.38 else 0,
+		"kind": 1 if randf() < 0.18 else 0,
 		"phase": randf() * 4.0,
 	})
 
@@ -558,6 +665,17 @@ func _update_fx(dt: float) -> void:
 		p.v.y += 640.0 * dt
 		p.v *= 0.985
 
+	if braking and running and not crashed and speed > 180.0 and randf() < 0.40:
+		for side in [-1, 1]:
+			particles.append({
+				"p": Vector2(player_x + float(side) * car_w * 0.31, player_y + car_h * 0.36),
+				"v": Vector2(randf_range(-16.0, 16.0), randf_range(30.0, 90.0)),
+				"life": randf_range(0.24, 0.48),
+				"max": 0.48,
+				"col": Color(0.88, 0.90, 0.92, 0.42),
+				"size": randf_range(3.5, 7.5),
+			})
+
 
 func finish_run() -> void:
 	if running:
@@ -580,6 +698,7 @@ func _draw() -> void:
 	_draw_road()
 	_draw_shoulders()
 	_draw_markings()
+	_draw_skid_marks()
 	_draw_rails()
 	_draw_scenery()
 	_draw_items()
@@ -591,6 +710,16 @@ func _draw() -> void:
 	_draw_haze()
 	if flash > 0.01:
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(1.0, 1.0, 1.0, flash * 0.5))
+
+
+func _draw_skid_marks() -> void:
+	if skid_marks.is_empty():
+		return
+	var base_col := Color(0.04, 0.05, 0.06)
+	var w := car_w * 0.16
+	for sk in skid_marks:
+		var a: float = clampf(float(sk.life) / float(sk.max), 0.0, 1.0) * 0.44
+		draw_line(sk.p1, sk.p2, Color(base_col.r, base_col.g, base_col.b, a), w)
 
 
 func _draw_grass() -> void:
@@ -757,7 +886,7 @@ func _draw_cars() -> void:
 			_draw_player()
 			player_drawn = true
 		var center := Vector2(float(c.x), float(c.y))
-		if int(c.kind) == 2:
+		if int(c.get("kind", 0)) == 2:
 			Art.truck(self, center, float(c.w), float(c.h), c.color, Color(0.78, 0.79, 0.79))
 		else:
 			Art.car(self, center, float(c.w), float(c.h), c.color, {})
@@ -766,10 +895,10 @@ func _draw_cars() -> void:
 
 
 func _draw_player() -> void:
-	draw_set_transform(Vector2(player_x, player_y), player_tilt)
+	draw_set_transform(Vector2(player_x + _sx, player_y + _sy), player_tilt)
 	if boosting:
 		for side in [-1, 1]:
-			var fx: float = player_x * 0.0 + float(side) * car_w * 0.23
+			var fx: float = float(side) * car_w * 0.23
 			draw_circle(Vector2(fx, car_h * 0.50), car_w * 0.11, Color(1.0, 0.55, 0.18, 0.35))
 			draw_circle(Vector2(fx, car_h * 0.54), car_w * 0.07, Color(1.0, 0.85, 0.45, 0.45))
 	Art.car(self, Vector2.ZERO, car_w, car_h, player_color, {
@@ -786,7 +915,7 @@ func _draw_particles() -> void:
 	for p in particles:
 		var a: float = clampf(float(p.life) / float(p.max), 0.0, 1.0)
 		var col: Color = p.col
-		col.a = a
+		col.a = p.col.a * a
 		draw_circle(p.p, float(p.size) * (0.5 + a * 0.5), col)
 
 

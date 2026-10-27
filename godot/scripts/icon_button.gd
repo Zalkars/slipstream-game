@@ -39,6 +39,7 @@ func _gui_input(event: InputEvent) -> void:
 			_down = false
 			queue_redraw()
 			pressed.emit()
+		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_down = true
@@ -47,3 +48,4 @@ func _gui_input(event: InputEvent) -> void:
 			_down = false
 			queue_redraw()
 			pressed.emit()
+		accept_event()

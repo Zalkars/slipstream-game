@@ -9,7 +9,8 @@ config/description="Arcade traffic racer"
 run/main_scene="res://scenes/Main.tscn"
 config/features=PackedStringArray("4.3", "GL Compatibility")
 config/icon="res://icons/icon_432.png"
-config/version="0.2.0"
+config/version="0.2.1"
+config/quit_on_go_back=false
 boot_splash/bg_color=Color(0.07, 0.08, 0.09, 1)
 boot_splash/show_image=false
 
