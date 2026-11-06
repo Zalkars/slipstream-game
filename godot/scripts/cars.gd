@@ -13,7 +13,7 @@ const LIST := [
 		"speed": 740.0,
 		"top": 1100.0,
 		"grow": 340.0,
-		"handling": 12.0,
+		"handling": 11.6,
 		"color": "#b32b26",
 		"stripe": true,
 		"stripe_color": "#f0ede4",
@@ -27,8 +27,8 @@ const LIST := [
 		"price": 600,
 		"speed": 775.0,
 		"top": 1170.0,
-		"grow": 355.0,
-		"handling": 12.4,
+		"grow": 360.0,
+		"handling": 12.5,
 		"color": "#d8dade",
 		"stripe": false,
 		"stripe_color": "#2b3036",
@@ -42,8 +42,8 @@ const LIST := [
 		"price": 1600,
 		"speed": 805.0,
 		"top": 1230.0,
-		"grow": 370.0,
-		"handling": 12.1,
+		"grow": 395.0,
+		"handling": 12.0,
 		"color": "#29496e",
 		"stripe": true,
 		"stripe_color": "#f0ede4",
@@ -57,8 +57,8 @@ const LIST := [
 		"price": 3200,
 		"speed": 840.0,
 		"top": 1300.0,
-		"grow": 390.0,
-		"handling": 13.2,
+		"grow": 405.0,
+		"handling": 13.8,
 		"color": "#d79a25",
 		"stripe": true,
 		"stripe_color": "#1c2024",
@@ -72,8 +72,8 @@ const LIST := [
 		"price": 5600,
 		"speed": 880.0,
 		"top": 1380.0,
-		"grow": 410.0,
-		"handling": 13.8,
+		"grow": 430.0,
+		"handling": 15.4,
 		"color": "#1e2228",
 		"stripe": true,
 		"stripe_color": "#e23b30",
@@ -92,10 +92,10 @@ static func speed_rating(car: Dictionary) -> int:
 
 
 static func accel_rating(car: Dictionary) -> int:
-	var t := clampf((float(car.grow) - 320.0) / 90.0, 0.0, 1.0)
+	var t := clampf((float(car.grow) - 330.0) / 100.0, 0.0, 1.0)
 	return 1 + int(round(9.0 * t))
 
 
 static func grip_rating(car: Dictionary) -> int:
-	var t := clampf((float(car.handling) - 11.0) / 2.8, 0.0, 1.0)
+	var t := clampf((float(car.handling) - 11.2) / 4.2, 0.0, 1.0)
 	return 1 + int(round(9.0 * t))

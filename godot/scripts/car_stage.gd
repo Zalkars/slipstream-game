@@ -22,18 +22,29 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	var c := size * 0.5
 	Art.rr(self, Rect2(Vector2.ZERO, size), Color("#0b0e11"), 28)
-	# light beam from above
-	var beam := PackedVector2Array([
-		Vector2(c.x - size.x * 0.10, 0.0),
-		Vector2(c.x + size.x * 0.10, 0.0),
-		Vector2(c.x + size.x * 0.44, size.y * 0.72),
-		Vector2(c.x - size.x * 0.44, size.y * 0.72),
-	])
-	draw_colored_polygon(beam, Color(0.85, 0.88, 0.92, 0.035))
-	# soft spotlight
-	for i in range(5):
-		var r := size.x * (0.16 + float(i) * 0.065)
-		draw_circle(c + Vector2(0, size.y * 0.16), r, Color(0.95, 0.86, 0.70, 0.020))
+	# light beam from above: soft vertical gradient cone
+	var bw0 := size.x * 0.10
+	var bw1 := size.x * 0.44
+	var by0 := 0.0
+	var by1 := size.y * 0.72
+	var bands := 12
+	for i in range(bands):
+		var k0 := float(i) / float(bands)
+		var k1 := float(i + 1) / float(bands)
+		var w0 := lerpf(bw0, bw1, k0)
+		var w1 := lerpf(bw0, bw1, k1)
+		var y0 := lerpf(by0, by1, k0)
+		var y1 := lerpf(by0, by1, k1)
+		var a := 0.18 * lerpf(1.30, 0.35, (k0 + k1) * 0.5) / float(bands)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(c.x - w0, y0), Vector2(c.x + w0, y0),
+			Vector2(c.x + w1, y1), Vector2(c.x - w1, y1),
+		]), Color(0.86, 0.89, 0.93, a))
+	# soft spotlight floor glow with gentle edge falloff
+	for i in range(9):
+		var r := size.x * (0.10 + float(i) * 0.065) * (0.55 + 0.30 * sin(float(i) * 1.3))
+		var inv := 1.0 - float(i) / 9.0
+		draw_circle(c + Vector2(0, size.y * 0.16), r, Color(0.98, 0.90, 0.74, 0.012 * (1.0 + inv * 2.2)))
 
 	# turntable
 	var plat := c + Vector2(0, size.y * 0.22)

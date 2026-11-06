@@ -2,7 +2,7 @@ extends Node2D
 
 # Screen manager: menu, garage, settings, HUD, pause, result + persistence.
 
-const VERSION := "0.2.1"
+const VERSION := "0.3.0"
 const SAVE_PATH := "user://slipstream.cfg"
 const START_COINS := 300
 const VolumeSlider = preload("res://scripts/volume_slider.gd")
@@ -24,6 +24,12 @@ var score_label: Label
 var combo_label: Label
 var coins_label: Label
 var speed_label: Label
+var slip_label: Label
+var weather_label: Label
+var brake_heat_bar: ProgressBar
+var brake_heat_fill: StyleBoxFlat
+var brake_heat_mark: ColorRect
+var overheat_label: Label
 var swipe_hint: Label
 var nitro_btn: NitroButton
 var pad_left: PadButton
@@ -64,6 +70,9 @@ var tutorial_step := 0
 var tutorial_timer := 0.0
 var tutorial_done := false
 var _step2_prompted := false
+var _nitro_prompted := false
+var _was_overheated := false
+var _overheat_recovered_t := 0.0
 
 var result_score: Label
 var result_record: Label
@@ -111,9 +120,14 @@ func _ready() -> void:
 	game.hud_changed.connect(_on_hud)
 	game.run_ended.connect(_on_crashed)
 	game.near_miss.connect(_on_near)
+	game.cut_in.connect(_on_cut_in)
 	game.pickup_taken.connect(_on_pickup)
 	game.lane_changed.connect(_on_game_lane_changed)
 	game.brake_state_changed.connect(_on_game_brake_changed)
+	game.status_changed.connect(_on_status_changed)
+	game.rewind_started.connect(_on_rewind_started)
+	game.rewind_finished.connect(_on_rewind_finished)
+	game.nitro_boosted.connect(_on_game_nitro_boosted)
 
 	ui = CanvasLayer.new()
 	ui.layer = 5
@@ -151,50 +165,75 @@ func _process(delta: float) -> void:
 		if _hint_t <= 0.0 and swipe_hint != null:
 			swipe_hint.visible = false
 
+	if _overheat_recovered_t > 0.0:
+		_overheat_recovered_t = maxf(0.0, _overheat_recovered_t - delta)
+		if _overheat_recovered_t <= 0.0 and overheat_label != null and not _was_overheated:
+			overheat_label.visible = false
+
 	if tutorial_active:
 		tutorial_timer += delta
-		if tutorial_step == 1:
-			if tutorial_timer >= 1.4:
-				if tutorial_panel != null and not tutorial_panel.visible:
-					tutorial_panel.visible = true
-					tutorial_title.text = "ОБУЧЕНИЕ · ПЕРЕСТРОЕНИЕ"
-					tutorial_title.add_theme_color_override("font_color", amber)
-					match control_mode:
-						"zones":
-							tutorial_text.text = "Нажмите ПРАВУЮ или ЛЕВУЮ зону экрана для перестроения"
-						"buttons":
-							tutorial_text.text = "Нажмите КНОПКУ СО СТРЕЛКОЙ для перестроения"
-						"swipe":
-							tutorial_text.text = "СВАЙПНИТЕ вправо или влево для перестроения"
+		match tutorial_step:
+			1:
+				if tutorial_timer >= 1.4:
+					if tutorial_panel != null and not tutorial_panel.visible:
+						tutorial_panel.visible = true
+						tutorial_title.text = "ОБУЧЕНИЕ · ПЕРЕСТРОЕНИЕ"
+						tutorial_title.add_theme_color_override("font_color", amber)
+						match control_mode:
+							"zones":
+								tutorial_text.text = "Нажмите ПРАВУЮ или ЛЕВУЮ зону экрана для перестроения"
+							"buttons":
+								tutorial_text.text = "Нажмите КНОПКУ СО СТРЕЛКОЙ для перестроения"
+							"swipe":
+								tutorial_text.text = "СВАЙПНИТЕ вправо или влево для перестроения"
+						if game != null:
+							game.spawn_tutorial_car(game.lane)
+							game.time_scale = 0.16
+			2:
+				if tutorial_timer >= 2.0 and not _step2_prompted:
+					_step2_prompted = true
+					if tutorial_panel != null:
+						tutorial_panel.visible = true
+						tutorial_title.text = "ОБУЧЕНИЕ · ТОРМОЖЕНИЕ"
+						tutorial_title.add_theme_color_override("font_color", amber)
+						match control_mode:
+							"zones":
+								tutorial_text.text = "Нажмите ОБЕ СТОРОНЫ экрана для тормоза.\n(Не держите долго — тормоза перегреваются!)"
+							"buttons":
+								tutorial_text.text = "Зажмите кнопку «ТОРМОЗ», чтобы сбросить скорость.\n(Не держите долго — тормоза перегреваются!)"
+							"swipe":
+								tutorial_text.text = "СВАЙПНИТЕ ВНИЗ для включения тормоза.\n(Не держите долго — тормоза перегреваются!)"
 					if game != null:
 						game.spawn_tutorial_car(game.lane)
 						game.time_scale = 0.16
-		elif tutorial_step == 2:
-			if tutorial_timer >= 2.0 and not _step2_prompted:
-				_step2_prompted = true
-				if tutorial_panel != null:
-					tutorial_panel.visible = true
-					tutorial_title.text = "ОБУЧЕНИЕ · ТОРМОЖЕНИЕ"
-					tutorial_title.add_theme_color_override("font_color", amber)
-					match control_mode:
-						"zones":
-							tutorial_text.text = "Нажмите ОБЕ СТОРОНЫ экрана одновременно для тормоза"
-						"buttons":
-							tutorial_text.text = "Зажмите кнопку «ТОРМОЗ», чтобы сбросить скорость"
-						"swipe":
-							tutorial_text.text = "СВАЙПНИТЕ ВНИЗ для включения тормоза"
-				if game != null:
-					game.spawn_tutorial_car(game.lane)
-					game.time_scale = 0.16
-		elif tutorial_step == 3:
-			if tutorial_timer >= 2.0:
-				if tutorial_panel != null:
-					tutorial_panel.visible = false
-				tutorial_active = false
-				tutorial_done = true
-				if game != null:
-					game.time_scale = 1.0
-				_save()
+			3:
+				if tutorial_timer >= 1.7 and not _nitro_prompted:
+					_nitro_prompted = true
+					if tutorial_panel != null:
+						tutorial_panel.visible = true
+						tutorial_title.text = "ОБУЧЕНИЕ · НИТРО"
+						tutorial_title.add_theme_color_override("font_color", amber)
+						match control_mode:
+							"zones":
+								tutorial_text.text = "Нитро копится за обгоны впритирку. Дважды нажмите на экран или кнопку с молнией!"
+							"buttons":
+								tutorial_text.text = "Нитро копится за обгоны впритирку. Нажмите кнопку с молнией справа внизу"
+							"swipe":
+								tutorial_text.text = "Нитро копится за обгоны впритирку. СВАЙПНИТЕ ВВЕРХ, чтобы ускориться"
+					if game != null:
+						game.nitro = 1.0
+						game._nitro_cooldown = 0.0
+						game.time_scale = 0.35
+			4:
+				if tutorial_timer >= 3.2:
+					if tutorial_panel != null:
+						tutorial_panel.visible = false
+					tutorial_active = false
+					tutorial_done = true
+					if game != null:
+						game.time_scale = 1.0
+						game.set_tutorial_mode(false)
+					_save()
 
 
 func _setup_fonts() -> void:
@@ -367,15 +406,19 @@ func start_game(force_tutorial := false) -> void:
 		tutorial_step = 1
 		tutorial_timer = 0.0
 		_step2_prompted = false
+		_nitro_prompted = false
 		if tutorial_panel != null:
 			tutorial_panel.visible = false
 	else:
 		tutorial_active = false
 		_step2_prompted = false
+		_nitro_prompted = false
 		if tutorial_panel != null:
 			tutorial_panel.visible = false
 
 	game.start_run()
+	game.set_tutorial_mode(tutorial_active)
+	_was_overheated = false
 	Sfx.set_paused(false)
 	Sfx.play_engine()
 	Sfx.play_music()
@@ -444,8 +487,11 @@ func _on_game_brake_changed(is_braking: bool) -> void:
 	if is_braking and tutorial_active and tutorial_step == 2:
 		tutorial_step = 3
 		tutorial_timer = 0.0
+		_nitro_prompted = false
 		if game != null:
 			game.time_scale = 1.0
+			game.nitro = 1.0
+			game._nitro_cooldown = 0.0
 		if tutorial_panel != null:
 			tutorial_title.text = "ПРЕВОСХОДНО!"
 			tutorial_title.add_theme_color_override("font_color", Color("#5ddb75"))
@@ -460,6 +506,8 @@ func _skip_tutorial() -> void:
 		tutorial_panel.visible = false
 	if game != null:
 		game.time_scale = 1.0
+		game.set_tutorial_mode(false)
+	Sfx.rewind_stop()
 	_save()
 
 
@@ -470,8 +518,120 @@ func _tap_nitro() -> void:
 		Sfx.boost_burst()
 
 
+func _on_game_nitro_boosted() -> void:
+	if tutorial_active and tutorial_step == 3:
+		tutorial_step = 4
+		tutorial_timer = 0.0
+		if game != null:
+			game.time_scale = 1.0
+		if tutorial_panel != null:
+			tutorial_panel.visible = true
+			tutorial_title.text = "СЛИПСТРИМ И ОБГОН"
+			tutorial_title.add_theme_color_override("font_color", Color("#7fc4ff"))
+			tutorial_text.text = "Держитесь сзади для слипстрима. Обгон перед носом машины восстанавливает нитро!"
+		Sfx.record()
+
+
 func _on_near(_combo: int) -> void:
 	Sfx.whoosh()
+
+
+func _on_cut_in(_combo: int) -> void:
+	Sfx.cut_in()
+
+
+func _on_status_changed(slip: float, heat: float, over: bool) -> void:
+	if slip_label != null:
+		slip_label.visible = slip > 0.18 and in_game and not result_open
+		if slip_label.visible:
+			slip_label.text = "СЛИПСТРИМ  +%d%%" % int(round(slip * Game.SLIP_BONUS * 100.0))
+	if brake_heat_bar != null:
+		brake_heat_bar.value = heat
+		var show_bar := in_game and not result_open and (heat > 0.02 or over)
+		brake_heat_bar.visible = show_bar
+		if brake_heat_mark != null:
+			brake_heat_mark.visible = show_bar
+	if brake_heat_fill != null:
+		if over:
+			brake_heat_fill.bg_color = Color("#ff3b2f")
+		else:
+			brake_heat_fill.bg_color = Color("#f2b134").lerp(Color("#e23b30"), clampf((heat - 0.55) / 0.45, 0.0, 1.0))
+	if overheat_label != null:
+		if over:
+			overheat_label.visible = in_game and not result_open
+			overheat_label.text = "ОСТЫВАНИЕ... %d%% (ЖДИТЕ 28%%)" % int(round(heat * 100.0))
+			overheat_label.add_theme_color_override("font_color", Color("#ff4438"))
+		elif _was_overheated and not over:
+			_overheat_recovered_t = 1.6
+			overheat_label.visible = in_game and not result_open
+			overheat_label.text = "ТОРМОЗА ГОТОВЫ!"
+			overheat_label.add_theme_color_override("font_color", Color("#5ddb75"))
+		elif _overheat_recovered_t > 0.0:
+			overheat_label.visible = in_game and not result_open
+		else:
+			overheat_label.visible = false
+	if over and not _was_overheated:
+		brake_btn.reset()
+		if zones_pad != null:
+			zones_pad.reset()
+	_was_overheated = over
+
+
+func _on_rewind_started() -> void:
+	Sfx.rewind_start()
+	if tutorial_panel != null:
+		tutorial_panel.visible = true
+		tutorial_title.text = "ОТМАТКА ВРЕМЕНИ"
+		tutorial_title.add_theme_color_override("font_color", Color("#7fc4ff"))
+		tutorial_text.text = "Без Game Over: возвращаемся на пару секунд назад."
+
+
+func _on_rewind_finished() -> void:
+	Sfx.rewind_stop()
+	if tutorial_panel != null and tutorial_active:
+		_refresh_tutorial_prompt()
+
+
+func _refresh_tutorial_prompt() -> void:
+	if tutorial_panel == null or not tutorial_active:
+		return
+	tutorial_panel.visible = true
+	tutorial_title.add_theme_color_override("font_color", amber)
+	match tutorial_step:
+		1:
+			tutorial_title.text = "ОБУЧЕНИЕ · ПЕРЕСТРОЕНИЕ"
+			match control_mode:
+				"zones":
+					tutorial_text.text = "Нажмите ПРАВУЮ или ЛЕВУЮ зону экрана для перестроения"
+				"buttons":
+					tutorial_text.text = "Нажмите КНОПКУ СО СТРЕЛКОЙ для перестроения"
+				"swipe":
+					tutorial_text.text = "СВАЙПНИТЕ вправо или влево для перестроения"
+		2:
+			tutorial_title.text = "ОБУЧЕНИЕ · ТОРМОЖЕНИЕ"
+			match control_mode:
+				"zones":
+					tutorial_text.text = "Нажмите ОБЕ СТОРОНЫ экрана для тормоза.\n(Не держите долго — тормоза перегреваются!)"
+				"buttons":
+					tutorial_text.text = "Зажмите кнопку «ТОРМОЗ», чтобы сбросить скорость.\n(Не держите долго — тормоза перегреваются!)"
+				"swipe":
+					tutorial_text.text = "СВАЙПНИТЕ ВНИЗ для включения тормоза.\n(Не держите долго — тормоза перегреваются!)"
+		3:
+			tutorial_title.text = "ОБУЧЕНИЕ · НИТРО"
+			match control_mode:
+				"zones":
+					tutorial_text.text = "Нитро копится за обгоны впритирку. Дважды нажмите на экран или кнопку с молнией!"
+				"buttons":
+					tutorial_text.text = "Нитро копится за обгоны впритирку. Нажмите кнопку с молнией справа внизу"
+				"swipe":
+					tutorial_text.text = "Нитро копится за обгоны впритирку. СВАЙПНИТЕ ВВЕРХ, чтобы ускориться"
+		4:
+			tutorial_title.text = "СЛИПСТРИМ И ОБГОН"
+			tutorial_title.add_theme_color_override("font_color", Color("#7fc4ff"))
+			tutorial_text.text = "Держитесь сзади для слипстрима. Обгон перед носом машины восстанавливает нитро!"
+		_:
+			tutorial_title.text = "ГОТОВО!"
+			tutorial_text.text = "Обучение пройдено. Теперь — в плотный поток!"
 
 
 func _on_pickup(kind: int) -> void:
@@ -486,12 +646,14 @@ func _on_hud(score: int, kmh: int, nitro: float, combo: int, run_coins: int, boo
 	speed_label.text = str(kmh)
 	nitro_btn.set_charge(nitro)
 	nitro_btn.set_active(boosting)
+	if weather_label != null:
+		weather_label.text = game.weather_status_text()
 	coins_label.text = ("МОНЕТЫ  " + _fmt(run_coins)) if run_coins > 0 else ""
 	if combo > 1:
 		combo_label.text = "×%d СЕРИЯ" % combo
 	else:
 		combo_label.text = ""
-	Sfx.update_engine(kmh, boosting, game.braking)
+	Sfx.update_engine(game.speed, boosting, game.braking, game.overheated, game.slip)
 
 
 func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
@@ -501,6 +663,8 @@ func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
 			tutorial_panel.visible = false
 		if game != null:
 			game.time_scale = 1.0
+			game.set_tutorial_mode(false)
+		Sfx.rewind_stop()
 	Sfx.crash()
 	Sfx.stop_engine()
 	await get_tree().create_timer(1.05).timeout
@@ -904,6 +1068,48 @@ func _build_hud() -> void:
 	_place(unit, 392, 176, 282, 24)
 	hud.add_child(unit)
 
+	slip_label = _label("", 18, Color("#9bd6ff"), font_bold)
+	_place(slip_label, 46, 188, 380, 26)
+	slip_label.visible = false
+	hud.add_child(slip_label)
+
+	weather_label = _label("", 15, Color(0.64, 0.71, 0.78), font_bold)
+	_place(weather_label, 46, 216, 350, 20)
+	hud.add_child(weather_label)
+
+	var heat_cap := _label("ТОРМОЗА", 14, Color(0.68, 0.72, 0.74), font_bold, HORIZONTAL_ALIGNMENT_RIGHT)
+	_place(heat_cap, 430, 202, 244, 16)
+	hud.add_child(heat_cap)
+
+	brake_heat_bar = ProgressBar.new()
+	brake_heat_bar.show_percentage = false
+	brake_heat_bar.max_value = 1.0
+	brake_heat_bar.value = 0.0
+	brake_heat_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_place(brake_heat_bar, 430, 220, 244, 9)
+	var hbg := StyleBoxFlat.new()
+	hbg.bg_color = Color(1, 1, 1, 0.08)
+	hbg.set_corner_radius_all(5)
+	brake_heat_fill = StyleBoxFlat.new()
+	brake_heat_fill.bg_color = amber
+	brake_heat_fill.set_corner_radius_all(5)
+	brake_heat_bar.add_theme_stylebox_override("background", hbg)
+	brake_heat_bar.add_theme_stylebox_override("fill", brake_heat_fill)
+	brake_heat_bar.visible = false
+	hud.add_child(brake_heat_bar)
+
+	brake_heat_mark = ColorRect.new()
+	brake_heat_mark.color = Color(1.0, 1.0, 1.0, 0.45)
+	brake_heat_mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_place(brake_heat_mark, 430.0 + 244.0 * 0.28, 219.0, 2.0, 11.0)
+	brake_heat_mark.visible = false
+	hud.add_child(brake_heat_mark)
+
+	overheat_label = _label("ПЕРЕГРЕВ ТОРМОЗОВ", 14, Color("#ff5a48"), font_bold, HORIZONTAL_ALIGNMENT_RIGHT)
+	_place(overheat_label, 396, 232, 278, 18)
+	overheat_label.visible = false
+	hud.add_child(overheat_label)
+
 	var bot := _vgrad(Color(0.02, 0.025, 0.03, 0.0), Color(0.02, 0.025, 0.03, 0.14), Color(0.02, 0.025, 0.03, 0.46))
 	_place_bottom(bot, 0, 0, 720, 330)
 	hud.add_child(bot)
@@ -914,6 +1120,7 @@ func _build_hud() -> void:
 	zones_pad.lane_left.connect(func(): game.move_lane(-1))
 	zones_pad.lane_right.connect(func(): game.move_lane(1))
 	zones_pad.brake_changed.connect(func(on: bool): game.set_braking(on))
+	zones_pad.nitro_triggered.connect(_tap_nitro)
 	_place_bottom(zones_pad, 0, 0, 720, 260)
 	hud.add_child(zones_pad)
 
@@ -921,27 +1128,27 @@ func _build_hud() -> void:
 	pad_left.kind = "left"
 	pad_left.label_font = font_bold
 	pad_left.pressed.connect(func(): game.move_lane(-1))
-	_place_bottom(pad_left, 20, 28, 136, 136)
+	_place_bottom(pad_left, 20, 44, 136, 136)
 	hud.add_child(pad_left)
 
 	pad_right = PadButton.new()
 	pad_right.kind = "right"
 	pad_right.label_font = font_bold
 	pad_right.pressed.connect(func(): game.move_lane(1))
-	_place_bottom(pad_right, 170, 28, 136, 136)
+	_place_bottom(pad_right, 170, 44, 136, 136)
 	hud.add_child(pad_right)
 
 	brake_btn = PadButton.new()
 	brake_btn.kind = "brake"
 	brake_btn.label_font = font_bold
 	brake_btn.held_changed.connect(func(on: bool): game.set_braking(on))
-	_place_bottom(brake_btn, 330, 28, 128, 128)
+	_place_bottom(brake_btn, 330, 44, 128, 128)
 	hud.add_child(brake_btn)
 
 	nitro_btn = NitroButton.new()
 	nitro_btn.label_font = font_bold
 	nitro_btn.tapped.connect(_tap_nitro)
-	_place_bottom(nitro_btn, 544, 24, 152, 152)
+	_place_bottom(nitro_btn, 544, 40, 152, 152)
 	hud.add_child(nitro_btn)
 
 	swipe_hint = _label("← → ПОЛОСЫ   |   ↓ ТОРМОЗ   |   ↑ НИТРО", 19, Color(0.92, 0.94, 0.96, 0.92), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
@@ -1093,7 +1300,7 @@ func _update_garage() -> void:
 	g_name.text = str(car.name)
 	g_sub.text = str(car.sub)
 	g_desc.text = str(car.desc)
-	var top_kmh := int(float(car.top) * 0.3)
+	var top_kmh := Game.top_kmh(float(car.top))
 	var sr := Cars.speed_rating(car)
 	var ar := Cars.accel_rating(car)
 	var gr := Cars.grip_rating(car)
@@ -1395,10 +1602,11 @@ func _build_how() -> void:
 
 	var items := [
 		["3 РЕЖИМА УПРАВЛЕНИЯ", "Две зоны (руль по бокам, обе — тормоз), крупные кнопки или свайпы (вниз — тормоз, вверх — нитро). Выбор в настройках."],
-		["ТОРМОЖЕНИЕ", "Сбрасывай скорость, чтобы пропустить плотную волну трафика и перестроиться."],
-		["НИТРО", "Копится за близкие обгоны и синие баллоны. Даёт мощный рывок вперёд."],
+		["ТОРМОЖЕНИЕ", "Тормоза греются: долго держать педаль нельзя. Дай им остыть, иначе они отключатся."],
+		["НИТРО", "Копится за обгоны впритирку — когда перестраиваешься прямо перед машиной. Синие баллоны тоже дают заряд."],
+		["СЛИПСТРИМ", "Держись за машиной впереди — воздушный мешок даёт прибавку к скорости."],
 		["МОНЕТЫ", "Золото на дороге и дистанция пополняют кошелёк. Новые машины открываются в гараже."],
-		["ОБУЧЕНИЕ", "В начале игры подскажет, как маневрировать в потоке с замедлением времени."],
+		["ОБУЧЕНИЕ", "Покажет перестроение, торможение и нитро. Ошибки отматывают время назад."],
 	]
 	for it in items:
 		vb.add_child(_label(it[0], 19, accent, font_bold))
@@ -1760,7 +1968,7 @@ func _update_all_labels() -> void:
 		menu_best.text = "РЕКОРД  " + _fmt(best)
 	if menu_car != null:
 		var car := Cars.get_car(selected)
-		menu_car.text = "ВАША МАШИНА · %s · %d КМ/Ч" % [str(car.name), int(float(car.top) * 0.3)]
+		menu_car.text = "ВАША МАШИНА · %s · %d КМ/Ч" % [str(car.name), Game.top_kmh(float(car.top))]
 	if garage_coins != null:
 		garage_coins.text = _fmt(coins)
 	if settings_coins != null:
@@ -1811,6 +2019,7 @@ func _capture_seq() -> void:
 	await _shot("how")
 	_hide_how()
 
+	tutorial_done = true
 	start_game()
 	await get_tree().create_timer(1.5).timeout
 	game.move_lane(1)

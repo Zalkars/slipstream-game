@@ -43,11 +43,27 @@ static func soft_shadow(ci: CanvasItem, rect: Rect2, radius: float, strength := 
 
 # --- cars -------------------------------------------------------------------
 
+static func traffic(ci: CanvasItem, center: Vector2, w: float, h: float, kind: int, body: Color, opts := {}) -> void:
+	match kind:
+		2:
+			truck(ci, center, w, h, body, opts.get("trailer", Color(0.78, 0.79, 0.79)), opts)
+		3:
+			van(ci, center, w, h, body, opts)
+		4:
+			bus(ci, center, w, h, body, opts)
+		6:
+			pickup(ci, center, w, h, body, opts)
+		_:
+			car(ci, center, w, h, body, opts)
+
+
 static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, opts := {}) -> void:
 	var is_player: bool = opts.get("player", false)
 	var stripes: bool = opts.get("stripe", is_player)
 	var wing: bool = opts.get("wing", is_player)
 	var braking: bool = opts.get("brake", false)
+	var rails: bool = opts.get("rails", false)
+	var roof_sign: bool = opts.get("roof_sign", false)
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var dark := Color(0.075, 0.082, 0.09)
 	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
@@ -55,13 +71,31 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	soft_shadow(ci, r, w * 0.22, 0.30)
 
 	# wheels (behind the body)
+	var heat: float = float(opts.get("heat", 0.0))
 	var ww := w * 0.155
 	var wh := h * 0.145
 	for wy in [r.position.y + h * 0.145, r.position.y + h * 0.665]:
+		var left_c := Vector2(r.position.x - ww * 0.30 + ww * 0.5, wy + wh * 0.5)
+		var right_c := Vector2(r.end.x - ww * 0.70 + ww * 0.5, wy + wh * 0.5)
 		rr(ci, Rect2(r.position.x - ww * 0.30, wy, ww, wh), dark, ww * 0.34)
 		rr(ci, Rect2(r.end.x - ww * 0.70, wy, ww, wh), dark, ww * 0.34)
-		# small brake disc glint
-		ci.draw_circle(Vector2(r.position.x - ww * 0.30 + ww * 0.5, wy + wh * 0.5), ww * 0.18, Color(0.42, 0.44, 0.47, 0.5))
+		if heat > 0.35:
+			# Glowing heated brake disc (cherry red to fiery incandescent orange)
+			var ht := clampf((heat - 0.35) / 0.65, 0.0, 1.0)
+			var glow_col := Color(1.0, 0.22 + ht * 0.45, 0.06, 0.55 + ht * 0.35)
+			# Thermal aura
+			ci.draw_circle(left_c, ww * 0.42, Color(1.0, 0.35, 0.05, 0.20 * ht))
+			ci.draw_circle(right_c, ww * 0.42, Color(1.0, 0.35, 0.05, 0.20 * ht))
+			# Incandescent rotor
+			ci.draw_circle(left_c, ww * 0.22, glow_col)
+			ci.draw_circle(right_c, ww * 0.22, glow_col)
+			if ht > 0.65:
+				var hot_core := Color(1.0, 0.95, 0.75, 0.65 * (ht - 0.65) / 0.35)
+				ci.draw_circle(left_c, ww * 0.11, hot_core)
+				ci.draw_circle(right_c, ww * 0.11, hot_core)
+		else:
+			ci.draw_circle(left_c, ww * 0.18, Color(0.42, 0.44, 0.47, 0.5))
+			ci.draw_circle(right_c, ww * 0.18, Color(0.42, 0.44, 0.47, 0.5))
 
 	# body
 	rr(ci, r, body, w * 0.21, edge, max(2, int(w * 0.018)))
@@ -88,6 +122,15 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 
 	# roof
 	rr(ci, Rect2(r.position.x + w * 0.11, r.position.y + h * 0.385, w * 0.78, h * 0.245), body.darkened(0.10), w * 0.08)
+
+	if rails:
+		# roof rails make an ordinary body read as a crossover / SUV
+		rr(ci, Rect2(r.position.x + w * 0.155, r.position.y + h * 0.405, w * 0.042, h * 0.205), dark, w * 0.02)
+		rr(ci, Rect2(r.end.x - w * 0.197, r.position.y + h * 0.405, w * 0.042, h * 0.205), dark, w * 0.02)
+	if roof_sign:
+		# taxi-style roof sign
+		rr(ci, Rect2(r.position.x + w * 0.335, r.position.y + h * 0.452, w * 0.33, h * 0.088), Color(0.96, 0.84, 0.34), w * 0.03, Color(0.22, 0.19, 0.12, 0.65), 1)
+		rr(ci, Rect2(r.position.x + w * 0.355, r.position.y + h * 0.468, w * 0.29, h * 0.032), Color(0.20, 0.18, 0.13, 0.55), w * 0.01)
 
 	# side windows
 	rr(ci, Rect2(r.position.x + w * 0.045, r.position.y + h * 0.40, w * 0.075, h * 0.21), glass, w * 0.03)
@@ -137,7 +180,7 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	rr(ci, Rect2(r.position.x + w * 0.34, r.position.y + h * 0.012, w * 0.32, h * 0.018), dark, w * 0.01)
 
 
-static func truck(ci: CanvasItem, center: Vector2, w: float, h: float, cab: Color, trailer: Color) -> void:
+static func truck(ci: CanvasItem, center: Vector2, w: float, h: float, cab: Color, trailer: Color, opts := {}) -> void:
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var dark := Color(0.075, 0.082, 0.09)
 	soft_shadow(ci, r, w * 0.12, 0.32)
@@ -167,8 +210,175 @@ static func truck(ci: CanvasItem, center: Vector2, w: float, h: float, cab: Colo
 	rr(ci, Rect2(cr.position.x + w * 0.12, cr.position.y + h * 0.005, w * 0.20, h * 0.018), Color(0.97, 0.95, 0.86), 2)
 	rr(ci, Rect2(cr.end.x - w * 0.32, cr.position.y + h * 0.005, w * 0.20, h * 0.018), Color(0.97, 0.95, 0.86), 2)
 	# trailer taillights
-	rr(ci, Rect2(tr.position.x + w * 0.05, tr.end.y - h * 0.035, w * 0.18, h * 0.016), Color(0.78, 0.11, 0.11), 2)
-	rr(ci, Rect2(tr.end.x - w * 0.23, tr.end.y - h * 0.035, w * 0.18, h * 0.016), Color(0.78, 0.11, 0.11), 2)
+	var braking: bool = opts.get("brake", false)
+	var tail := Color(0.78, 0.11, 0.11)
+	if braking:
+		tail = Color(1.0, 0.30, 0.18)
+		ci.draw_circle(Vector2(tr.position.x + w * 0.14, tr.end.y - h * 0.027), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+		ci.draw_circle(Vector2(tr.end.x - w * 0.14, tr.end.y - h * 0.027), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+	rr(ci, Rect2(tr.position.x + w * 0.05, tr.end.y - h * 0.035, w * 0.18, h * 0.016), tail, 2)
+	rr(ci, Rect2(tr.end.x - w * 0.23, tr.end.y - h * 0.035, w * 0.18, h * 0.016), tail, 2)
+
+
+static func van(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, _opts := {}) -> void:
+	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
+	var dark := Color(0.075, 0.082, 0.09)
+	var glass := Color(0.105, 0.145, 0.185)
+	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
+	soft_shadow(ci, r, w * 0.16, 0.30)
+
+	var ww := w * 0.15
+	var wh := h * 0.095
+	for wy in [r.position.y + h * 0.24, r.position.y + h * 0.74]:
+		rr(ci, Rect2(r.position.x - ww * 0.28, wy, ww, wh), dark, ww * 0.32)
+		rr(ci, Rect2(r.end.x - ww * 0.72, wy, ww, wh), dark, ww * 0.32)
+
+	# body
+	rr(ci, r, body, w * 0.14, edge, max(2, int(w * 0.018)))
+	# hood strip
+	rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.012, w * 0.80, h * 0.040), body.lightened(0.06), w * 0.03)
+
+	# windshield
+	rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.055, w * 0.80, h * 0.075), glass, w * 0.04, Color(0.3, 0.35, 0.4, 0.5), 1)
+	rr(ci, Rect2(r.position.x + w * 0.13, r.position.y + h * 0.064, w * 0.74, h * 0.022), Color(0.55, 0.64, 0.72, 0.30), w * 0.01)
+
+	# long cargo roof
+	rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.165, w * 0.83, h * 0.655), body.darkened(0.10), w * 0.06)
+	for i in range(1, 4):
+		var ry := r.position.y + h * (0.24 + 0.13 * float(i))
+		ci.draw_line(Vector2(r.position.x + w * 0.135, ry), Vector2(r.end.x - w * 0.135, ry), Color(1, 1, 1, 0.08), maxf(1.0, h * 0.005))
+	# roof rails
+	rr(ci, Rect2(r.position.x + w * 0.125, r.position.y + h * 0.20, w * 0.042, h * 0.55), Color(0.20, 0.21, 0.22, 0.85), w * 0.02)
+	rr(ci, Rect2(r.end.x - w * 0.167, r.position.y + h * 0.20, w * 0.042, h * 0.55), Color(0.20, 0.21, 0.22, 0.85), w * 0.02)
+
+	# mirrors
+	rr(ci, Rect2(r.position.x - w * 0.048, r.position.y + h * 0.125, w * 0.072, h * 0.026), dark, w * 0.02)
+	rr(ci, Rect2(r.end.x - w * 0.024, r.position.y + h * 0.125, w * 0.072, h * 0.026), dark, w * 0.02)
+
+	# rear doors
+	var dr := Rect2(r.position.x + w * 0.10, r.position.y + h * 0.835, w * 0.80, h * 0.125)
+	rr(ci, dr, body.darkened(0.06), w * 0.05, body.darkened(0.30), 1)
+	ci.draw_line(
+		Vector2(dr.position.x + dr.size.x * 0.5, dr.position.y + dr.size.y * 0.10),
+		Vector2(dr.position.x + dr.size.x * 0.5, dr.end.y - dr.size.y * 0.10),
+		Color(0, 0, 0, 0.30), maxf(1.0, w * 0.012)
+	)
+	rr(ci, Rect2(dr.position.x + w * 0.05, dr.position.y + h * 0.014, w * 0.33, h * 0.048), glass, w * 0.02)
+	rr(ci, Rect2(dr.end.x - w * 0.38, dr.position.y + h * 0.014, w * 0.33, h * 0.048), glass, w * 0.02)
+
+	# taillights
+	var braking: bool = _opts.get("brake", false)
+	var tail := Color(0.78, 0.11, 0.11)
+	if braking:
+		tail = Color(1.0, 0.30, 0.18)
+		ci.draw_circle(Vector2(r.position.x + w * 0.13, r.position.y + h * 0.97), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+		ci.draw_circle(Vector2(r.end.x - w * 0.13, r.position.y + h * 0.97), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+	rr(ci, Rect2(r.position.x + w * 0.055, r.position.y + h * 0.962, w * 0.155, h * 0.018), tail, w * 0.015)
+	rr(ci, Rect2(r.end.x - w * 0.21, r.position.y + h * 0.962, w * 0.155, h * 0.018), tail, w * 0.015)
+
+
+static func bus(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, opts := {}) -> void:
+	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
+	var accent: Color = opts.get("accent", Color(0.86, 0.27, 0.22))
+	var dark := Color(0.075, 0.082, 0.09)
+	var glass := Color(0.105, 0.145, 0.185)
+	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
+	soft_shadow(ci, r, w * 0.12, 0.34)
+
+	# three axles
+	var ww := w * 0.13
+	var wh := h * 0.072
+	for wy in [r.position.y + h * 0.12, r.position.y + h * 0.70, r.position.y + h * 0.84]:
+		rr(ci, Rect2(r.position.x - ww * 0.30, wy, ww, wh), dark, ww * 0.30)
+		rr(ci, Rect2(r.end.x - ww * 0.70, wy, ww, wh), dark, ww * 0.30)
+
+	# body
+	rr(ci, r, body, w * 0.10, edge, max(2, int(w * 0.016)))
+	# roof
+	rr(ci, Rect2(r.position.x + w * 0.08, r.position.y + h * 0.095, w * 0.84, h * 0.745), body.darkened(0.09), w * 0.06)
+	# livery stripes along the sides
+	rr(ci, Rect2(r.position.x + w * 0.032, r.position.y + h * 0.115, w * 0.034, h * 0.72), accent, w * 0.016)
+	rr(ci, Rect2(r.end.x - w * 0.066, r.position.y + h * 0.115, w * 0.034, h * 0.72), accent, w * 0.016)
+	# roof hatches
+	for i in range(3):
+		var hy := r.position.y + h * (0.17 + 0.21 * float(i))
+		rr(ci, Rect2(r.position.x + w * 0.30, hy, w * 0.40, h * 0.075), body.darkened(0.24), w * 0.02, Color(0, 0, 0, 0.25), 1)
+
+	# destination sign + windshield
+	rr(ci, Rect2(r.position.x + w * 0.33, r.position.y + h * 0.006, w * 0.34, h * 0.020), Color(0.97, 0.84, 0.36), w * 0.01)
+	rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.034, w * 0.80, h * 0.052), glass, w * 0.03, Color(0.3, 0.35, 0.4, 0.5), 1)
+	rr(ci, Rect2(r.position.x + w * 0.14, r.position.y + h * 0.042, w * 0.72, h * 0.016), Color(0.55, 0.64, 0.72, 0.28), w * 0.01)
+
+	# rear engine grille
+	var gr := Rect2(r.position.x + w * 0.16, r.position.y + h * 0.855, w * 0.68, h * 0.090)
+	rr(ci, gr, Color(0.10, 0.11, 0.12), w * 0.03, Color(0, 0, 0, 0.35), 1)
+	for i in range(4):
+		var gy := gr.position.y + gr.size.y * (0.22 + 0.19 * float(i))
+		ci.draw_line(Vector2(gr.position.x + w * 0.03, gy), Vector2(gr.end.x - w * 0.03, gy), Color(1, 1, 1, 0.07), maxf(1.0, h * 0.003))
+
+	# taillights
+	var bus_braking: bool = opts.get("brake", false)
+	var b_tail := Color(0.78, 0.11, 0.11)
+	if bus_braking:
+		b_tail = Color(1.0, 0.30, 0.18)
+		ci.draw_circle(Vector2(r.position.x + w * 0.13, r.position.y + h * 0.968), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+		ci.draw_circle(Vector2(r.end.x - w * 0.13, r.position.y + h * 0.968), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+	rr(ci, Rect2(r.position.x + w * 0.055, r.position.y + h * 0.958, w * 0.145, h * 0.020), b_tail, w * 0.015)
+	rr(ci, Rect2(r.end.x - w * 0.20, r.position.y + h * 0.958, w * 0.145, h * 0.020), b_tail, w * 0.015)
+
+
+static func pickup(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, opts := {}) -> void:
+	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
+	var dark := Color(0.075, 0.082, 0.09)
+	var glass := Color(0.105, 0.145, 0.185)
+	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
+	soft_shadow(ci, r, w * 0.20, 0.30)
+
+	var ww := w * 0.155
+	var wh := h * 0.125
+	for wy in [r.position.y + h * 0.18, r.position.y + h * 0.72]:
+		rr(ci, Rect2(r.position.x - ww * 0.30, wy, ww, wh), dark, ww * 0.34)
+		rr(ci, Rect2(r.end.x - ww * 0.70, wy, ww, wh), dark, ww * 0.34)
+
+	# body
+	rr(ci, r, body, w * 0.17, edge, max(2, int(w * 0.018)))
+	# hood
+	rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.045, w * 0.80, h * 0.115), body.lightened(0.06), w * 0.07)
+	# windshield
+	rr(ci, Rect2(r.position.x + w * 0.115, r.position.y + h * 0.175, w * 0.77, h * 0.090), glass, w * 0.05, Color(0.3, 0.35, 0.4, 0.5), 1)
+	rr(ci, Rect2(r.position.x + w * 0.145, r.position.y + h * 0.186, w * 0.71, h * 0.026), Color(0.55, 0.64, 0.72, 0.32), w * 0.01)
+	# cab roof
+	rr(ci, Rect2(r.position.x + w * 0.105, r.position.y + h * 0.285, w * 0.79, h * 0.185), body.darkened(0.10), w * 0.06)
+	# side windows
+	rr(ci, Rect2(r.position.x + w * 0.045, r.position.y + h * 0.300, w * 0.062, h * 0.150), glass, w * 0.03)
+	rr(ci, Rect2(r.end.x - w * 0.107, r.position.y + h * 0.300, w * 0.062, h * 0.150), glass, w * 0.03)
+	# mirrors
+	rr(ci, Rect2(r.position.x - w * 0.045, r.position.y + h * 0.220, w * 0.070, h * 0.028), dark, w * 0.02)
+	rr(ci, Rect2(r.end.x - w * 0.025, r.position.y + h * 0.220, w * 0.070, h * 0.028), dark, w * 0.02)
+
+	# cargo bed
+	var bed := Rect2(r.position.x + w * 0.075, r.position.y + h * 0.545, w * 0.85, h * 0.390)
+	rr(ci, bed, body.darkened(0.16), w * 0.05, edge, 2)
+	rr(ci, Rect2(bed.position.x + w * 0.045, bed.position.y + h * 0.022, bed.size.x - w * 0.090, bed.size.y - h * 0.045), Color(0.10, 0.11, 0.12), w * 0.03)
+	if opts.get("cargo", false):
+		var crate := Rect2(bed.position.x + w * 0.11, bed.position.y + h * 0.040, w * 0.40, h * 0.240)
+		rr(ci, crate, Color(0.56, 0.45, 0.30), w * 0.02, Color(0.32, 0.25, 0.16, 0.8), 1)
+		ci.draw_line(
+			Vector2(crate.position.x + crate.size.x * 0.5, crate.position.y + 2.0),
+			Vector2(crate.position.x + crate.size.x * 0.5, crate.end.y - 2.0),
+			Color(0.30, 0.24, 0.15, 0.55), maxf(1.0, w * 0.010)
+		)
+	# tailgate
+	rr(ci, Rect2(bed.position.x + w * 0.020, bed.end.y - h * 0.030, bed.size.x - w * 0.040, h * 0.028), body.lightened(0.05), w * 0.02)
+	# taillights
+	var p_braking: bool = opts.get("brake", false)
+	var p_tail := Color(0.78, 0.11, 0.11)
+	if p_braking:
+		p_tail = Color(1.0, 0.30, 0.18)
+		ci.draw_circle(Vector2(r.position.x + w * 0.15, r.position.y + h * 0.968), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+		ci.draw_circle(Vector2(r.end.x - w * 0.15, r.position.y + h * 0.968), w * 0.20, Color(1.0, 0.16, 0.10, 0.24))
+	rr(ci, Rect2(r.position.x + w * 0.065, r.position.y + h * 0.958, w * 0.165, h * 0.020), p_tail, w * 0.015)
+	rr(ci, Rect2(r.end.x - w * 0.230, r.position.y + h * 0.958, w * 0.165, h * 0.020), p_tail, w * 0.015)
 
 
 # --- pickups ----------------------------------------------------------------

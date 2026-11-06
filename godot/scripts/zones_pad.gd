@@ -8,6 +8,7 @@ extends Control
 signal lane_left
 signal lane_right
 signal brake_changed(on: bool)
+signal nitro_triggered
 
 var font_bold: Font
 var font_ui: Font
@@ -21,6 +22,9 @@ var _suppressed_touch_ids := {}
 var _left_down := false
 var _right_down := false
 var _braking := false
+
+var _last_tap_time := -999.0
+var _last_tap_side := 0
 
 var _pending_turn_side := 0 # -1 left, +1 right, 0 none
 var _pending_turn_timer := 0.0
@@ -51,6 +55,8 @@ func reset() -> void:
 	_pending_turn_timer = 0.0
 	_pending_turn_id = -999
 	_brake_release_cooldown = 0.0
+	_last_tap_time = -999.0
+	_last_tap_side = 0
 	if _braking:
 		_braking = false
 		brake_changed.emit(false)
@@ -111,6 +117,7 @@ func _on_touch_down(idx: int, pos: Vector2) -> void:
 		_pending_turn_side = 0
 		_pending_turn_timer = 0.0
 		_pending_turn_id = -999
+		_last_tap_time = -999.0
 		_suppress_all_current_touches()
 		if not _braking:
 			_braking = true
@@ -122,17 +129,28 @@ func _on_touch_down(idx: int, pos: Vector2) -> void:
 
 	if _braking:
 		_suppressed_touch_ids[idx] = true
+		_last_tap_time = -999.0
 		return
 
 	# If cooldown from a recent brake release is still running, suppress lingering finger
 	if _brake_release_cooldown > 0.0:
 		_suppressed_touch_ids[idx] = true
+		_last_tap_time = -999.0
 		return
 
-	# Buffer single tap briefly (45ms) so if the other thumb lands almost simultaneously to brake,
+	# Double-tap detection on either zone triggers nitro without reaching for bottom button
+	var now := float(Time.get_ticks_msec()) * 0.001
+	if now - _last_tap_time < 0.28 and side == _last_tap_side:
+		nitro_triggered.emit()
+		_last_tap_time = -999.0
+	else:
+		_last_tap_time = now
+		_last_tap_side = side
+
+	# Buffer single tap briefly (75ms) so if the other thumb lands almost simultaneously to brake,
 	# no accidental turn is triggered!
 	_pending_turn_side = side
-	_pending_turn_timer = 0.045
+	_pending_turn_timer = 0.075
 	_pending_turn_id = idx
 
 
