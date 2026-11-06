@@ -1,6 +1,6 @@
 # SLIPSTREAM
 
-**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.4.0**
+**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.5.0**
 
 [![Godot](https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org/)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](https://www.android.com/)
@@ -47,12 +47,13 @@
 ## APK
 
 **`Slipstream-0.4.0.apk`** — готовый файл для телефона (27,2 МБ).
+Сборка 0.5.0 пока не выложена: версия в проекте поднята, APK собирается командой ниже.
 Лежит в разделе [**Releases**](../../releases/latest).
 
 | | |
 |---|---|
 | Пакет | `com.slipstream.game` |
-| Версия | 0.4.0 (versionCode 7) |
+| Версия | 0.4.0 (versionCode 7) — в проекте уже 0.5.0 (versionCode 8), APK не пересобран |
 | Android | 7.0+ (minSdk 24), targetSdk 36 |
 | Архитектура | arm64-v8a (64-бит) |
 | Подпись | debug-ключом проекта; обновления должны быть подписаны тем же ключом |
@@ -223,7 +224,7 @@ $godot = "C:\path\to\Godot_v4.7.2-stable_win64_console.exe"
 
 # релизная сборка (ключ задаётся в export_presets.cfg / диалоге экспорта)
 New-Item -ItemType Directory -Force build | Out-Null
-& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.4.0.apk"
+& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.5.0.apk"
 ```
 
 Путь экспорта передавай **сразу после** имени пресета и обязательно с расширением
@@ -254,7 +255,7 @@ Slipstream/
 │   └── screenshots/            # скриншоты для README
 └── godot/                      # проект Godot 4.7.2
     ├── project.godot           # холст 720×1560, GL Compatibility, автолоад Sfx
-    ├── export_presets.cfg      # Android-пресет, версия 0.4.0
+    ├── export_presets.cfg      # Android-пресет, версия 0.5.0
     ├── scenes/Main.tscn
     ├── scripts/
     │   ├── main.gd             # экраны, HUD, гараж, настройки, сохранения, ввод
@@ -277,5 +278,5 @@ Slipstream/
 
 ## Дальше
 
+- **0.5.0** — у каждой машины свой силуэт вместо перекрашенного одного кузова; попиксельный тест различимости (`qa_silhouette.gd`).
 - **0.4.0** — погода и время суток, реалистичный свет фар, физически честный дождь, панорамный звук обгонов.
-- **0.5.0** — миссии и ежедневные награды, таблица рекордов, музыкальные треки, достижения.
