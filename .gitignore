@@ -24,3 +24,8 @@ godot/shots/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Large Android export templates fetched on demand (see README)
+tools/templates/
+tools/godot/
+.work/

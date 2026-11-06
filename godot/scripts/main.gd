@@ -2,7 +2,7 @@ extends Node2D
 
 # Screen manager: menu, garage, settings, HUD, pause, result + persistence.
 
-const VERSION := "0.3.0"
+const VERSION := "0.4.0"
 const SAVE_PATH := "user://slipstream.cfg"
 const START_COINS := 300
 const VolumeSlider = preload("res://scripts/volume_slider.gd")

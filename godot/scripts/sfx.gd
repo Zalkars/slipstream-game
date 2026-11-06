@@ -20,6 +20,7 @@ var crash_snd: AudioStreamPlayer
 var bump_snd: AudioStreamPlayer
 var thunder_snd: AudioStreamPlayer
 var whoosh_snd: AudioStreamPlayer
+var pass_snd: AudioStreamPlayer
 var click_snd: AudioStreamPlayer
 var chime_snd: AudioStreamPlayer
 var coin_snd: AudioStreamPlayer
@@ -31,6 +32,8 @@ var cutin_snd: AudioStreamPlayer
 var rewind_snd: AudioStreamPlayer
 var slip_snd: AudioStreamPlayer
 var rain_snd: AudioStreamPlayer
+var wet_snd: AudioStreamPlayer
+var storm_snd: AudioStreamPlayer
 var music_player: AudioStreamPlayer
 
 var sfx_bus := 0
@@ -52,6 +55,9 @@ var _last_speed := 0.0
 var _gear := 0
 var _shift_t := 0.0
 var _shift_dir := 0.0
+var _wetness := 0.0
+var _wind_amt := 0.0
+var _storm_amt := 0.0
 
 var _music_buf := PackedFloat32Array()
 var _music_task := -1
@@ -71,6 +77,7 @@ func _ready() -> void:
 	bump_snd = _player(_make_bump(), -8.0)
 	thunder_snd = _player(_make_thunder(), -8.0)
 	whoosh_snd = _player(_make_whoosh(), -11.0)
+	pass_snd = _player(_make_pass_by(), -10.0)
 	click_snd = _player(_make_click(), -18.0)
 	chime_snd = _player(_make_chime(), -10.0)
 	coin_snd = _player(_make_coin(), -13.0)
@@ -80,6 +87,8 @@ func _ready() -> void:
 	rewind_snd = _player(_make_rewind(), -9.0)
 	slip_snd = _player(_make_slipstream(), -60.0)
 	rain_snd = _player(_make_rain(), -60.0)
+	wet_snd = _player(_make_wet_road(), -60.0)
+	storm_snd = _player(_make_storm(), -60.0)
 
 	music_player = AudioStreamPlayer.new()
 	music_player.bus = "Music"
@@ -88,7 +97,7 @@ func _ready() -> void:
 
 
 func _setup_buses() -> void:
-	for bus_name in ["SFX", "Music"]:
+	for bus_name in ["SFX", "Music", "PassL", "PassR"]:
 		if AudioServer.get_bus_index(bus_name) == -1:
 			AudioServer.add_bus()
 			var idx := AudioServer.bus_count - 1
@@ -96,6 +105,30 @@ func _setup_buses() -> void:
 			AudioServer.set_bus_send(idx, "Master")
 	sfx_bus = AudioServer.get_bus_index("SFX")
 	music_bus = AudioServer.get_bus_index("Music")
+	# Two mono side buses let a one-shot sit on the left or the right without
+	# needing per-player panning (AudioStreamPlayer has no pan property; the
+	# panning lives on the bus, which is also much cheaper on mobile).
+	_bus_setup_pan("PassL", -1.0, 0.34)
+	_bus_setup_pan("PassR", 1.0, 0.34)
+
+
+func _bus_setup_pan(bus_name: String, pan: float, gain_db: float) -> void:
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx < 0:
+		return
+	AudioServer.set_bus_volume_db(idx, gain_db)
+	AudioServer.set_bus_send(idx, "Master")
+	var effect_count := AudioServer.get_bus_effect_count(idx)
+	var found := false
+	for e in range(effect_count):
+		var eff := AudioServer.get_bus_effect(idx, e)
+		if eff is AudioEffectPanner:
+			eff.pan = pan
+			found = true
+	if not found:
+		var panner := AudioEffectPanner.new()
+		panner.pan = pan
+		AudioServer.add_bus_effect(idx, panner)
 
 
 func _player(stream: AudioStream, vol: float, bus := "SFX") -> AudioStreamPlayer:
@@ -226,6 +259,8 @@ func play_engine() -> void:
 	overheat_snd.volume_db = -60.0
 	slip_snd.volume_db = -60.0
 	rain_snd.volume_db = -60.0
+	wet_snd.volume_db = -60.0
+	storm_snd.volume_db = -60.0
 	engine.play()
 	road.play()
 	wind.play()
@@ -234,6 +269,8 @@ func play_engine() -> void:
 	overheat_snd.play()
 	slip_snd.play()
 	rain_snd.play()
+	wet_snd.play()
+	storm_snd.play()
 
 
 func stop_engine() -> void:
@@ -249,6 +286,8 @@ func stop_engine() -> void:
 	overheat_snd.stop()
 	slip_snd.stop()
 	rain_snd.stop()
+	wet_snd.stop()
+	storm_snd.stop()
 
 
 func set_paused(p: bool) -> void:
@@ -300,6 +339,7 @@ func update_engine(px_speed: float, boost: bool, is_braking := false, overheated
 		nitro_snd.volume_db = lerpf(nitro_snd.volume_db, -60.0, 0.20)
 		brake_snd.volume_db = lerpf(brake_snd.volume_db, -60.0, 0.20)
 		overheat_snd.volume_db = lerpf(overheat_snd.volume_db, -60.0, 0.20)
+		wet_snd.volume_db = lerpf(wet_snd.volume_db, -60.0, 0.20)
 		return
 
 	var ratio := _speed_ratio(px_speed)
@@ -323,11 +363,18 @@ func update_engine(px_speed: float, boost: bool, is_braking := false, overheated
 	var shift_dip := (0.30 * (_shift_t / 0.13)) if _shift_t > 0.0 else 0.0
 	engine.volume_db = -17.0 + ratio * 5.0 + (2.0 if boost else 0.0) - shift_dip
 
-	# Tyre roar and wind grow with speed cleanly.
+	# Tyre roar and wind grow with speed cleanly; weather adds gust and drag.
 	road.volume_db = -34.0 + ratio * 16.0 + (1.5 if boost else 0.0)
 	road.pitch_scale = 0.92 + ratio * 0.30
-	wind.volume_db = -29.0 + ratio * 11.0 + (2.0 if boost else 0.0)
-	wind.pitch_scale = 0.88 + ratio * 0.20
+	wind.volume_db = -29.0 + ratio * 11.0 + (2.0 if boost else 0.0) + _wind_amt * 2.8 + _storm_amt * 3.5
+	wind.pitch_scale = 0.88 + ratio * 0.20 + _storm_amt * 0.07
+
+	# Wet-road hiss and tyre spray, driven by speed and surface water.
+	var wet_target := -60.0
+	if _wetness > 0.03 and px_speed > 70.0:
+		wet_target = -58.0 + _wetness * (9.0 + ratio * 19.0)
+	wet_snd.volume_db = lerpf(wet_snd.volume_db, clampf(wet_target, -60.0, -26.0), 0.16)
+	wet_snd.pitch_scale = 0.82 + ratio * 0.24 + _wetness * 0.04
 
 	nitro_snd.volume_db = lerpf(nitro_snd.volume_db, -12.0 if boost else -60.0, 0.30)
 	nitro_snd.pitch_scale = 0.96 + ratio * 0.16
@@ -346,11 +393,22 @@ func set_rain_intensity(amt: float) -> void:
 	if rain_snd == null:
 		return
 	var a := clampf(amt, 0.0, 1.0)
+	# Smooth the volume: weather transitions and menu/run changes are gradual.
+	var target := -60.0
 	if a > 0.01:
-		rain_snd.volume_db = -32.0 + a * 15.0
-		rain_snd.pitch_scale = 0.95 + a * 0.15
-	else:
-		rain_snd.volume_db = -60.0
+		target = -33.0 + a * 14.0
+	rain_snd.volume_db = lerpf(rain_snd.volume_db, target, 0.12)
+	rain_snd.pitch_scale = lerpf(rain_snd.pitch_scale, 0.94 + a * 0.16, 0.10)
+
+
+func set_weather(wetness: float, wind_amt: float, storm_amt: float) -> void:
+	_wetness = clampf(wetness, 0.0, 1.0)
+	_wind_amt = clampf(wind_amt, 0.0, 1.2)
+	_storm_amt = clampf(storm_amt, 0.0, 1.0)
+	if storm_snd != null:
+		var target := -60.0 + _storm_amt * 20.0
+		storm_snd.volume_db = lerpf(storm_snd.volume_db, target, 0.08)
+		storm_snd.pitch_scale = 0.82 + _storm_amt * 0.12
 
 
 # --- one-shots --------------------------------------------------------------
@@ -374,6 +432,26 @@ func bump() -> void:
 func whoosh(pan_side := 0.0) -> void:
 	whoosh_snd.volume_db = -11.0 - absf(pan_side) * 3.0
 	whoosh_snd.play()
+
+
+# A car passing on the left or right: a short doppler-ish swish that pans to the
+# side it went by. This is the single biggest cue for "there is traffic around
+# me" in a top-down racer, so it gets its own louder, pitched voice.
+func pass_by(side: float, closeness := 1.0) -> void:
+	if pass_snd == null:
+		return
+	var k := clampf(closeness, 0.0, 1.0)
+	# Pick the side bus; a near-frontal pass stays in the centre mix.
+	var bus_name := "SFX"
+	if side < -0.22:
+		bus_name = "PassL"
+	elif side > 0.22:
+		bus_name = "PassR"
+	pass_snd.stop()
+	pass_snd.bus = bus_name
+	pass_snd.volume_db = -8.0 - (1.0 - k) * 14.0
+	pass_snd.pitch_scale = clampf(randf_range(0.94, 1.14) - absf(side) * 0.05, 0.8, 1.3)
+	pass_snd.play()
 
 
 func click() -> void:
@@ -739,6 +817,47 @@ func _make_whoosh() -> AudioStreamWAV:
 	return _wav(f, false)
 
 
+func _make_pass_by() -> AudioStreamWAV:
+	# A car overtaking: tyre hiss plus a short engine snarl whose pitch drops as
+	# it goes away, wrapped in a narrow band that sweeps down. Together with the
+	# pan it reads as "something just went past me on that side".
+	var n := int(RATE * 0.60)
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var low := 0.0
+	var band := 0.0
+	var low2 := 0.0
+	var band2 := 0.0
+	var phase := 0.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4242
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var k := clampf(tt / 0.60, 0.0, 1.0)
+		# Two-sided envelope: quieter at the start, peak as it draws level.
+		var env := sin(PI * pow(k, 0.72))
+		env = env * env
+		var raw := rng.randf_range(-1.0, 1.0)
+		# Band-pass sweeps down: approaching roar turns into receding hiss.
+		var fc := lerpf(2600.0, 620.0, pow(k, 0.85))
+		var fcoef := 2.0 * sin(PI * fc / float(RATE))
+		low += fcoef * band
+		var high := raw - low - 1.05 * band
+		band += fcoef * high
+		# A second, lower formant gives the body of the engine note.
+		var fc2 := lerpf(430.0, 190.0, k)
+		var fcoef2 := 2.0 * sin(PI * fc2 / float(RATE))
+		low2 += fcoef2 * band2
+		var high2 := raw - low2 - 1.20 * band2
+		band2 += fcoef2 * high2
+		# A faint tonal core so it is not pure noise.
+		var freq := lerpf(150.0, 92.0, k)
+		phase += TAU * freq / float(RATE)
+		var tone := sin(phase) * 0.16 + sin(phase * 2.0) * 0.05
+		f[i] = _soft((band * 2.6 + band2 * 2.2 + high * 0.12 + tone) * env * 0.85)
+	return _wav(f, false)
+
+
 func _make_click() -> AudioStreamWAV:
 	var n := int(RATE * 0.06)
 	var f := PackedFloat32Array()
@@ -913,13 +1032,18 @@ func _make_slipstream() -> AudioStreamWAV:
 
 
 func _make_rain() -> AudioStreamWAV:
-	var loop_len := int(RATE * 1.8)
-	var fade := 4000
+	var loop_len := int(RATE * 2.0)
+	var fade := 5000
 	var n := loop_len + fade
 	var f := PackedFloat32Array()
 	f.resize(n)
 	var lp := 0.0
 	var lp2 := 0.0
+	var body_lp := 0.0
+	var body_lp2 := 0.0
+	var drop_env := 0.0
+	var drop_phase := 0.0
+	var drop_freq := 2200.0
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 31415
 	for i in range(n):
@@ -927,12 +1051,84 @@ func _make_rain() -> AudioStreamWAV:
 		var raw := rng.randf_range(-1.0, 1.0)
 		lp = lerpf(lp, raw, 0.35)
 		lp2 = lerpf(lp2, lp, 0.030)
-		var rain_hiss := (lp - lp2 * 0.80) * 0.75
-		# Droplet taps on glass
-		var tap := 0.0
-		if rng.randf() < 0.012:
-			tap = rng.randf_range(0.2, 0.5) * sin(TAU * rng.randf_range(1600.0, 3200.0) * tt)
-		f[i] = _soft(rain_hiss + tap)
+		body_lp = lerpf(body_lp, raw, 0.020)
+		body_lp2 = lerpf(body_lp2, body_lp, 0.004)
+		var rain_hiss := (lp - lp2 * 0.80) * 0.66
+		var rain_body := (body_lp - body_lp2 * 0.84) * 0.46
+		# Individually decaying droplets on glass and metal.
+		if rng.randf() < 0.0014:
+			drop_env = rng.randf_range(0.10, 0.30)
+			drop_phase = 0.0
+			drop_freq = rng.randf_range(1500.0, 3400.0)
+		var drop := 0.0
+		if drop_env > 0.0001:
+			drop_phase += TAU * drop_freq / float(RATE)
+			drop = sin(drop_phase) * drop_env
+			drop_env *= 0.9905
+		var swell := 0.93 + 0.05 * sin(TAU * 0.31 * tt) + 0.02 * sin(TAU * 1.7 * tt)
+		f[i] = _soft((rain_hiss + rain_body) * swell + drop * 0.42)
+	return _loop_wav(f, loop_len, fade)
+
+
+# Wet asphalt hiss and tyre spray. Layered under the road loop when the
+# surface is wet, and scaled by speed in update_engine().
+func _make_wet_road() -> AudioStreamWAV:
+	var loop_len := int(RATE * 2.0)
+	var fade := 5000
+	var n := loop_len + fade
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var lp := 0.0
+	var lp2 := 0.0
+	var drop_env := 0.0
+	var drop_phase := 0.0
+	var drop_freq := 2400.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 60607
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var raw := rng.randf_range(-1.0, 1.0)
+		lp = lerpf(lp, raw, 0.085)
+		lp2 = lerpf(lp2, lp, 0.007)
+		var spray_body := lp - lp2 * 0.72
+		var spray_hiss := (raw - lp) * 0.085
+		if rng.randf() < 0.0010:
+			drop_env = rng.randf_range(0.10, 0.28)
+			drop_phase = 0.0
+			drop_freq = rng.randf_range(1300.0, 3200.0)
+		var drop := 0.0
+		if drop_env > 0.0001:
+			drop_phase += TAU * drop_freq / float(RATE)
+			drop = sin(drop_phase) * drop_env
+			drop_env *= 0.990
+		var surge := 0.72 + 0.24 * sin(TAU * 1.45 * tt + 0.4) + 0.10 * sin(TAU * 4.6 * tt)
+		f[i] = _soft((spray_body * 1.15 + spray_hiss) * surge + drop * 0.46)
+	return _loop_wav(f, loop_len, fade)
+
+
+# Low storm rumble bed: brown-ish noise plus slow gusts. It sits far under the
+# rain layer and rises with the storm intensity.
+func _make_storm() -> AudioStreamWAV:
+	var loop_len := int(RATE * 3.0)
+	var fade := 6000
+	var n := loop_len + fade
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var low := 0.0
+	var low2 := 0.0
+	var mid := 0.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 80808
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var raw := rng.randf_range(-1.0, 1.0)
+		low = lerpf(low, raw, 0.018)
+		low2 = lerpf(low2, low, 0.004)
+		mid = lerpf(mid, raw, 0.055)
+		var rumble := (low - low2 * 0.72) * 1.8
+		var gust := 0.70 + 0.18 * sin(TAU * 0.21 * tt) + 0.08 * sin(TAU * 0.63 * tt + 1.2)
+		var distant := 0.5 + 0.5 * sin(TAU * 0.11 * tt)
+		f[i] = _soft(rumble * gust + mid * 0.11 + sin(TAU * 38.0 * tt) * 0.022 * distant)
 	return _loop_wav(f, loop_len, fade)
 
 
