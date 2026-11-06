@@ -7,6 +7,7 @@ const LIST := [
 	{
 		"id": 0,
 		"name": "HATCH",
+		"silhouette": "hatch",
 		"sub": "ГОРОДСКОЙ ХЭТЧБЕК",
 		"desc": "Лёгкий и послушный. С него начинают все.",
 		"price": 0,
@@ -22,6 +23,7 @@ const LIST := [
 	{
 		"id": 1,
 		"name": "SEDAN GT",
+		"silhouette": "sedan",
 		"sub": "СПОРТИВНЫЙ СЕДАН",
 		"desc": "Быстрее и стабильнее. Хороший шаг вперёд.",
 		"price": 600,
@@ -37,6 +39,7 @@ const LIST := [
 	{
 		"id": 2,
 		"name": "MUSCLE",
+		"silhouette": "muscle",
 		"sub": "АМЕРИКАНСКИЙ МАСКЛ",
 		"desc": "Тяжёлый характер, мощный разгон и громкий вид.",
 		"price": 1600,
@@ -52,6 +55,7 @@ const LIST := [
 	{
 		"id": 3,
 		"name": "SPORT",
+		"silhouette": "sport",
 		"sub": "ТРЕКОВЫЙ КУПЕ",
 		"desc": "Точные реакции и высокая максимальная скорость.",
 		"price": 3200,
@@ -67,6 +71,7 @@ const LIST := [
 	{
 		"id": 4,
 		"name": "HYPER",
+		"silhouette": "hyper",
 		"sub": "ГИПЕРКАР",
 		"desc": "Вершина гаража. Держись крепче.",
 		"price": 5600,
