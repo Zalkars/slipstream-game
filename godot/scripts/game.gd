@@ -164,6 +164,7 @@ var player_color := Color("#b32b26")
 var player_stripe := true
 var player_wing := false
 var player_stripe_col := Color("#f0ede4")
+var player_silhouette := "sedan"
 
 var control_mode := "buttons"
 var free_lane := 3
@@ -470,6 +471,7 @@ func _apply_car() -> void:
 	player_stripe = bool(car.stripe)
 	player_wing = bool(car.wing)
 	player_stripe_col = Color(str(car.stripe_color))
+	player_silhouette = str(car.get("silhouette", "sedan"))
 
 
 func start_run() -> void:
@@ -2236,6 +2238,7 @@ func _draw_player() -> void:
 		"stripe": player_stripe,
 		"wing": player_wing,
 		"stripe_color": player_stripe_col,
+		"silhouette": player_silhouette,
 		"brake": braking and running,
 		"heat": brake_heat,
 		"light": get_light_factor(),

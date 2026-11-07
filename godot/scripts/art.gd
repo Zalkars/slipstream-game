@@ -57,173 +57,51 @@ static func traffic(ci: CanvasItem, center: Vector2, w: float, h: float, kind: i
 			car(ci, center, w, h, body, opts)
 
 
-# --- car silhouettes --------------------------------------------------------
+# --- car styles -------------------------------------------------------------
 #
-# One procedural body, five genuinely different cars. Everything that used to
-# be a magic number inside car() is now a per-car profile (Plan_0.5.0.md,
-# stage 1): HATCH and HYPER differ in proportion and cabin shape, not in paint.
-#
-# Every point is a Vector2(t, hw): t runs from the nose (0, top of the rect) to
-# the boot (1, bottom) and hw is the half-width as a share of w. A Vector3 is
-# three half-widths sampled at t = 0, 0.5 and 1.
-#
-#   side       half-width down the flank     (mirrored, so the car stays symmetric)
-#   nose       how rounded the nose is       (0 = square, 1 = pointed)
-#   tail       how rounded the boot is
-#   cabin      outline of the greenhouse: t0/hw0 at the windscreen base,
-#              t1/hw1 at its top, t2/hw2 at the rear window base
-#   track      wheel width as a share of the body width
-#   stance     how far the wheels stick out past the body
-#   wheelbase  front/rear axle positions as a share of h
-#   mirrors    whether the mirrors stick out (they add width to the silhouette)
-#
-# Geometry contract: "nose" is the top of the rect (negative Y) and the boot
-# the bottom, because the player car drives up the screen.
-static var _silhouettes: Dictionary = {}
+# The roster keeps the clean 0.4 body the garage was built around. Each class
+# only nudges it: a little longer, a little wider, the cabin moved forward or
+# back, plus the details that fit its character. No tapered "silhouette"
+# experiments: the paint, glass and lights stay exactly where they belong.
+static var _styles: Dictionary = {}
 
 
-static func silhouette(name: String) -> Dictionary:
-	if _silhouettes.is_empty():
-		_silhouettes = {
-			# City hatch: tall, narrow, boxy nose, cabin almost the whole length.
-			# City hatch: one-box silhouette — tall cabin, glass to all four
-			# corners, near-vertical tailgate, upright and narrow.
+static func car_style(name: String) -> Dictionary:
+	if _styles.is_empty():
+		_styles = {
+			# City hatch: compact, cabin forward, no spoiler drama.
 			"hatch": {
-				"side": [Vector2(0.00, 0.90), Vector2(0.04, 0.95), Vector2(0.12, 0.96),
-					Vector2(0.44, 0.97), Vector2(0.80, 0.96), Vector2(0.94, 0.93), Vector2(1.00, 0.90)],
-				"nose": 0.0, "tail": 0.0,
-				"cabin": Vector3(0.10, 0.44, 0.90), "glass_w0": 0.64, "roof_w": 0.52,
-				"track": 0.150, "stance": 0.02, "wheelbase": Vector2(0.17, 0.63), "mirrors": false,
-				"length": 0.94,
+				"len": 0.94, "wid": 0.99, "cabin": -0.020, "roof": 0.020,
+				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
+				"exhaust": 1, "dark_roof": false, "stripe_w": 0.058,
 			},
-			# Classic three-box GT: long bonnet, upright cabin set back, long boot.
+			# Three-box GT: the baseline every other car is measured against.
 			"sedan": {
-				"side": [Vector2(0.00, 0.80), Vector2(0.05, 0.89), Vector2(0.14, 0.93),
-					Vector2(0.40, 0.94), Vector2(0.70, 0.93), Vector2(0.90, 0.88), Vector2(1.00, 0.80)],
-				"nose": 0.20, "tail": 0.20,
-				"cabin": Vector3(0.28, 0.52, 0.66), "glass_w0": 0.46, "roof_w": 0.30,
-				"track": 0.148, "stance": 0.02, "wheelbase": Vector2(0.15, 0.67), "mirrors": true,
-				"length": 1.00,
+				"len": 1.00, "wid": 1.00, "cabin": 0.000, "roof": 0.000,
+				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
+				"exhaust": 2, "dark_roof": false, "stripe_w": 0.055,
 			},
-			# Muscle: short cabin far back, slab sides, wide square haunches.
+			# Muscle: wider body, cabin set back, hood scoop and fat stripes.
 			"muscle": {
-				"side": [Vector2(0.00, 0.93), Vector2(0.03, 0.96), Vector2(0.10, 0.95),
-					Vector2(0.36, 0.92), Vector2(0.60, 0.95), Vector2(0.84, 1.00), Vector2(1.00, 1.00)],
-				"nose": 0.0, "tail": 0.0,
-				"cabin": Vector3(0.38, 0.60, 0.84), "glass_w0": 0.58, "roof_w": 0.52,
-				"track": 0.168, "stance": 0.05, "wheelbase": Vector2(0.16, 0.65), "mirrors": true,
-				"length": 0.97,
+				"len": 1.02, "wid": 1.05, "cabin": 0.025, "roof": -0.020,
+				"scoop": true, "vents": false, "splitter": false, "diffuser": false,
+				"exhaust": 2, "dark_roof": false, "stripe_w": 0.070,
 			},
-			# Mid-engine wedge: needle nose, cabin forward, pinched waist.
+			# Track coupe: forward cabin, vents, splitter and diffuser.
 			"sport": {
-				"side": [Vector2(0.00, 0.30), Vector2(0.04, 0.50), Vector2(0.12, 0.74),
-					Vector2(0.30, 0.80), Vector2(0.52, 0.78), Vector2(0.78, 0.96), Vector2(1.00, 0.90)],
-				"nose": 0.85, "tail": 0.30,
-				"cabin": Vector3(0.22, 0.50, 0.73), "glass_w0": 0.40, "roof_w": 0.24,
-				"track": 0.160, "stance": 0.04, "wheelbase": Vector2(0.17, 0.70), "mirrors": true,
-				"length": 1.06,
+				"len": 1.035, "wid": 1.035, "cabin": -0.025, "roof": -0.015,
+				"scoop": false, "vents": true, "splitter": true, "diffuser": true,
+				"exhaust": 2, "dark_roof": false, "stripe_w": 0.058,
 			},
-			# Hypercar: dagger nose, cockpit far forward, arrow tail.
+			# Hypercar: widest, longest, dark roof, aero all round.
 			"hyper": {
-				"side": [Vector2(0.00, 0.18), Vector2(0.03, 0.40), Vector2(0.10, 0.62),
-					Vector2(0.28, 0.76), Vector2(0.48, 0.80), Vector2(0.70, 1.00), Vector2(1.00, 0.22)],
-				"nose": 0.94, "tail": 0.90,
-				"cabin": Vector3(0.26, 0.50, 0.68), "glass_w0": 0.40, "roof_w": 0.22,
-				"track": 0.172, "stance": 0.06, "wheelbase": Vector2(0.18, 0.72), "mirrors": true,
-				"length": 1.03,
+				"len": 1.05, "wid": 1.065, "cabin": -0.010, "roof": -0.030,
+				"scoop": false, "vents": true, "splitter": true, "diffuser": true,
+				"exhaust": 2, "dark_roof": true, "stripe_w": 0.050,
 			},
 		}
-	return _silhouettes.get(name, _silhouettes["sedan"])
+	return _styles.get(name, _styles["sedan"])
 
-
-# Half-width of the flank at any point down the car, linearly interpolated.
-static func _side_at(side: Array, t: float) -> float:
-	if t <= 0.0:
-		return (side[0] as Vector2).y
-	for i in range(1, side.size()):
-		var b: Vector2 = side[i]
-		if t <= b.x:
-			var a: Vector2 = side[i - 1]
-			var k := (t - a.x) / maxf(b.x - a.x, 0.0001)
-			return lerpf(a.y, b.y, k)
-	return (side[side.size() - 1] as Vector2).y
-
-
-# Body outline: flanks from the profile plus rounded nose and boot, mirrored.
-static func _body_points(r: Rect2, pr: Dictionary) -> PackedVector2Array:
-	var side: Array = pr.side
-	var cx := r.get_center().x
-	var hw := r.size.x * 0.5
-	var pts := PackedVector2Array()
-	var nose_round: float = float(pr.nose)
-	var tail_round: float = float(pr.tail)
-	# left flank, nose to boot
-	for p in side:
-		var v: Vector2 = p
-		pts.append(Vector2(cx - hw * v.y, r.position.y + r.size.y * v.x))
-	# boot: a shallow arc that rounds or squares the tail
-	var tail_w := hw * (side[side.size() - 1] as Vector2).y
-	var tail_c := Vector2(cx, r.end.y)
-	for i in range(1, 5):
-		var a := PI * (0.5 + 0.5 * float(i) / 5.0)
-		pts.append(Vector2(tail_c.x + cos(a + PI) * -tail_w, tail_c.y - sin(a) * r.size.y * 0.03 * (1.0 - tail_round)))
-	# right flank, boot to nose
-	for i in range(side.size() - 1, -1, -1):
-		var v: Vector2 = side[i]
-		pts.append(Vector2(cx + hw * v.y, r.position.y + r.size.y * v.x))
-	# nose: the pointed end, so HYPER reads as a dagger and MUSCLE as a slab
-	var nose_w := hw * (side[0] as Vector2).y
-	var nose_c := Vector2(cx, r.position.y)
-	for i in range(1, 5):
-		var a := PI * (0.5 * float(i) / 5.0)
-		pts.append(Vector2(nose_c.x + cos(a) * nose_w, nose_c.y + sin(a) * r.size.y * 0.022 * (1.0 - nose_round)))
-	return pts
-
-
-# Glasshouse: windscreen base -> windscreen top -> rear window base, mirrored.
-# The taper between those three points is the "greenhouse", and it is the
-# cheapest strong cue from above: a hatch has an almost rectangular one, a
-# hypercar a narrow teardrop, and that reads at a glance.
-static func _draw_cabin(ci: CanvasItem, r: Rect2, pr: Dictionary, glass: Color) -> void:
-	var cabin: Vector3 = pr.cabin
-	var cx := r.get_center().x
-	var hw := r.size.x * 0.5
-	var gw0: float = hw * float(pr.glass_w0)
-	var gw1: float = hw * float(pr.roof_w)
-	var y0 := r.position.y + r.size.y * cabin.x
-	var y1 := r.position.y + r.size.y * cabin.y
-	var y2 := r.position.y + r.size.y * cabin.z
-	# Two separate pieces of glass, not one outline: a windscreen surrounded by
-	# glass on all four sides would just read as one huge windshield from above.
-	# Windscreen: narrow at the cowl, wide where it meets the roof — the slope
-	# is what makes a wedge look like a wedge from straight above.
-	var glazing := PackedVector2Array([
-		Vector2(cx - gw0, y0), Vector2(cx + gw0, y0),
-		Vector2(cx + gw1, y1), Vector2(cx - gw1, y1),
-	])
-	ci.draw_colored_polygon(glazing, glass)
-	glazing = PackedVector2Array([
-		Vector2(cx - gw1, y1), Vector2(cx + gw1, y1),
-		Vector2(cx + gw0 * 0.94, y2), Vector2(cx - gw0 * 0.94, y2),
-	])
-	ci.draw_colored_polygon(glazing, glass)
-	# windscreen: darker at its inner edge, lighter where the sky hits it
-	ci.draw_polygon(PackedVector2Array([
-		Vector2(cx - gw0, y0), Vector2(cx + gw0, y0),
-		Vector2(cx + gw1, y1), Vector2(cx - gw1, y1),
-	]), PackedColorArray([
-		Color(0.10, 0.14, 0.19, 0.0), Color(0.10, 0.14, 0.19, 0.0),
-		Color(0.50, 0.60, 0.70, 0.22), Color(0.50, 0.60, 0.70, 0.22),
-	]))
-	# roof panel runs between the two creases; the crease lines are part of the
-	# silhouette, so they are drawn in a colour that reads on any paint
-	var roof_h := maxf(r.size.y * 0.02, 2.0)
-	ci.draw_colored_polygon(PackedVector2Array([
-		Vector2(cx - gw1, y1), Vector2(cx + gw1, y1),
-		Vector2(cx + gw1, y1 + roof_h), Vector2(cx - gw1, y1 + roof_h),
-	]), Color(1.0, 1.0, 1.0, 0.10))
-	ci.draw_line(Vector2(cx - gw1, y1), Vector2(cx + gw1, y1), Color(0.55, 0.62, 0.70, 0.55), 1.5)
-	ci.draw_line(Vector2(cx - gw1, y2), Vector2(cx + gw1, y2), Color(0.55, 0.62, 0.70, 0.55), 1.5)
 
 static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, opts := {}) -> void:
 	var is_player: bool = opts.get("player", false)
@@ -233,40 +111,52 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	var rails: bool = opts.get("rails", false)
 	var roof_sign: bool = opts.get("roof_sign", false)
 	var details: bool = opts.get("details", true)
-	var body_only: bool = opts.get("body_only", false)
 	var with_glass: bool = opts.get("glass", true)
-	var pr: Dictionary = silhouette(str(opts.get("silhouette", "sedan")))
-	# Each car gets its own overall length while the caller keeps the collision
-	# box it already uses: the silhouette is what the eye reads, the hitbox is
-	# what the game needs, and they do not have to be the same rectangle.
-	h = h * float(pr.get("length", 1.0))
+	var st: Dictionary = car_style(str(opts.get("silhouette", "sedan")))
+	w *= float(st.wid)
+	h *= float(st.len)
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var dark := Color(0.075, 0.082, 0.09)
-	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
-	var glass := Color(0.055, 0.075, 0.100)
-	var side: Array = pr.side
-	var body_pts := _body_points(r, pr)
-	var cabin: Vector3 = pr.cabin
-	var cy: float = cabin.x
-	var cr: float = cabin.z
+	# Dark paints need a stronger rim light, otherwise a black car turns into a
+	# featureless blob against the garage backdrop.
+	var edge := body.lightened(0.34) if body.v < 0.3 else body.darkened(0.38)
+	var glass := Color(0.105, 0.145, 0.185)
 	var cx := r.get_center().x
-	var hw := w * 0.5
+	# One place for every vertical landmark, so a moved cabin cannot tear the
+	# bonnet, roof, side windows and boot apart.
+	var cs := float(st.cabin)
+	var wind_y := 0.235 + cs
+	var wind_h := 0.135
+	var roof_y := 0.385 + cs
+	var roof_h := 0.245 + float(st.roof)
+	var rear_y := roof_y + roof_h + 0.025
+	var boot_y := rear_y + 0.130
 
-	# Wheels sit outside the flank: the stance sets the real overall width, so
-	# a muscle car is wide at the tyres and a hypercar wider still.
+	if details:
+		soft_shadow(ci, r, w * 0.22, 0.30)
+
+	# wheels (behind the body), each with a fender socket and a readable rim
 	var heat: float = float(opts.get("heat", 0.0))
-	var ww := w * float(pr.track)
-	var wh := h * 0.145
-	var axle: Vector2 = pr.wheelbase
-	for wy in [r.position.y + h * axle.x, r.position.y + h * axle.y]:
-		var t_mid: float = (wy + wh * 0.5 - r.position.y) / h
-		var wheel_w: float = hw * _side_at(side, t_mid) + w * float(pr.stance)
-		for s in [-1.0, 1.0]:
-			var wx: float = cx + s * wheel_w - ww * 0.5
+	var ww := w * 0.158
+	var wh := h * 0.148
+	for wy in [r.position.y + h * 0.145, r.position.y + h * 0.665]:
+		for side in [-1.0, 1.0]:
+			var left: bool = side < 0.0
+			var wx: float = (r.position.x - ww * 0.34) if left else (r.end.x - ww * 0.66)
 			var wc := Vector2(wx + ww * 0.5, wy + wh * 0.5)
-			rr(ci, Rect2(wx, wy, ww, wh), dark, ww * 0.36)
-			if not details:
-				continue
+			ci.draw_circle(wc, ww * 0.46, Color(0.02, 0.025, 0.03, 0.10))
+			rr(ci, Rect2(wx, wy, ww, wh), Color(0.055, 0.060, 0.070), ww * 0.36)
+			if details:
+				for k in [0.22, 0.50, 0.78]:
+					var ty: float = wy + wh * float(k)
+					ci.draw_line(Vector2(wx + ww * 0.16, ty), Vector2(wx + ww * 0.84, ty),
+						Color(1, 1, 1, 0.055), maxf(1.0, wh * 0.03))
+				# rim sits on the visible outer half of the tyre
+				var rim_x: float = (wx + ww * 0.06) if left else (wx + ww * 0.66)
+				rr(ci, Rect2(rim_x, wy + wh * 0.27, ww * 0.28, wh * 0.46),
+					Color(0.50, 0.53, 0.57, 0.9), ww * 0.10)
+				ci.draw_circle(Vector2(rim_x + ww * 0.14, wy + wh * 0.5),
+					ww * 0.055, Color(0.15, 0.16, 0.18))
 			if heat > 0.35:
 				# Glowing heated brake disc (cherry red to fiery incandescent orange)
 				var ht := clampf((heat - 0.35) / 0.65, 0.0, 1.0)
@@ -275,111 +165,179 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 				ci.draw_circle(wc, ww * 0.22, glow_col)
 				if ht > 0.65:
 					ci.draw_circle(wc, ww * 0.11, Color(1.0, 0.95, 0.75, 0.65 * (ht - 0.65) / 0.35))
-			else:
+			elif details:
 				ci.draw_circle(wc, ww * 0.18, Color(0.42, 0.44, 0.47, 0.5))
 
-	if body_only:
-		ci.draw_colored_polygon(body_pts, body)
-		return
+	# body
+	rr(ci, r, body, w * 0.21, edge, max(2, int(w * 0.018)))
 
-	# body: a tapered polygon instead of a rectangle
-	ci.draw_colored_polygon(body_pts, body)
+	# soft cylinder: a lighter centre band and the familiar left-hand light
+	rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.025,
+		w * 0.80, h * 0.950), body.lightened(0.045), w * 0.14)
+	var hx := r.position.x + w * 0.06
+	ci.draw_polygon(
+		PackedVector2Array([
+			Vector2(hx, r.position.y + h * 0.10),
+			Vector2(hx + w * 0.11, r.position.y + h * 0.12),
+			Vector2(hx + w * 0.11, r.end.y - h * 0.12),
+			Vector2(hx, r.end.y - h * 0.10),
+		]),
+		PackedColorArray([Color(1, 1, 1, 0.10), Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.06)])
+	)
 
-	# everything below is paint: none of it belongs to the silhouette
-	if not details and not with_glass:
-		return
+	# bonnet, centre crease and cowl line
+	rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.045,
+		w * 0.80, h * (wind_y - 0.075)), body.lightened(0.05), w * 0.12)
+	ci.draw_line(Vector2(cx - w * 0.020, r.position.y + h * 0.060),
+		Vector2(cx - w * 0.020, r.position.y + h * (wind_y - 0.020)),
+		Color(1, 1, 1, 0.065), maxf(1.0, w * 0.006))
+	ci.draw_line(Vector2(r.position.x + w * 0.070, r.position.y + h * wind_y),
+		Vector2(r.end.x - w * 0.070, r.position.y + h * wind_y),
+		Color(0, 0, 0, 0.18), maxf(1.0, h * 0.004))
 
-	if details:
-		ci.draw_polyline(body_pts + PackedVector2Array([body_pts[0]]), edge, maxf(1.5, w * 0.012), true)
-		soft_shadow(ci, r, w * 0.22, 0.30)
-
-	# cylindrical shading across the width — what makes the roof read as a roof
-	var shade := PackedVector2Array([
-		Vector2(cx - hw * 0.96, r.position.y + h * 0.10),
-		Vector2(cx + hw * 0.96, r.position.y + h * 0.10),
-		Vector2(cx + hw * 0.96, r.end.y - h * 0.10),
-		Vector2(cx - hw * 0.96, r.end.y - h * 0.10),
-	])
-	ci.draw_polygon(shade, PackedColorArray([
-		Color(1, 1, 1, 0.11), Color(0, 0, 0, 0.10), Color(0, 0, 0, 0.10), Color(1, 1, 1, 0.11),
-	]))
+	if bool(st.scoop):
+		rr(ci, Rect2(cx - w * 0.10, r.position.y + h * (wind_y - 0.105),
+			w * 0.20, h * 0.045), dark, w * 0.03, Color(0, 0, 0, 0.4), 1)
+	if bool(st.vents):
+		for side in [-1.0, 1.0]:
+			for i in range(2):
+				rr(ci, Rect2(cx + float(side) * w * 0.115 - w * 0.045,
+					r.position.y + h * (wind_y - 0.088 + float(i) * 0.024),
+					w * 0.090, h * 0.011), dark, w * 0.005)
 
 	if with_glass:
-		# bonnet crease: follows the nose taper, so the bonnet reads as a plane
-		var hood_w0 := hw * _side_at(side, 0.02) * 0.66
-		var hood_w1 := hw * _side_at(side, cy) * 0.72
-		ci.draw_polygon(PackedVector2Array([
-			Vector2(cx - hood_w0, r.position.y + h * 0.02),
-			Vector2(cx - hood_w0 * 0.52, r.position.y + h * 0.02),
-			Vector2(cx - hood_w1 * 0.52, r.position.y + h * cy),
-			Vector2(cx - hood_w1, r.position.y + h * cy),
-		]), PackedColorArray([Color(1, 1, 1, 0.05), Color(1, 1, 1, 0.05), Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.0)]))
-		_draw_cabin(ci, r, pr, glass)
-		if rails:
-			# roof rails make an ordinary body read as a crossover / SUV
-			var rr_y := r.position.y + h * (cy + 0.02)
-			var rr_h := h * (cr - cy - 0.04)
-			rr(ci, Rect2(cx - hw * 0.70, rr_y, w * 0.042, rr_h), dark, w * 0.018)
-			rr(ci, Rect2(cx + hw * 0.70 - w * 0.042, rr_y, w * 0.042, rr_h), dark, w * 0.018)
-		if roof_sign:
-			rr(ci, Rect2(cx - w * 0.165, r.position.y + h * (cy + 0.06), w * 0.33, h * 0.088),
-				Color(0.96, 0.84, 0.34), w * 0.03, Color(0.22, 0.19, 0.12, 0.65), 1)
-			rr(ci, Rect2(cx - w * 0.145, r.position.y + h * (cy + 0.074), w * 0.29, h * 0.032), Color(0.20, 0.18, 0.13, 0.55), w * 0.01)
+		# windshield: glass gradient, dark at the cowl, sky at the roof
+		rr(ci, Rect2(r.position.x + w * 0.13, r.position.y + h * wind_y,
+			w * 0.74, h * wind_h), glass, w * 0.07, Color(0.3, 0.35, 0.4, 0.5), 1)
+		rr(ci, Rect2(r.position.x + w * 0.16, r.position.y + h * (wind_y + 0.014),
+			w * 0.68, h * 0.030), Color(0.55, 0.64, 0.72, 0.38), w * 0.02)
+		rr(ci, Rect2(r.position.x + w * 0.16, r.position.y + h * (wind_y + wind_h - 0.034),
+			w * 0.68, h * 0.022), Color(0.02, 0.03, 0.04, 0.22), w * 0.02)
 
-	if details and bool(pr.mirrors):
-		var my := r.position.y + h * (cy - 0.045)
-		var mx: float = hw * _side_at(side, cy - 0.045) + w * 0.012
-		rr(ci, Rect2(cx - mx - w * 0.062, my, w * 0.075, h * 0.032), dark, w * 0.02)
-		rr(ci, Rect2(cx + mx - w * 0.013, my, w * 0.075, h * 0.032), dark, w * 0.02)
+	# roof panel
+	var roof_col := body.darkened(0.18) if bool(st.dark_roof) else body.darkened(0.10)
+	rr(ci, Rect2(r.position.x + w * 0.11, r.position.y + h * roof_y,
+		w * 0.78, h * roof_h), roof_col, w * 0.08)
+	rr(ci, Rect2(r.position.x + w * 0.20, r.position.y + h * (roof_y + 0.020),
+		w * 0.60, h * 0.018), Color(1, 1, 1, 0.07), w * 0.01)
 
-	if details:
-		# boot lid crease, so the rear reads as a rear
-		var boot_y := r.position.y + h * (cr + 0.06)
-		var boot_w: float = hw * _side_at(side, cr + 0.06) * 0.68
-		ci.draw_line(Vector2(cx - boot_w, boot_y), Vector2(cx + boot_w, boot_y), Color(0, 0, 0, 0.13), maxf(1.0, h * 0.006))
+	if rails:
+		# roof rails make an ordinary body read as a crossover / SUV
+		rr(ci, Rect2(r.position.x + w * 0.155, r.position.y + h * (roof_y + 0.020),
+			w * 0.042, h * (roof_h - 0.040)), dark, w * 0.02)
+		rr(ci, Rect2(r.end.x - w * 0.197, r.position.y + h * (roof_y + 0.020),
+			w * 0.042, h * (roof_h - 0.040)), dark, w * 0.02)
+	if roof_sign:
+		# taxi-style roof sign
+		rr(ci, Rect2(r.position.x + w * 0.335, r.position.y + h * (roof_y + 0.067),
+			w * 0.33, h * 0.088), Color(0.96, 0.84, 0.34), w * 0.03, Color(0.22, 0.19, 0.12, 0.65), 1)
+		rr(ci, Rect2(r.position.x + w * 0.355, r.position.y + h * (roof_y + 0.083),
+			w * 0.29, h * 0.032), Color(0.20, 0.18, 0.13, 0.55), w * 0.01)
+
+	# side windows (with a thin chrome edge, so they read as glass, not holes)
+	var sw_y := r.position.y + h * (roof_y + 0.015)
+	var sw_h := h * (roof_h - 0.050)
+	rr(ci, Rect2(r.position.x + w * 0.045, sw_y, w * 0.075, sw_h),
+		glass, w * 0.03, Color(0.55, 0.62, 0.70, 0.45), 1)
+	rr(ci, Rect2(r.end.x - w * 0.120, sw_y, w * 0.075, sw_h),
+		glass, w * 0.03, Color(0.55, 0.62, 0.70, 0.45), 1)
+
+	# mirrors
+	var my := r.position.y + h * (wind_y + 0.100)
+	rr(ci, Rect2(r.position.x - w * 0.045, my, w * 0.075, h * 0.032), dark, w * 0.02)
+	rr(ci, Rect2(r.end.x - w * 0.030, my, w * 0.075, h * 0.032), dark, w * 0.02)
+
+	if with_glass:
+		# rear window
+		rr(ci, Rect2(r.position.x + w * 0.145, r.position.y + h * rear_y,
+			w * 0.71, h * 0.100), glass, w * 0.06, Color(0.3, 0.35, 0.4, 0.5), 1)
+		rr(ci, Rect2(r.position.x + w * 0.170, r.position.y + h * (rear_y + 0.012),
+			w * 0.66, h * 0.022), Color(0.48, 0.57, 0.66, 0.26), w * 0.01)
+
+	# boot lid shading
+	rr(ci, Rect2(r.position.x + w * 0.11, r.position.y + h * boot_y,
+		w * 0.78, h * 0.100), body.darkened(0.05), w * 0.06)
+
+	# side skirts on the aero cars
+	if bool(st.diffuser):
+		rr(ci, Rect2(r.position.x + w * 0.012, r.position.y + h * (roof_y + 0.020),
+			w * 0.020, h * (boot_y - roof_y)), Color(0, 0, 0, 0.18), w * 0.008)
+		rr(ci, Rect2(r.end.x - w * 0.032, r.position.y + h * (roof_y + 0.020),
+			w * 0.020, h * (boot_y - roof_y)), Color(0, 0, 0, 0.18), w * 0.008)
 
 	if stripes:
-		# racing stripes, clipped visually to the bonnet and the boot
-		var st: Color = opts.get("stripe_color", Color(0.94, 0.93, 0.90, 0.92))
-		var stripe_h := h * (cy - 0.02)
-		for sx in [-0.20, 0.145]:
-			rr(ci, Rect2(cx + w * sx, r.position.y + h * 0.02, w * 0.055, stripe_h), st, w * 0.02)
-			rr(ci, Rect2(cx + w * sx, r.position.y + h * (cr + 0.05), w * 0.055, h * (0.94 - cr)), st, w * 0.02)
+		# racing stripes run bonnet -> roof -> boot
+		var stc: Color = opts.get("stripe_color", Color(0.94, 0.93, 0.90, 0.92))
+		var sw := w * float(st.stripe_w)
+		for sx in [cx - w * 0.200, cx + w * 0.145]:
+			rr(ci, Rect2(sx, r.position.y + h * 0.020, sw, h * (wind_y - 0.035)),
+				stc, sw * 0.35)
+			if roof_h > 0.12:
+				rr(ci, Rect2(sx, r.position.y + h * (roof_y + 0.025), sw, h * (roof_h - 0.050)),
+					stc, sw * 0.35)
+			rr(ci, Rect2(sx, r.position.y + h * (boot_y + 0.012), sw, h * (0.940 - boot_y - 0.012)),
+				stc, sw * 0.35)
 
-	if details:
-		if wing:
-			# rear wing
-			rr(ci, Rect2(r.position.x + w * 0.03, r.position.y + h * 0.885, w * 0.94, h * 0.055), body.darkened(0.45), w * 0.03, Color(0, 0, 0, 0.4), 1)
-			rr(ci, Rect2(r.position.x + w * 0.06, r.position.y + h * 0.895, w * 0.88, h * 0.018), Color(1, 1, 1, 0.10), w * 0.01)
-		else:
-			rr(ci, Rect2(r.position.x + w * 0.09, r.position.y + h * 0.895, w * 0.82, h * 0.028), body.darkened(0.35), w * 0.02)
+	if wing:
+		# rear wing
+		rr(ci, Rect2(r.position.x + w * 0.03, r.position.y + h * 0.885, w * 0.94, h * 0.055),
+			body.darkened(0.45), w * 0.03, Color(0, 0, 0, 0.4), 1)
+		rr(ci, Rect2(r.position.x + w * 0.06, r.position.y + h * 0.895, w * 0.88, h * 0.018),
+			Color(1, 1, 1, 0.10), w * 0.01)
+	else:
+		rr(ci, Rect2(r.position.x + w * 0.09, r.position.y + h * 0.895, w * 0.82, h * 0.028),
+			body.darkened(0.35), w * 0.02)
 
-		# headlights follow the nose width
-		var lamp := Color(0.97, 0.95, 0.86)
-		var nose_w: float = hw * _side_at(side, 0.04)
-		var hl_w := w * 0.235
-		var hl_x := cx - nose_w + w * 0.06
-		rr(ci, Rect2(hl_x, r.position.y + h * 0.014, hl_w, h * 0.028), lamp, w * 0.02)
-		rr(ci, Rect2(cx + nose_w - w * 0.06 - hl_w, r.position.y + h * 0.014, hl_w, h * 0.028), lamp, w * 0.02)
+	# headlights
+	var lamp := Color(0.97, 0.95, 0.86)
+	rr(ci, Rect2(r.position.x + w * 0.095, r.position.y + h * 0.014, w * 0.235, h * 0.028),
+		lamp, w * 0.02)
+	rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.014, w * 0.235, h * 0.028),
+		lamp, w * 0.02)
 
-		# taillights
-		var tail := Color(0.78, 0.11, 0.11) if not is_player else Color(0.86, 0.13, 0.12)
-		var rear_w: float = hw * _side_at(side, 0.96)
-		var tl_w := w * 0.245
-		var tl_x := cx - rear_w + w * 0.055
-		rr(ci, Rect2(tl_x, r.position.y + h * 0.952, tl_w, h * 0.024), tail, w * 0.02)
-		rr(ci, Rect2(cx + rear_w - w * 0.055 - tl_w, r.position.y + h * 0.952, tl_w, h * 0.024), tail, w * 0.02)
+	# aero lips
+	if bool(st.splitter):
+		rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.003, w * 0.80, h * 0.011),
+			dark, w * 0.005)
+	if bool(st.diffuser):
+		rr(ci, Rect2(cx - w * 0.30, r.end.y - h * 0.026, w * 0.60, h * 0.018),
+			dark, w * 0.005)
+		for i in range(5):
+			var fx := cx - w * 0.24 + w * 0.12 * float(i)
+			ci.draw_line(Vector2(fx, r.end.y - h * 0.026), Vector2(fx, r.end.y - h * 0.008),
+				Color(1, 1, 1, 0.08), maxf(1.0, w * 0.004))
 
-		if braking:
-			ci.draw_circle(Vector2(tl_x + tl_w * 0.5, r.position.y + h * 0.960), w * 0.22, Color(1.0, 0.16, 0.10, 0.20))
-			ci.draw_circle(Vector2(cx + rear_w - w * 0.055 - tl_w * 0.5, r.position.y + h * 0.960), w * 0.22, Color(1.0, 0.16, 0.10, 0.20))
-			rr(ci, Rect2(tl_x, r.position.y + h * 0.952, tl_w, h * 0.024), Color(1.0, 0.30, 0.18), w * 0.02)
-			rr(ci, Rect2(cx + rear_w - w * 0.055 - tl_w, r.position.y + h * 0.952, tl_w, h * 0.024), Color(1.0, 0.30, 0.18), w * 0.02)
+	# exhaust tips
+	var ex := int(st.exhaust)
+	var tip := Color(0.62, 0.64, 0.67)
+	if ex <= 1:
+		rr(ci, Rect2(cx - w * 0.045, r.end.y - h * 0.024, w * 0.090, h * 0.013),
+			tip, w * 0.006)
+	else:
+		for side in [-1.0, 1.0]:
+			rr(ci, Rect2(cx + float(side) * w * 0.105 - w * 0.045, r.end.y - h * 0.024,
+				w * 0.090, h * 0.013), tip, w * 0.006)
 
-	# front grill / bumper line, narrowed to the actual nose
-	if details:
-		var grill_w: float = hw * _side_at(side, 0.03) * 0.70
-		rr(ci, Rect2(cx - grill_w * 0.5, r.position.y + h * 0.012, grill_w, h * 0.018), dark, w * 0.01)
+	# taillights
+	var tail := Color(0.78, 0.11, 0.11) if not is_player else Color(0.86, 0.13, 0.12)
+	rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.952, w * 0.245, h * 0.024),
+		tail, w * 0.02)
+	rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.952, w * 0.245, h * 0.024),
+		tail, w * 0.02)
+
+	if braking:
+		ci.draw_circle(Vector2(r.position.x + w * 0.205, r.position.y + h * 0.960), w * 0.22,
+			Color(1.0, 0.16, 0.10, 0.20))
+		ci.draw_circle(Vector2(r.end.x - w * 0.205, r.position.y + h * 0.960), w * 0.22,
+			Color(1.0, 0.16, 0.10, 0.20))
+		rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.952, w * 0.245, h * 0.024),
+			Color(1.0, 0.30, 0.18), w * 0.02)
+		rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.952, w * 0.245, h * 0.024),
+			Color(1.0, 0.30, 0.18), w * 0.02)
+
+	# front grill / bumper line
+	rr(ci, Rect2(r.position.x + w * 0.34, r.position.y + h * 0.012, w * 0.32, h * 0.018),
+		dark, w * 0.01)
 
 
 static func truck(ci: CanvasItem, center: Vector2, w: float, h: float, cab: Color, trailer: Color, opts := {}) -> void:
@@ -425,7 +383,7 @@ static func truck(ci: CanvasItem, center: Vector2, w: float, h: float, cab: Colo
 static func van(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, _opts := {}) -> void:
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var dark := Color(0.075, 0.082, 0.09)
-	var glass := Color(0.055, 0.075, 0.100)
+	var glass := Color(0.105, 0.145, 0.185)
 	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
 	soft_shadow(ci, r, w * 0.16, 0.30)
 
@@ -483,7 +441,7 @@ static func bus(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var accent: Color = opts.get("accent", Color(0.86, 0.27, 0.22))
 	var dark := Color(0.075, 0.082, 0.09)
-	var glass := Color(0.055, 0.075, 0.100)
+	var glass := Color(0.105, 0.145, 0.185)
 	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
 	soft_shadow(ci, r, w * 0.12, 0.34)
 
@@ -532,7 +490,7 @@ static func bus(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 static func pickup(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color, opts := {}) -> void:
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var dark := Color(0.075, 0.082, 0.09)
-	var glass := Color(0.055, 0.075, 0.100)
+	var glass := Color(0.105, 0.145, 0.185)
 	var edge := body.lightened(0.22) if body.v < 0.3 else body.darkened(0.38)
 	soft_shadow(ci, r, w * 0.20, 0.30)
 

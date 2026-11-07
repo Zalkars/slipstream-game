@@ -1,11 +1,21 @@
 class_name CarStage
 extends Control
 
-# Garage showcase: spotlight, rotating turntable and a large car preview.
+# Garage showcase: a large, clean car on a lit turntable.
+#
+# The 0.5.0 experiment squashed the car into a perspective that made it look
+# broken and tiny. This is the 0.4.0 composition the garage was designed
+# around, polished in the places that actually show:
+#   * a soft floor wash instead of a black void,
+#   * a layered contact shadow under the tyres,
+#   * a polished turntable with a warm rotating band,
+#   * the readable top-down body the roster has always used.
 
 var car: Dictionary = {}
 var _t := 0.0
 var _ring := 0.0
+# QA hook: freeze the animation / hide the contact shadow for a repeatable shot.
+var shadow_off := false
 
 
 func _ready() -> void:
@@ -19,15 +29,64 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
+# Test hook: put the animation on an exact phase so renders are repeatable.
+func set_time(t: float) -> void:
+	_t = t
+	_ring = t * 0.42
+	queue_redraw()
+
+
+# --- geometry, in one place ------------------------------------------------
+
+func car_width() -> float:
+	return size.x * 0.33
+
+
+func car_height() -> float:
+	return car_width() * 1.9
+
+
+func podium_center() -> Vector2:
+	return Vector2(size.x * 0.5, size.y * 0.71)
+
+
+func car_center() -> Vector2:
+	return Vector2(size.x * 0.5, size.y * 0.47 + sin(_t * 1.25) * 2.0)
+
+
+func shadow_center() -> Vector2:
+	return Vector2(size.x * 0.5, car_center().y + car_height() * 0.42)
+
+
+# --- drawing ---------------------------------------------------------------
+
 func _draw() -> void:
-	var c := size * 0.5
+	_draw_room()
+	_draw_beam()
+	_draw_podium()
+	if not shadow_off:
+		_draw_contact_shadow()
+	_draw_car()
+
+
+# Dark showroom with a gentle wall-to-floor gradient.
+func _draw_room() -> void:
 	Art.rr(self, Rect2(Vector2.ZERO, size), Color("#0b0e11"), 28)
-	# light beam from above: soft vertical gradient cone
-	var bw0 := size.x * 0.10
-	var bw1 := size.x * 0.44
-	var by0 := 0.0
-	var by1 := size.y * 0.72
-	var bands := 12
+	Fx.vgrad(self, Rect2(Vector2.ZERO, Vector2(size.x, size.y * 0.78)),
+		Color(0.090, 0.100, 0.115), Color(0.025, 0.030, 0.035))
+	# floor: a barely visible warm strip, so the podium has something to stand on
+	Fx.vgrad(self, Rect2(0.0, size.y * 0.68, size.x, size.y * 0.32),
+		Color(0.030, 0.032, 0.036, 0.0), Color(0.016, 0.018, 0.021))
+
+
+# Cone of light from a fixture above the frame.
+func _draw_beam() -> void:
+	var c := size * 0.5
+	var bw0 := size.x * 0.075
+	var bw1 := size.x * 0.345
+	var by0 := -size.y * 0.04
+	var by1 := size.y * 0.68
+	var bands := 14
 	for i in range(bands):
 		var k0 := float(i) / float(bands)
 		var k1 := float(i + 1) / float(bands)
@@ -35,39 +94,80 @@ func _draw() -> void:
 		var w1 := lerpf(bw0, bw1, k1)
 		var y0 := lerpf(by0, by1, k0)
 		var y1 := lerpf(by0, by1, k1)
-		var a := 0.18 * lerpf(1.30, 0.35, (k0 + k1) * 0.5) / float(bands)
+		var a := 0.16 * lerpf(1.35, 0.30, (k0 + k1) * 0.5) / float(bands)
 		draw_colored_polygon(PackedVector2Array([
 			Vector2(c.x - w0, y0), Vector2(c.x + w0, y0),
 			Vector2(c.x + w1, y1), Vector2(c.x - w1, y1),
 		]), Color(0.86, 0.89, 0.93, a))
-	# soft spotlight floor glow with gentle edge falloff
-	for i in range(9):
-		var r := size.x * (0.10 + float(i) * 0.065) * (0.55 + 0.30 * sin(float(i) * 1.3))
-		var inv := 1.0 - float(i) / 9.0
-		draw_circle(c + Vector2(0, size.y * 0.16), r, Color(0.98, 0.90, 0.74, 0.012 * (1.0 + inv * 2.2)))
 
-	# turntable
-	var plat := c + Vector2(0, size.y * 0.22)
-	draw_set_transform(plat, 0.0, Vector2(1.0, 0.34))
-	draw_circle(Vector2.ZERO, size.x * 0.42, Color(0.05, 0.06, 0.07))
-	draw_circle(Vector2.ZERO, size.x * 0.40, Color(0.09, 0.10, 0.11))
-	draw_arc(Vector2.ZERO, size.x * 0.40, 0.0, TAU, 64, Color(1, 1, 1, 0.07), 3.0, true)
-	draw_arc(Vector2.ZERO, size.x * 0.30, 0.0, TAU, 64, Color(1, 1, 1, 0.035), 2.0, true)
-	# rotating dashes
-	for i in range(24):
-		var a0 := _ring + TAU * float(i) / 24.0
-		draw_arc(Vector2.ZERO, size.x * 0.355, a0, a0 + 0.10, 4, Color(0.95, 0.72, 0.28, 0.30), 3.5, true)
+
+# Points along a perspective ellipse: cx,cy centre, rx horizontal, ry vertical.
+func _ellipse_pts(cx: float, cy: float, rx: float, ry: float, a0: float, a1: float, steps: int) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for i in range(steps + 1):
+		var a := lerpf(a0, a1, float(i) / float(steps))
+		out.push_back(Vector2(cx + cos(a) * rx, cy + sin(a) * ry))
+	return out
+
+
+# Polished turntable in perspective. The fill uses a squashed transform (cheap),
+# but the ring details are drawn as real screen-space ellipse polylines: a
+# squashed draw_arc stroke collapses to ~1px and simply disappears, while these
+# stay a readable 2-3px whatever the aspect ratio.
+func _draw_podium() -> void:
+	var p := podium_center()
+	var rx := size.x * 0.44
+	var ry := rx * 0.33
+	draw_set_transform(p, 0.0, Vector2(1.0, 0.33))
+	draw_circle(Vector2.ZERO, rx, Color(0.032, 0.038, 0.048))
+	# soft inner wash so the table reads as a lit surface, not a dark disc
+	for i in range(5):
+		var k := float(i) / 4.0
+		draw_circle(Vector2.ZERO, rx * lerpf(0.96, 0.60, k),
+			Color(0.10, 0.11, 0.13, 0.12))
+	draw_set_transform(Vector2.ZERO)
+	# bright rim and an inner seam
+	draw_polyline(_ellipse_pts(p.x, p.y, rx * 0.985, ry * 0.985, 0.0, TAU, 96),
+		Color(1, 1, 1, 0.14), 3.0, true)
+	draw_polyline(_ellipse_pts(p.x, p.y, rx * 0.760, ry * 0.760, 0.0, TAU, 80),
+		Color(1, 1, 1, 0.06), 2.0, true)
+	# rotating warm dashes as short chords, drawn in screen space so they keep
+	# their thickness on the flattened (top/bottom) parts of the ellipse
+	var band := rx * 0.875
+	var band_ry := band * 0.33
+	for i in range(28):
+		var a0 := _ring + TAU * float(i) / 28.0 - 0.040
+		var a1 := a0 + 0.080
+		var p0 := Vector2(p.x + cos(a0) * band, p.y + sin(a0) * band_ry)
+		var p1 := Vector2(p.x + cos(a1) * band, p.y + sin(a1) * band_ry)
+		draw_line(p0, p1, Color(0.95, 0.72, 0.28, 0.34), 3.0, true)
+	# sheen along the front edge, away from the light
+	draw_polyline(_ellipse_pts(p.x, p.y, rx * 0.93, ry * 0.93, PI * 0.18, PI * 0.82, 48),
+		Color(1, 1, 1, 0.10), 3.0, true)
+
+
+# Soft contact shadow under the tyres: widest and faintest first, narrowing to
+# a dark core. Painted before the car, so the car hides the hard centre.
+func _draw_contact_shadow() -> void:
+	var c := shadow_center()
+	var w := car_width()
+	var layers := 8
+	for i in range(layers):
+		var k := 1.0 - float(i) / float(layers - 1)  # 1 = outermost
+		var spread := lerpf(0.46, 0.78, k)
+		var alpha := lerpf(0.24, 0.0, pow(k, 0.9))
+		draw_set_transform(c, 0.0, Vector2(1.0, 0.30))
+		draw_circle(Vector2.ZERO, w * spread, Color(0.010, 0.010, 0.016, alpha))
 	draw_set_transform(Vector2.ZERO)
 
-	# car shadow + car
-	var car_c := c + Vector2(0, -size.y * 0.02 + sin(_t * 1.25) * 3.0)
+
+func _draw_car() -> void:
+	var car_c := car_center()
 	var body := Color(str(car.get("color", "#b32b26")))
-	var stripes := bool(car.get("stripe", true))
-	var wing := bool(car.get("wing", false))
-	var stripe_col := Color(str(car.get("stripe_color", "#f0ede4")))
-	draw_circle(car_c + Vector2(0, 150), 118.0, Color(0, 0, 0, 0.30))
-	Art.car(self, car_c, 86.0 * 2.5, 163.0 * 2.5, body, {
-		"stripe": stripes,
-		"wing": wing,
-		"stripe_color": stripe_col,
+	Art.car(self, car_c, car_width(), car_height(), body, {
+		"silhouette": str(car.get("silhouette", "sedan")),
+		"stripe": bool(car.get("stripe", true)),
+		"wing": bool(car.get("wing", false)),
+		"stripe_color": Color(str(car.get("stripe_color", "#f0ede4"))),
+		"player": true,
 	})
