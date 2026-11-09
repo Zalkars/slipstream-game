@@ -73,31 +73,61 @@ static func car_style(name: String) -> Dictionary:
 			"hatch": {
 				"len": 0.94, "wid": 0.99, "cabin": -0.020, "roof": 0.020,
 				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
-				"exhaust": 1, "dark_roof": false, "stripe_w": 0.058,
+				"exhaust": 1, "dark_roof": false, "stripe_w": 0.058, "hl": "bar",
+			},
+			# Box van: tall glasshouse, wide headlights, sliding-door look.
+			"van": {
+				"len": 1.00, "wid": 0.985, "cabin": 0.040, "roof": 0.055,
+				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
+				"exhaust": 1, "dark_roof": false, "stripe_w": 0.060, "hl": "wide",
+				"van": true,
 			},
 			# Three-box GT: the baseline every other car is measured against.
 			"sedan": {
 				"len": 1.00, "wid": 1.00, "cabin": 0.000, "roof": 0.000,
 				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
-				"exhaust": 2, "dark_roof": false, "stripe_w": 0.055,
+				"exhaust": 2, "dark_roof": false, "stripe_w": 0.055, "hl": "slim",
 			},
-			# Muscle: wider body, cabin set back, hood scoop and fat stripes.
+			# Off-roader: rails, roof rack, spare wheel, bull bar, round lights.
+			"offroad": {
+				"len": 0.97, "wid": 1.02, "cabin": 0.010, "roof": 0.035,
+				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
+				"exhaust": 1, "dark_roof": false, "stripe_w": 0.055, "hl": "round",
+				"rails": true, "rack": true, "spare": true, "nudge": true, "tire": 1.12,
+			},
+			# Muscle: wider body, cabin set back, hood scoop, round lamps.
 			"muscle": {
 				"len": 1.02, "wid": 1.05, "cabin": 0.025, "roof": -0.020,
 				"scoop": true, "vents": false, "splitter": false, "diffuser": false,
-				"exhaust": 2, "dark_roof": false, "stripe_w": 0.070,
+				"exhaust": 2, "dark_roof": false, "stripe_w": 0.070, "hl": "round",
+				"tl": "round", "tire": 1.06,
+			},
+			# Pickup: open cargo bed behind the cab, chunky tyres.
+			"pickup": {
+				"len": 1.045, "wid": 1.03, "cabin": 0.020, "roof": -0.025,
+				"scoop": false, "vents": false, "splitter": false, "diffuser": false,
+				"exhaust": 1, "dark_roof": false, "stripe_w": 0.055, "hl": "bar",
+				"bed": true, "tire": 1.06,
 			},
 			# Track coupe: forward cabin, vents, splitter and diffuser.
 			"sport": {
 				"len": 1.035, "wid": 1.035, "cabin": -0.025, "roof": -0.015,
 				"scoop": false, "vents": true, "splitter": true, "diffuser": true,
-				"exhaust": 2, "dark_roof": false, "stripe_w": 0.058,
+				"exhaust": 2, "dark_roof": false, "stripe_w": 0.058, "hl": "led",
 			},
-			# Hypercar: widest, longest, dark roof, aero all round.
+			# Electric: closed nose, full-width light strips, dark glass roof.
+			"ev": {
+				"len": 1.02, "wid": 1.02, "cabin": -0.015, "roof": 0.010,
+				"scoop": false, "vents": true, "splitter": false, "diffuser": true,
+				"exhaust": 0, "dark_roof": true, "stripe_w": 0.050, "hl": "strip",
+				"tl": "bar", "ev": true, "tire": 0.98,
+			},
+			# Hypercar: widest, longest, dark roof, aero all round, light bars.
 			"hyper": {
 				"len": 1.05, "wid": 1.065, "cabin": -0.010, "roof": -0.030,
 				"scoop": false, "vents": true, "splitter": true, "diffuser": true,
-				"exhaust": 2, "dark_roof": true, "stripe_w": 0.050,
+				"exhaust": 2, "dark_roof": true, "stripe_w": 0.050, "hl": "led",
+				"tl": "bar", "tire": 0.97,
 			},
 		}
 	return _styles.get(name, _styles["sedan"])
@@ -108,11 +138,11 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	var stripes: bool = opts.get("stripe", is_player)
 	var wing: bool = opts.get("wing", is_player)
 	var braking: bool = opts.get("brake", false)
-	var rails: bool = opts.get("rails", false)
 	var roof_sign: bool = opts.get("roof_sign", false)
 	var details: bool = opts.get("details", true)
 	var with_glass: bool = opts.get("glass", true)
 	var st: Dictionary = car_style(str(opts.get("silhouette", "sedan")))
+	var rails: bool = bool(st.get("rails", opts.get("rails", false)))
 	w *= float(st.wid)
 	h *= float(st.len)
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
@@ -126,18 +156,19 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	# bonnet, roof, side windows and boot apart.
 	var cs := float(st.cabin)
 	var wind_y := 0.235 + cs
-	var wind_h := 0.135
+	var wind_h := 0.135 + (0.030 if bool(st.get("van", false)) else 0.0)
 	var roof_y := 0.385 + cs
 	var roof_h := 0.245 + float(st.roof)
 	var rear_y := roof_y + roof_h + 0.025
 	var boot_y := rear_y + 0.130
+	var tire := float(st.get("tire", 1.0))
 
 	if details:
 		soft_shadow(ci, r, w * 0.22, 0.30)
 
 	# wheels (behind the body), each with a fender socket and a readable rim
 	var heat: float = float(opts.get("heat", 0.0))
-	var ww := w * 0.158
+	var ww := w * 0.158 * tire
 	var wh := h * 0.148
 	for wy in [r.position.y + h * 0.145, r.position.y + h * 0.665]:
 		for side in [-1.0, 1.0]:
@@ -151,12 +182,20 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 					var ty: float = wy + wh * float(k)
 					ci.draw_line(Vector2(wx + ww * 0.16, ty), Vector2(wx + ww * 0.84, ty),
 						Color(1, 1, 1, 0.055), maxf(1.0, wh * 0.03))
-				# rim sits on the visible outer half of the tyre
+				# rim: silver dish on the visible outer half of the tyre, with
+				# vanes, a hub and an outer highlight so it reads as alloy
 				var rim_x: float = (wx + ww * 0.06) if left else (wx + ww * 0.66)
 				rr(ci, Rect2(rim_x, wy + wh * 0.27, ww * 0.28, wh * 0.46),
-					Color(0.50, 0.53, 0.57, 0.9), ww * 0.10)
-				ci.draw_circle(Vector2(rim_x + ww * 0.14, wy + wh * 0.5),
+					Color(0.50, 0.53, 0.57, 0.92), ww * 0.10)
+				for k in range(4):
+					var vy: float = wy + wh * (0.33 + float(k) * 0.11)
+					ci.draw_line(Vector2(rim_x + ww * 0.08, vy), Vector2(rim_x + ww * 0.24, vy),
+						Color(0, 0, 0, 0.20), maxf(1.0, wh * 0.020))
+				ci.draw_circle(Vector2(rim_x + ww * 0.14, wy + wh * 0.50),
 					ww * 0.055, Color(0.15, 0.16, 0.18))
+				var ox: float = (rim_x + ww * 0.02) if left else (rim_x + ww * 0.26)
+				ci.draw_line(Vector2(ox, wy + wh * 0.30), Vector2(ox, wy + wh * 0.70),
+					Color(1, 1, 1, 0.22), maxf(1.0, ww * 0.018))
 			if heat > 0.35:
 				# Glowing heated brake disc (cherry red to fiery incandescent orange)
 				var ht := clampf((heat - 0.35) / 0.65, 0.0, 1.0)
@@ -221,12 +260,38 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	rr(ci, Rect2(r.position.x + w * 0.20, r.position.y + h * (roof_y + 0.020),
 		w * 0.60, h * 0.018), Color(1, 1, 1, 0.07), w * 0.01)
 
+	var van_box := bool(st.get("van", false))
+	var cargo := bool(st.get("bed", false))
+	if bool(st.get("ev", false)):
+		# glass roof: cooler tint with a diagonal reflection sweep
+		rr(ci, Rect2(r.position.x + w * 0.14, r.position.y + h * (roof_y + 0.010),
+			w * 0.72, h * (roof_h - 0.020)), Color(0.10, 0.16, 0.20, 0.38), w * 0.05)
+		ci.draw_line(Vector2(r.position.x + w * 0.15, r.position.y + h * (roof_y + roof_h * 0.42)),
+			Vector2(r.position.x + w * 0.30, r.position.y + h * (roof_y + 0.015)),
+			Color(1, 1, 1, 0.12), maxf(1.0, w * 0.008))
+
 	if rails:
 		# roof rails make an ordinary body read as a crossover / SUV
 		rr(ci, Rect2(r.position.x + w * 0.155, r.position.y + h * (roof_y + 0.020),
 			w * 0.042, h * (roof_h - 0.040)), dark, w * 0.02)
 		rr(ci, Rect2(r.end.x - w * 0.197, r.position.y + h * (roof_y + 0.020),
 			w * 0.042, h * (roof_h - 0.040)), dark, w * 0.02)
+		if bool(st.get("rack", false)):
+			for i in range(3):
+				var ry := roof_y + 0.055 + float(i) * 0.070
+				rr(ci, Rect2(r.position.x + w * 0.17, r.position.y + h * ry,
+					w * 0.66, h * 0.011), Color(0.06, 0.065, 0.075), 1)
+	if bool(st.get("spare", false)):
+		# roof-mounted spare wheel: dark tyre, alloy disc, cross lugs
+		var rs := w * 0.058
+		var sp := Vector2(cx, r.position.y + h * (roof_y + roof_h * 0.52))
+		rr(ci, Rect2(sp.x - rs, sp.y - rs, rs * 2.0, rs * 2.0), Color(0.10, 0.11, 0.13), rs)
+		rr(ci, Rect2(sp.x - rs * 0.44, sp.y - rs * 0.44, rs * 0.88, rs * 0.88),
+			Color(0.52, 0.55, 0.59), rs * 0.30)
+		ci.draw_line(Vector2(sp.x, sp.y - rs * 0.06), Vector2(sp.x, sp.y + rs * 0.06),
+			Color(0.05, 0.05, 0.06), maxf(1.0, w * 0.004))
+		ci.draw_line(Vector2(sp.x - rs * 0.06, sp.y), Vector2(sp.x + rs * 0.06, sp.y),
+			Color(0.05, 0.05, 0.06), maxf(1.0, w * 0.004))
 	if roof_sign:
 		# taxi-style roof sign
 		rr(ci, Rect2(r.position.x + w * 0.335, r.position.y + h * (roof_y + 0.067),
@@ -234,29 +299,52 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 		rr(ci, Rect2(r.position.x + w * 0.355, r.position.y + h * (roof_y + 0.083),
 			w * 0.29, h * 0.032), Color(0.20, 0.18, 0.13, 0.55), w * 0.01)
 
-	# side windows (with a thin chrome edge, so they read as glass, not holes)
+	# side windows (with a thin chrome edge, so they read as glass, not holes);
+	# the van gets a taller glasshouse and a sliding-door seam.
 	var sw_y := r.position.y + h * (roof_y + 0.015)
-	var sw_h := h * (roof_h - 0.050)
-	rr(ci, Rect2(r.position.x + w * 0.045, sw_y, w * 0.075, sw_h),
-		glass, w * 0.03, Color(0.55, 0.62, 0.70, 0.45), 1)
-	rr(ci, Rect2(r.end.x - w * 0.120, sw_y, w * 0.075, sw_h),
-		glass, w * 0.03, Color(0.55, 0.62, 0.70, 0.45), 1)
+	var sw_h := h * ((roof_h - 0.050) + (0.035 if van_box else 0.0))
+	var sw_w := w * (0.088 if van_box else 0.075)
+	var sw_left := r.position.x + w * (0.040 if van_box else 0.045)
+	var sw_right := r.end.x - sw_w - w * 0.045
+	var chrome := Color(0.55, 0.62, 0.70, 0.45)
+	rr(ci, Rect2(sw_left, sw_y, sw_w, sw_h), glass, w * 0.03, chrome, 1)
+	rr(ci, Rect2(sw_right, sw_y, sw_w, sw_h), glass, w * 0.03, chrome, 1)
+	if van_box:
+		ci.draw_line(Vector2(sw_right + sw_w * 0.5, sw_y + sw_h * 0.12),
+			Vector2(sw_right + sw_w * 0.5, sw_y + sw_h * 0.88),
+			Color(0.90, 0.93, 0.96, 0.40), maxf(1.0, w * 0.006))
 
 	# mirrors
 	var my := r.position.y + h * (wind_y + 0.100)
 	rr(ci, Rect2(r.position.x - w * 0.045, my, w * 0.075, h * 0.032), dark, w * 0.02)
 	rr(ci, Rect2(r.end.x - w * 0.030, my, w * 0.075, h * 0.032), dark, w * 0.02)
 
-	if with_glass:
+	if with_glass and not cargo:
 		# rear window
 		rr(ci, Rect2(r.position.x + w * 0.145, r.position.y + h * rear_y,
 			w * 0.71, h * 0.100), glass, w * 0.06, Color(0.3, 0.35, 0.4, 0.5), 1)
 		rr(ci, Rect2(r.position.x + w * 0.170, r.position.y + h * (rear_y + 0.012),
 			w * 0.66, h * 0.022), Color(0.48, 0.57, 0.66, 0.26), w * 0.01)
 
-	# boot lid shading
-	rr(ci, Rect2(r.position.x + w * 0.11, r.position.y + h * boot_y,
-		w * 0.78, h * 0.100), body.darkened(0.05), w * 0.06)
+	if cargo:
+		# open cargo bed: dark floor, nearest-wall highlight, ribs and tailgate
+		var btop := rear_y + 0.022
+		rr(ci, Rect2(r.position.x + w * 0.075, r.position.y + h * btop,
+			w * 0.85, h * (0.965 - btop)), body.darkened(0.30), w * 0.03)
+		rr(ci, Rect2(r.position.x + w * 0.130, r.position.y + h * (btop + 0.014),
+			w * 0.74, h * (0.950 - btop)), body.darkened(0.42), w * 0.02)
+		for i in range(3):
+			rr(ci, Rect2(r.position.x + w * (0.190 + float(i) * 0.210),
+				r.position.y + h * (btop + 0.010), w * 0.020, h * (0.945 - btop)),
+				Color(0, 0, 0, 0.12), 1)
+		rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.948,
+			w * 0.83, h * 0.012), body.lightened(0.12), w * 0.01)
+		rr(ci, Rect2(r.position.x + w * 0.360, r.position.y + h * 0.946,
+			w * 0.28, h * 0.013), dark, w * 0.01)
+	elif with_glass:
+		# boot lid shading
+		rr(ci, Rect2(r.position.x + w * 0.11, r.position.y + h * boot_y,
+			w * 0.78, h * 0.100), body.darkened(0.05), w * 0.06)
 
 	# side skirts on the aero cars
 	if bool(st.diffuser):
@@ -275,8 +363,9 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 			if roof_h > 0.12:
 				rr(ci, Rect2(sx, r.position.y + h * (roof_y + 0.025), sw, h * (roof_h - 0.050)),
 					stc, sw * 0.35)
-			rr(ci, Rect2(sx, r.position.y + h * (boot_y + 0.012), sw, h * (0.940 - boot_y - 0.012)),
-				stc, sw * 0.35)
+			if not cargo:
+				rr(ci, Rect2(sx, r.position.y + h * (boot_y + 0.012), sw, h * (0.940 - boot_y - 0.012)),
+					stc, sw * 0.35)
 
 	if wing:
 		# rear wing
@@ -285,15 +374,47 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 		rr(ci, Rect2(r.position.x + w * 0.06, r.position.y + h * 0.895, w * 0.88, h * 0.018),
 			Color(1, 1, 1, 0.10), w * 0.01)
 	else:
-		rr(ci, Rect2(r.position.x + w * 0.09, r.position.y + h * 0.895, w * 0.82, h * 0.028),
-			body.darkened(0.35), w * 0.02)
+		if not cargo:
+			rr(ci, Rect2(r.position.x + w * 0.09, r.position.y + h * 0.895, w * 0.82, h * 0.028),
+				body.darkened(0.35), w * 0.02)
 
-	# headlights
+	# headlights: a different lamp per class, so the garage reads at a glance
 	var lamp := Color(0.97, 0.95, 0.86)
-	rr(ci, Rect2(r.position.x + w * 0.095, r.position.y + h * 0.014, w * 0.235, h * 0.028),
-		lamp, w * 0.02)
-	rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.014, w * 0.235, h * 0.028),
-		lamp, w * 0.02)
+	var hl_kind := str(st.get("hl", "bar"))
+	match hl_kind:
+		"round":
+			for side in [-1.0, 1.0]:
+				var hc := Vector2(cx + float(side) * w * 0.145, r.position.y + h * 0.038)
+				if details:
+					ci.draw_circle(hc, w * 0.072, Color(1.0, 0.93, 0.70, 0.13))
+				ci.draw_circle(hc, w * 0.052, lamp)
+				ci.draw_circle(hc, w * 0.024, Color(1.0, 1.0, 0.94))
+		"led":
+			rr(ci, Rect2(r.position.x + w * 0.040, r.position.y + h * 0.016, w * 0.170, h * 0.015), lamp, w * 0.01)
+			rr(ci, Rect2(r.end.x - w * 0.210, r.position.y + h * 0.016, w * 0.170, h * 0.015), lamp, w * 0.01)
+			rr(ci, Rect2(r.position.x + w * 0.230, r.position.y + h * 0.032, w * 0.060, h * 0.009),
+				Color(0.95, 0.93, 0.85, 0.5), w * 0.004)
+			rr(ci, Rect2(r.end.x - w * 0.290, r.position.y + h * 0.032, w * 0.060, h * 0.009),
+				Color(0.95, 0.93, 0.85, 0.5), w * 0.004)
+		"strip":
+			# full-width EV light bar across the nose
+			rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.018, w * 0.80, h * 0.026), lamp, w * 0.030)
+			rr(ci, Rect2(r.position.x + w * 0.14, r.position.y + h * 0.052, w * 0.72, h * 0.006),
+				Color(0.95, 0.92, 0.80, 0.45), 1)
+		"wide":
+			rr(ci, Rect2(r.position.x + w * 0.055, r.position.y + h * 0.016, w * 0.350, h * 0.021), lamp, w * 0.02)
+			rr(ci, Rect2(r.end.x - w * 0.405, r.position.y + h * 0.016, w * 0.350, h * 0.021), lamp, w * 0.02)
+		"slim":
+			rr(ci, Rect2(r.position.x + w * 0.095, r.position.y + h * 0.018, w * 0.165, h * 0.016), lamp, w * 0.01)
+			rr(ci, Rect2(r.end.x - w * 0.260, r.position.y + h * 0.018, w * 0.165, h * 0.016), lamp, w * 0.01)
+		_:
+			# two rounded lamps (hatch, pickup)
+			for side in [-1.0, 1.0]:
+				var bx := (r.position.x + w * 0.10) if side < 0.0 else (r.end.x - w * 0.310)
+				if details:
+					ci.draw_circle(Vector2(bx + w * 0.12, r.position.y + h * 0.032), w * 0.085,
+						Color(1.0, 0.93, 0.70, 0.10))
+				rr(ci, Rect2(bx, r.position.y + h * 0.014, w * 0.235, h * 0.028), lamp, w * 0.02)
 
 	# aero lips
 	if bool(st.splitter):
@@ -307,10 +428,12 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 			ci.draw_line(Vector2(fx, r.end.y - h * 0.026), Vector2(fx, r.end.y - h * 0.008),
 				Color(1, 1, 1, 0.08), maxf(1.0, w * 0.004))
 
-	# exhaust tips
+	# exhaust tips (EVs have no tailpipe)
 	var ex := int(st.exhaust)
 	var tip := Color(0.62, 0.64, 0.67)
-	if ex <= 1:
+	if ex == 0:
+		pass
+	elif ex == 1:
 		rr(ci, Rect2(cx - w * 0.045, r.end.y - h * 0.024, w * 0.090, h * 0.013),
 			tip, w * 0.006)
 	else:
@@ -318,26 +441,64 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 			rr(ci, Rect2(cx + float(side) * w * 0.105 - w * 0.045, r.end.y - h * 0.024,
 				w * 0.090, h * 0.013), tip, w * 0.006)
 
-	# taillights
+	# taillights: two blocks, a full-width bar, or round lamps
 	var tail := Color(0.78, 0.11, 0.11) if not is_player else Color(0.86, 0.13, 0.12)
-	rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.952, w * 0.245, h * 0.024),
-		tail, w * 0.02)
-	rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.952, w * 0.245, h * 0.024),
-		tail, w * 0.02)
-
-	if braking:
+	var bright := Color(1.0, 0.30, 0.18)
+	var tl_kind := str(st.get("tl", "block"))
+	if braking and details:
 		ci.draw_circle(Vector2(r.position.x + w * 0.205, r.position.y + h * 0.960), w * 0.22,
-			Color(1.0, 0.16, 0.10, 0.20))
+			Color(1.0, 0.16, 0.10, 0.18))
 		ci.draw_circle(Vector2(r.end.x - w * 0.205, r.position.y + h * 0.960), w * 0.22,
-			Color(1.0, 0.16, 0.10, 0.20))
-		rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.952, w * 0.245, h * 0.024),
-			Color(1.0, 0.30, 0.18), w * 0.02)
-		rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.952, w * 0.245, h * 0.024),
-			Color(1.0, 0.30, 0.18), w * 0.02)
+			Color(1.0, 0.16, 0.10, 0.18))
+	match tl_kind:
+		"bar":
+			# full-width strip (hyper, EV): one clean line of light
+			rr(ci, Rect2(r.position.x + w * 0.10, r.position.y + h * 0.950, w * 0.80, h * 0.024),
+				bright if braking else tail, w * 0.02)
+			rr(ci, Rect2(cx - w * 0.14, r.position.y + h * 0.952, w * 0.28, h * 0.008),
+				Color(1, 1, 1, 0.14), 1)
+		"round":
+			# classic twin lamps (muscle)
+			for side in [-1.0, 1.0]:
+				var tc := Vector2(cx + float(side) * w * 0.155, r.position.y + h * 0.966)
+				ci.draw_circle(tc, w * 0.042, bright if braking else tail)
+				if braking:
+					ci.draw_circle(tc, w * 0.068, Color(1.0, 0.16, 0.10, 0.22))
+			rr(ci, Rect2(cx - w * 0.045, r.position.y + h * 0.952, w * 0.09, h * 0.016),
+				Color(0.95, 0.94, 0.90), w * 0.01)
+		_:
+			# two blocks (default)
+			var btc := bright if braking else tail
+			rr(ci, Rect2(r.position.x + w * 0.085, r.position.y + h * 0.952, w * 0.245, h * 0.024),
+				btc, w * 0.02)
+			rr(ci, Rect2(r.end.x - w * 0.330, r.position.y + h * 0.952, w * 0.245, h * 0.024),
+				btc, w * 0.02)
 
 	# front grill / bumper line
-	rr(ci, Rect2(r.position.x + w * 0.34, r.position.y + h * 0.012, w * 0.32, h * 0.018),
-		dark, w * 0.01)
+	if bool(st.get("ev", false)):
+		# closed nose: smooth bumper band with a seam, no radiator mouth.
+		# Kept below the light bar (which ends at 0.044) so it cannot cover it.
+		rr(ci, Rect2(r.position.x + w * 0.12, r.position.y + h * 0.050, w * 0.76, h * 0.018),
+			body.lightened(0.03), w * 0.010)
+		ci.draw_line(Vector2(cx - w * 0.16, r.position.y + h * 0.059), Vector2(cx + w * 0.16, r.position.y + h * 0.059),
+			Color(0, 0, 0, 0.22), maxf(1.0, h * 0.004))
+	else:
+		rr(ci, Rect2(r.position.x + w * 0.34, r.position.y + h * 0.012, w * 0.32, h * 0.018),
+			dark, w * 0.01)
+		if not bool(st.get("scoop", false)):
+			# a couple of chrome slats in the radiator mouth
+			rr(ci, Rect2(r.position.x + w * 0.36, r.position.y + h * 0.016, w * 0.28, h * 0.004),
+				Color(1, 1, 1, 0.10), 1)
+			rr(ci, Rect2(r.position.x + w * 0.36, r.position.y + h * 0.023, w * 0.28, h * 0.004),
+				Color(1, 1, 1, 0.10), 1)
+	if bool(st.get("nudge", false)):
+		# off-road bull bar across the nose with two upright stubs
+		rr(ci, Rect2(r.position.x + w * 0.14, r.position.y + h * 0.002, w * 0.72, h * 0.014),
+			Color(0.10, 0.11, 0.13), w * 0.008)
+		rr(ci, Rect2(r.position.x + w * 0.035, r.position.y + h * 0.004, w * 0.10, h * 0.022),
+			Color(0.10, 0.11, 0.13), w * 0.012)
+		rr(ci, Rect2(r.end.x - w * 0.135, r.position.y + h * 0.004, w * 0.10, h * 0.022),
+			Color(0.10, 0.11, 0.13), w * 0.012)
 
 
 static func truck(ci: CanvasItem, center: Vector2, w: float, h: float, cab: Color, trailer: Color, opts := {}) -> void:
