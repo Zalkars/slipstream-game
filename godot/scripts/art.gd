@@ -216,8 +216,11 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	var with_glass: bool = opts.get("glass", true)
 	var st: Dictionary = car_style(str(opts.get("silhouette", "sedan")))
 	var rails: bool = bool(st.get("rails", opts.get("rails", false)))
-	w *= float(st.wid)
-	h *= float(st.len)
+	# Traffic passes exact=true: its box is the collision box, so the class
+	# styling must not resize the car away from what the player can hit.
+	if not bool(opts.get("exact", false)):
+		w *= float(st.wid)
+		h *= float(st.len)
 	var r := Rect2(center.x - w * 0.5, center.y - h * 0.5, w, h)
 	var dark := Color(0.075, 0.082, 0.09)
 	# Dark paints need a stronger rim light, otherwise a black car turns into a
@@ -236,8 +239,10 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 	var boot_y := rear_y + 0.130
 	var tire := float(st.get("tire", 1.0))
 	# Micro-detail is only worth its draw calls in the garage/QA sheet; at
-	# gameplay size (~100 px wide) the same lines turn into noise.
-	var fine: bool = details and w > 140.0
+	# gameplay size (~55 px wide) the same lines turn into noise. The stage
+	# asks for them explicitly because its preview car is smaller than the
+	# gameplay threshold yet sits front and centre.
+	var fine: bool = details and (w > 140.0 or bool(opts.get("fine", false)))
 	var rim_kind := str(st.get("rim", "alloy"))
 	var caliper := Color(0, 0, 0, 0)
 	var cal_str := str(st.get("caliper", ""))
@@ -497,15 +502,18 @@ static func car(ci: CanvasItem, center: Vector2, w: float, h: float, body: Color
 					stc, sw * 0.35)
 
 	if wing:
-		# rear wing
+		# Carbon wing: neutral, with only a hint of the body colour. Darkening
+		# the paint itself turned warm cars into a brown plank stuck on the
+		# boot.
+		var carbon := Color(0.150, 0.158, 0.172).lerp(body, 0.16)
 		rr(ci, Rect2(r.position.x + w * 0.03, r.position.y + h * 0.885, w * 0.94, h * 0.055),
-			body.darkened(0.45), w * 0.03, Color(0, 0, 0, 0.4), 1)
+			carbon, w * 0.03, Color(0, 0, 0, 0.42), 1)
 		rr(ci, Rect2(r.position.x + w * 0.06, r.position.y + h * 0.895, w * 0.88, h * 0.018),
-			Color(1, 1, 1, 0.10), w * 0.01)
+			Color(1, 1, 1, 0.13), w * 0.01)
 		if fine:
 			for sx in [r.position.x + w * 0.028, r.end.x - w * 0.048]:
 				rr(ci, Rect2(float(sx), r.position.y + h * 0.878, w * 0.020, h * 0.070),
-					body.darkened(0.55), w * 0.006, Color(0, 0, 0, 0.45), 1)
+					carbon.darkened(0.35), w * 0.006, Color(0, 0, 0, 0.48), 1)
 	else:
 		if not cargo:
 			rr(ci, Rect2(r.position.x + w * 0.09, r.position.y + h * 0.895, w * 0.82, h * 0.028),

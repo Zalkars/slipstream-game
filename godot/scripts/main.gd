@@ -157,6 +157,9 @@ func _ready() -> void:
 	if "--shots" in OS.get_cmdline_user_args():
 		_shots = true
 		_capture_seq()
+	if "--qa-traffic" in OS.get_cmdline_user_args():
+		_shots = true
+		_qa_traffic_seq()
 
 
 func _process(delta: float) -> void:
@@ -2057,6 +2060,75 @@ func _capture_seq() -> void:
 	await get_tree().create_timer(1.2).timeout
 	await _shot("game_buttons")
 	await get_tree().create_timer(0.25).timeout
+	get_tree().quit()
+
+
+# Traffic contact sheet: one of every silhouette on the real road, day and
+# night, so a change to the car art can be checked at gameplay scale.
+func _qa_traffic_car(lane: int, y: float, sil: String, kind: int, col: Color, extra := {}) -> Dictionary:
+	var type: Dictionary = Game.TRAFFIC_TYPES[0]
+	for tp in Game.TRAFFIC_TYPES:
+		if int(tp.kind) == kind:
+			type = tp
+	var e := {
+		"lane": lane,
+		"x": game._lane_x(lane),
+		"y": y,
+		"w": game.car_w * float(type.w),
+		"h": game.car_h * float(type.h),
+		"kind": kind,
+		"color": col,
+		"rel": 0.7,
+		"cur_speed": 420.0,
+		"braking": false,
+		"demo_speed": 420.0,
+		"near": false,
+		"cutin": false,
+		"stripe": false,
+		"wing": false,
+		"rails": false,
+		"roof_sign": false,
+		"cargo": false,
+		"stripe_color": Color(0.94, 0.93, 0.90),
+		"silhouette": sil,
+	}
+	e.merge(extra, true)
+	return e
+
+
+func _qa_traffic_seq() -> void:
+	await get_tree().create_timer(1.0).timeout
+	in_game = true
+	_hide_screens()
+	hud.visible = false
+	game.start_demo()
+	game.set_process(false)
+	game.cars.clear()
+	game.cars.append(_qa_traffic_car(0, 300.0, "hatch", 0, Color("#e8e7e3")))
+	game.cars.append(_qa_traffic_car(1, 300.0, "sedan", 0, Color("#5e2b2b"), {"stripe": true}))
+	game.cars.append(_qa_traffic_car(2, 300.0, "offroad", 1, Color("#3c5c48")))
+	game.cars.append(_qa_traffic_car(3, 300.0, "sport", 5, Color("#d1a12c"), {"stripe": true, "wing": true}))
+	game.cars.append(_qa_traffic_car(0, 830.0, "", 3, Color("#b9bdc1")))
+	game.cars.append(_qa_traffic_car(1, 830.0, "", 6, Color("#8a5a2b"), {"cargo": true}))
+	game.cars.append(_qa_traffic_car(2, 830.0, "", 2, Color("#3d4147"), {"trailer": Color("#c3c5c1")}))
+	game.cars.append(_qa_traffic_car(3, 830.0, "", 4, Color("#1f6a78"), {"accent": Color("#e0a52a")}))
+	game.time_of_day = 0.15
+	game.cloud_amount = 0.0
+	game.rain_amount = 0.0
+	game.storm_amount = 0.0
+	game.fog_amount = 0.0
+	game.wetness = 0.0
+	game.queue_redraw()
+	await _shot("qa_traffic_day")
+
+	game.time_of_day = 0.68
+	game.cloud_amount = 0.65
+	game.rain_amount = 0.85
+	game.wetness = 0.95
+	game.scroll = 40.0
+	game.queue_redraw()
+	await _shot("qa_traffic_night")
+	await get_tree().create_timer(0.2).timeout
 	get_tree().quit()
 
 

@@ -170,4 +170,5 @@ func _draw_car() -> void:
 		"wing": bool(car.get("wing", false)),
 		"stripe_color": Color(str(car.get("stripe_color", "#f0ede4"))),
 		"player": true,
+		"fine": true,
 	})

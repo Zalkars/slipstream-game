@@ -841,6 +841,7 @@ func _spawn_rear(ref_speed: float) -> bool:
 		"roof_sign": false,
 		"cargo": false,
 		"stripe_color": _traffic_stripe(col),
+		"silhouette": _traffic_silhouette(kind),
 	}
 	match kind:
 		0:
@@ -1511,6 +1512,20 @@ func _traffic_stripe(body: Color) -> Color:
 	return Color(0.94, 0.93, 0.90)
 
 
+# Traffic borrows the garage classes for the car-like kinds, so the road shows
+# hatchbacks, off-roaders and coupes instead of one repainted sedan. The
+# dedicated van/truck/bus/pickup drawings keep their own bodies.
+func _traffic_silhouette(kind: int) -> String:
+	match kind:
+		0:
+			return "hatch" if randf() < 0.45 else "sedan"
+		1:
+			return "offroad"
+		5:
+			return "sport"
+	return ""
+
+
 func _spawn(is_demo: bool) -> void:
 	if cars.size() > 9:
 		return
@@ -1563,6 +1578,7 @@ func _spawn(is_demo: bool) -> void:
 		"roof_sign": false,
 		"cargo": false,
 		"stripe_color": _traffic_stripe(col),
+		"silhouette": _traffic_silhouette(kind),
 	}
 	match kind:
 		0:
@@ -2218,6 +2234,8 @@ func _draw_cars() -> void:
 			"cargo": bool(c.get("cargo", false)),
 			"brake": bool(c.get("braking", false)),
 			"light": light,
+			"silhouette": str(c.get("silhouette", "sedan")),
+			"exact": true,
 			"stripe_color": c.get("stripe_color", Color(0.94, 0.93, 0.90)),
 			"trailer": c.get("trailer", Color(0.78, 0.79, 0.79)),
 			"accent": c.get("accent", Color(0.86, 0.27, 0.22)),
