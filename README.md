@@ -1,10 +1,10 @@
 # SLIPSTREAM
 
-**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.5.3**
+**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.5.4**
 
 [![Godot](https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org/)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](https://www.android.com/)
-[![APK](https://img.shields.io/badge/APK-0.5.3-e23b30)](../../releases/latest)
+[![APK](https://img.shields.io/badge/APK-0.5.4-e23b30)](../../releases/latest)
 
 [**Скачать APK**](../../releases/latest) · [Скриншоты](#скриншоты) · [Управление](#управление) · [Сборка](#сборка-apk)
 
@@ -46,13 +46,13 @@
 
 ## APK
 
-**`Slipstream-0.5.3.apk`** — готовый файл для телефона (27,3 МБ).
+**`Slipstream-0.5.4.apk`** — готовый файл для телефона (27,3 МБ).
 Лежит в разделе [**Releases**](../../releases/latest).
 
 | | |
 |---|---|
 | Пакет | `com.slipstream.game` |
-| Версия | 0.5.3 (versionCode 11) |
+| Версия | 0.5.4 (versionCode 12) |
 | Android | 7.0+ (minSdk 24), targetSdk 36 |
 | Архитектура | arm64-v8a (64-бит) |
 | Подпись | debug-ключом проекта; обновления должны быть подписаны тем же ключом |
@@ -67,7 +67,7 @@
 Если подключён по USB с включённой отладкой:
 
 ```powershell
-adb install -r Slipstream-0.5.3.apk
+adb install -r Slipstream-0.5.4.apk
 ```
 
 ## Возможности
@@ -229,7 +229,7 @@ $godot = "C:\path\to\Godot_v4.7.2-stable_win64_console.exe"
 
 # релизная сборка (ключ задаётся в export_presets.cfg / диалоге экспорта)
 New-Item -ItemType Directory -Force build | Out-Null
-& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.5.3.apk"
+& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.5.4.apk"
 ```
 
 Путь экспорта передавай **сразу после** имени пресета и обязательно с расширением
@@ -239,13 +239,13 @@ New-Item -ItemType Directory -Force build | Out-Null
 
 ```powershell
 # пакет, версия, minSdk, arm64
-aapt2 dump badging Slipstream-0.5.3.apk
+aapt2 dump badging Slipstream-0.5.4.apk
 
 # подпись и схемы v1/v2/v3
-apksigner verify --verbose --print-certs Slipstream-0.5.3.apk
+apksigner verify --verbose --print-certs Slipstream-0.5.4.apk
 
 # выравнивание
-zipalign -c 4 Slipstream-0.5.3.apk
+zipalign -c 4 Slipstream-0.5.4.apk
 ```
 
 Иконки: `godot/icons/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` (адаптивная иконка).
@@ -260,7 +260,7 @@ Slipstream/
 │   └── screenshots/            # скриншоты для README
 └── godot/                      # проект Godot 4.7.2
     ├── project.godot           # холст 720×1560, GL Compatibility, автолоад Sfx
-    ├── export_presets.cfg      # Android-пресет, версия 0.5.3
+    ├── export_presets.cfg      # Android-пресет, версия 0.5.4
     ├── scenes/Main.tscn
     ├── scripts/
     │   ├── main.gd             # экраны, HUD, гараж, настройки, сохранения, ввод
@@ -283,6 +283,7 @@ Slipstream/
 
 ## Дальше
 
+- **0.5.4** — настройка частоты кадров: 30/60/120 FPS в экране настроек, выбор сохраняется и применяется сразу (30 — экономия батареи, 60 — по умолчанию, 120 — для дисплеев 120 Гц).
 - **0.5.3** — трафик перестал быть одним перекрашенным седаном: в потоке едут хэтчбеки и седаны, кроссоверы с рейлингами, багажником и запасным колесом, спорткары с антикрылом, а рядом — фургоны, пикапы с грузом, грузовики с прицепами и автобусы. Кузов трафика больше не масштабируется под класс, поэтому нарисованная машина точно совпадает с хитбоксом и обгон впритирку считается по видимым габаритам. Антикрыло перерисовано в нейтральный карбон, а микродетали гаража включаются по флагу, а не по ширине превью.
 - **0.5.2** — визуальный пасс гаража: у каждого класса свой рисунок диска (сталь, литьё, магний, внедорожные, спорт, аэро) и цвет суппорта, хромированные пороги и ручки дверей, блики на стёклах и зеркалах, плавник на крыше (у фургона — вентиляция), лючок бензобака и порт зарядки, хром-насадки выхлопа с тёмным срезом, чёрные бамперы фургона и хром-ступенька пикапа, ореолы фар и детали фонарей, виниловая крыша у маскла и гиперкара. Микродетали рисуются только в гараже (ширина кузова > 140 px), поэтому трафик не получает лишних вызовов.
 - **0.5.1** — расширенный гараж: девять машин (фургон, кроссовер, пикап, электрокар), классовые фары и фонари, литые диски, кузовные детали.

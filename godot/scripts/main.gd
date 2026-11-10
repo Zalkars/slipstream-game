@@ -61,6 +61,10 @@ var ctrl_zones: Button
 var ctrl_buttons: Button
 var ctrl_swipe: Button
 var ctrl_desc: Label
+var ctrl_fps_30: Button
+var ctrl_fps_60: Button
+var ctrl_fps_120: Button
+var fps_desc: Label
 
 var tutorial_panel: Control
 var tutorial_title: Label
@@ -101,6 +105,7 @@ var music_on := true
 var sfx_volume := 0.90
 var music_volume := 0.75
 var control_mode := "zones"
+var fps_limit := 60
 
 var garage_index := 0
 var settings_from_pause := false
@@ -113,6 +118,7 @@ var _hint_t := 0.0
 
 func _ready() -> void:
 	_load()
+	Engine.max_fps = fps_limit
 	_setup_fonts()
 	game = Game.new()
 	game.name = "Game"
@@ -279,6 +285,8 @@ func _load() -> void:
 		music_volume = float(cf.get_value("audio", "music_vol", 0.75))
 		var mode := str(cf.get_value("controls", "mode", "zones"))
 		control_mode = mode if mode in ["zones", "buttons", "swipe"] else "zones"
+		var fl := int(cf.get_value("display", "fps", 60))
+		fps_limit = fl if fl in [30, 60, 120] else 60
 		tutorial_done = bool(cf.get_value("game", "tutorial_done", false))
 	if "--mute" in OS.get_cmdline_user_args():
 		sfx_on = false
@@ -297,6 +305,7 @@ func _save() -> void:
 	cf.set_value("audio", "sfx_vol", sfx_volume)
 	cf.set_value("audio", "music_vol", music_volume)
 	cf.set_value("controls", "mode", control_mode)
+	cf.set_value("display", "fps", fps_limit)
 	cf.set_value("game", "tutorial_done", tutorial_done)
 	cf.save(SAVE_PATH)
 
@@ -1424,6 +1433,27 @@ func _build_settings() -> void:
 	vb.add_child(ctrl_desc)
 
 	vb.add_child(_divider())
+	vb.add_child(_label("ГРАФИКА", 17, accent, font_bold))
+
+	var fps := HBoxContainer.new()
+	fps.add_theme_constant_override("separation", 8)
+	ctrl_fps_30 = _mode_button("30")
+	ctrl_fps_30.pressed.connect(func(): _set_fps(30))
+	fps.add_child(ctrl_fps_30)
+	ctrl_fps_60 = _mode_button("60")
+	ctrl_fps_60.pressed.connect(func(): _set_fps(60))
+	fps.add_child(ctrl_fps_60)
+	ctrl_fps_120 = _mode_button("120")
+	ctrl_fps_120.pressed.connect(func(): _set_fps(120))
+	fps.add_child(ctrl_fps_120)
+	vb.add_child(fps)
+
+	fps_desc = _label("", 16, Color(0.68, 0.72, 0.75), font_ui)
+	fps_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	fps_desc.custom_minimum_size = Vector2(0, 48)
+	vb.add_child(fps_desc)
+
+	vb.add_child(_divider())
 
 	var replay_tut := _text_button("ПОВТОРИТЬ ОБУЧЕНИЕ")
 	replay_tut.add_theme_color_override("font_color", amber)
@@ -1521,6 +1551,18 @@ func _update_settings_ui() -> void:
 	_style_mode_btn(ctrl_zones, control_mode == "zones")
 	_style_mode_btn(ctrl_buttons, control_mode == "buttons")
 	_style_mode_btn(ctrl_swipe, control_mode == "swipe")
+	if ctrl_fps_30 != null:
+		_style_mode_btn(ctrl_fps_30, fps_limit == 30)
+		_style_mode_btn(ctrl_fps_60, fps_limit == 60)
+		_style_mode_btn(ctrl_fps_120, fps_limit == 120)
+	if fps_desc != null:
+		match fps_limit:
+			30:
+				fps_desc.text = "Экономит батарею, картинка менее плавная."
+			60:
+				fps_desc.text = "Баланс плавности и заряда батареи."
+			120:
+				fps_desc.text = "Максимальная плавность на экранах 120 Гц."
 	if ctrl_desc != null:
 		match control_mode:
 			"zones":
@@ -1567,6 +1609,16 @@ func _set_control_mode(mode: String) -> void:
 	Sfx.click()
 	control_mode = mode
 	_apply_control_ui()
+	_save()
+	_update_settings_ui()
+
+
+func _set_fps(limit: int) -> void:
+	if fps_limit == limit:
+		return
+	Sfx.click()
+	fps_limit = limit
+	Engine.max_fps = limit
 	_save()
 	_update_settings_ui()
 
