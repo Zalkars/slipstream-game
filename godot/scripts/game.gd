@@ -18,6 +18,7 @@ signal nitro_boosted()
 const LANES := 4
 const DEMO_SPEED := 620.0
 const NITRO_SEG := 1.0 / 3.0
+const RACE_ART := preload("res://scripts/race_art.gd")
 const BOOST_TIME := 1.6
 const BRAKE_MULT := 0.42
 const CRUISE_KMH := 100.0
@@ -165,6 +166,10 @@ var player_stripe := true
 var player_wing := false
 var player_stripe_col := Color("#f0ede4")
 var player_silhouette := "sedan"
+# Settings toggle: 3D sprites for the race, or the original painted art.
+var use_3d_cars := true
+var race_art: Node
+var _player_art: Dictionary = {}
 
 var control_mode := "buttons"
 var free_lane := 3
@@ -231,6 +236,9 @@ func _ready() -> void:
 	rain_tex = Fx.rain_tex()
 	wet_tex = Fx.wet_tex()
 	streak_tex = Fx.streak_tex()
+	race_art = RACE_ART.new()
+	race_art.name = "RaceArt"
+	add_child(race_art)
 	_gen_decor()
 	_gen_road_scars()
 	_gen_puddles()
@@ -472,6 +480,15 @@ func _apply_car() -> void:
 	player_wing = bool(car.wing)
 	player_stripe_col = Color(str(car.stripe_color))
 	player_silhouette = str(car.get("silhouette", "sedan"))
+	_player_art = {
+		"kind": 0,
+		"silhouette": player_silhouette,
+		"color": player_color,
+		"stripe": player_stripe,
+		"stripe_color": player_stripe_col,
+	}
+	if use_3d_cars and race_art != null:
+		race_art.take(_player_art)
 
 
 func start_run() -> void:
@@ -860,6 +877,8 @@ func _spawn_rear(ref_speed: float) -> bool:
 			entry["wing"] = randf() < 0.75
 		6:
 			entry["cargo"] = randf() < 0.6
+	if use_3d_cars and race_art != null:
+		race_art.take(entry)
 	cars.append(entry)
 	return true
 
@@ -1597,6 +1616,8 @@ func _spawn(is_demo: bool) -> void:
 			entry["wing"] = randf() < 0.75
 		6:
 			entry["cargo"] = randf() < 0.6
+	if use_3d_cars and race_art != null:
+		race_art.take(entry)
 	cars.append(entry)
 
 
@@ -2226,20 +2247,29 @@ func _draw_cars() -> void:
 			_draw_player()
 			player_drawn = true
 		var center := Vector2(float(c.x), float(c.y))
-		Art.traffic(self, center, float(c.w), float(c.h), int(c.get("kind", 0)), c.color, {
-			"stripe": bool(c.get("stripe", false)),
-			"wing": bool(c.get("wing", false)),
-			"rails": bool(c.get("rails", false)),
-			"roof_sign": bool(c.get("roof_sign", false)),
-			"cargo": bool(c.get("cargo", false)),
-			"brake": bool(c.get("braking", false)),
-			"light": light,
-			"silhouette": str(c.get("silhouette", "sedan")),
-			"exact": true,
-			"stripe_color": c.get("stripe_color", Color(0.94, 0.93, 0.90)),
-			"trailer": c.get("trailer", Color(0.78, 0.79, 0.79)),
-			"accent": c.get("accent", Color(0.86, 0.27, 0.22)),
-		})
+		var sprite := _race_sprite(c)
+		if sprite.is_empty():
+			Art.traffic(self, center, float(c.w), float(c.h), int(c.get("kind", 0)), c.color, {
+				"stripe": bool(c.get("stripe", false)),
+				"wing": bool(c.get("wing", false)),
+				"rails": bool(c.get("rails", false)),
+				"roof_sign": bool(c.get("roof_sign", false)),
+				"cargo": bool(c.get("cargo", false)),
+				"brake": bool(c.get("braking", false)),
+				"light": light,
+				"silhouette": str(c.get("silhouette", "sedan")),
+				"exact": true,
+				"stripe_color": c.get("stripe_color", Color(0.94, 0.93, 0.90)),
+				"trailer": c.get("trailer", Color(0.78, 0.79, 0.79)),
+				"accent": c.get("accent", Color(0.86, 0.27, 0.22)),
+			})
+		else:
+			_draw_vehicle_shadow(center, float(c.w), float(c.h))
+			race_art.draw(self, center, float(c.w), float(c.h), sprite)
+			if bool(c.get("braking", false)):
+				for side in [-1, 1]:
+					_glow(center + Vector2(float(side) * float(c.w) * 0.30, float(c.h) * 0.435),
+						float(c.w) * 0.12, Color(1.0, 0.12, 0.07, 0.45))
 	if running and not demo and not player_drawn:
 		_draw_player()
 
@@ -2251,17 +2281,47 @@ func _draw_player() -> void:
 			var fx: float = float(side) * car_w * 0.23
 			draw_circle(Vector2(fx, car_h * 0.50), car_w * 0.11, Color(1.0, 0.55, 0.18, 0.35))
 			draw_circle(Vector2(fx, car_h * 0.54), car_w * 0.07, Color(1.0, 0.85, 0.45, 0.45))
-	Art.car(self, Vector2.ZERO, car_w, car_h, player_color, {
-		"player": true,
-		"stripe": player_stripe,
-		"wing": player_wing,
-		"stripe_color": player_stripe_col,
-		"silhouette": player_silhouette,
-		"brake": braking and running,
-		"heat": brake_heat,
-		"light": get_light_factor(),
-	})
+	var sprite := _race_sprite(_player_art)
+	if sprite.is_empty():
+		Art.car(self, Vector2.ZERO, car_w, car_h, player_color, {
+			"player": true,
+			"stripe": player_stripe,
+			"wing": player_wing,
+			"stripe_color": player_stripe_col,
+			"silhouette": player_silhouette,
+			"brake": braking and running,
+			"heat": brake_heat,
+			"light": get_light_factor(),
+		})
+	else:
+		_draw_vehicle_shadow(Vector2.ZERO, car_w, car_h)
+		race_art.draw(self, Vector2.ZERO, car_w, car_h, sprite)
+		# The baked lamps are always on, so braking and brake heat are added as
+		# 2D light on top of the sprite.
+		if braking and running:
+			for side in [-1, 1]:
+				_glow(Vector2(float(side) * car_w * 0.30, car_h * 0.435), car_w * 0.13,
+					Color(1.0, 0.12, 0.07, 0.60))
+				_glow(Vector2(float(side) * car_w * 0.30, car_h * 0.435), car_w * 0.05,
+					Color(1.0, 0.36, 0.20, 0.85))
+		if brake_heat > 0.35:
+			var ht := clampf((brake_heat - 0.35) / 0.65, 0.0, 1.0)
+			for side in [-1, 1]:
+				var wp := Vector2(float(side) * car_w * 0.36, car_h * 0.34)
+				_glow(wp, car_w * 0.16, Color(1.0, 0.35, 0.05, 0.20 * ht))
+				_glow(wp, car_w * 0.07, Color(1.0, 0.30 + ht * 0.40, 0.06, 0.55 + ht * 0.35))
 	draw_set_transform(Vector2(_sx, _sy))
+
+
+func _race_sprite(car: Dictionary) -> Dictionary:
+	if not use_3d_cars or race_art == null or car.is_empty():
+		return {}
+	return race_art.take(car)
+
+
+func _draw_vehicle_shadow(center: Vector2, w: float, h: float) -> void:
+	_glow(center + Vector2(0.0, h * 0.02), w * 0.82,
+		Color(0.0, 0.0, 0.0, 0.30), Vector2(0.62, 1.02))
 
 
 func _draw_particles() -> void:

@@ -65,6 +65,8 @@ var ctrl_fps_30: Button
 var ctrl_fps_60: Button
 var ctrl_fps_120: Button
 var fps_desc: Label
+var ctrl_cars_2d: Button
+var ctrl_cars_3d: Button
 
 var tutorial_panel: Control
 var tutorial_title: Label
@@ -106,6 +108,8 @@ var sfx_volume := 0.90
 var music_volume := 0.75
 var control_mode := "zones"
 var fps_limit := 60
+# Race car art: true = baked 3D sprites, false = the original painted cars.
+var cars_3d := true
 
 var garage_index := 0
 var settings_from_pause := false
@@ -123,6 +127,7 @@ func _ready() -> void:
 	game = Game.new()
 	game.name = "Game"
 	add_child(game)
+	game.use_3d_cars = cars_3d
 	game.hud_changed.connect(_on_hud)
 	game.run_ended.connect(_on_crashed)
 	game.near_miss.connect(_on_near)
@@ -165,7 +170,10 @@ func _ready() -> void:
 		_capture_seq()
 	if "--qa-traffic" in OS.get_cmdline_user_args():
 		_shots = true
-		_qa_traffic_seq()
+		_qa_traffic_seq(false)
+	if "--qa-traffic-2d" in OS.get_cmdline_user_args():
+		_shots = true
+		_qa_traffic_seq(true)
 
 
 func _process(delta: float) -> void:
@@ -287,6 +295,7 @@ func _load() -> void:
 		control_mode = mode if mode in ["zones", "buttons", "swipe"] else "zones"
 		var fl := int(cf.get_value("display", "fps", 60))
 		fps_limit = fl if fl in [30, 60, 120] else 60
+		cars_3d = bool(cf.get_value("display", "cars_3d", true))
 		tutorial_done = bool(cf.get_value("game", "tutorial_done", false))
 	if "--mute" in OS.get_cmdline_user_args():
 		sfx_on = false
@@ -306,6 +315,7 @@ func _save() -> void:
 	cf.set_value("audio", "music_vol", music_volume)
 	cf.set_value("controls", "mode", control_mode)
 	cf.set_value("display", "fps", fps_limit)
+	cf.set_value("display", "cars_3d", cars_3d)
 	cf.set_value("game", "tutorial_done", tutorial_done)
 	cf.save(SAVE_PATH)
 
@@ -1453,6 +1463,23 @@ func _build_settings() -> void:
 	fps_desc.custom_minimum_size = Vector2(0, 48)
 	vb.add_child(fps_desc)
 
+	var cars_row := HBoxContainer.new()
+	cars_row.add_theme_constant_override("separation", 8)
+	cars_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ctrl_cars_2d = _mode_button("2D")
+	ctrl_cars_2d.size_flags_horizontal = Control.SIZE_SHRINK_END
+	ctrl_cars_2d.custom_minimum_size = Vector2(92, 58)
+	ctrl_cars_2d.add_theme_font_size_override("font_size", 21)
+	ctrl_cars_2d.pressed.connect(func(): _set_cars_3d(false))
+	cars_row.add_child(ctrl_cars_2d)
+	ctrl_cars_3d = _mode_button("3D")
+	ctrl_cars_3d.size_flags_horizontal = Control.SIZE_SHRINK_END
+	ctrl_cars_3d.custom_minimum_size = Vector2(92, 58)
+	ctrl_cars_3d.add_theme_font_size_override("font_size", 21)
+	ctrl_cars_3d.pressed.connect(func(): _set_cars_3d(true))
+	cars_row.add_child(ctrl_cars_3d)
+	vb.add_child(_setting_row("МАШИНЫ", "3D — объёмные, 2D — прежние рисованные", cars_row))
+
 	vb.add_child(_divider())
 
 	var replay_tut := _text_button("ПОВТОРИТЬ ОБУЧЕНИЕ")
@@ -1555,6 +1582,9 @@ func _update_settings_ui() -> void:
 		_style_mode_btn(ctrl_fps_30, fps_limit == 30)
 		_style_mode_btn(ctrl_fps_60, fps_limit == 60)
 		_style_mode_btn(ctrl_fps_120, fps_limit == 120)
+	if ctrl_cars_2d != null:
+		_style_mode_btn(ctrl_cars_2d, not cars_3d)
+		_style_mode_btn(ctrl_cars_3d, cars_3d)
 	if fps_desc != null:
 		match fps_limit:
 			30:
@@ -1619,6 +1649,18 @@ func _set_fps(limit: int) -> void:
 	Sfx.click()
 	fps_limit = limit
 	Engine.max_fps = limit
+	_save()
+	_update_settings_ui()
+
+
+func _set_cars_3d(on: bool) -> void:
+	if cars_3d == on:
+		return
+	Sfx.click()
+	cars_3d = on
+	if game != null:
+		game.use_3d_cars = on
+		game.queue_redraw()
 	_save()
 	_update_settings_ui()
 
@@ -2112,6 +2154,14 @@ func _capture_seq() -> void:
 	await get_tree().create_timer(1.2).timeout
 	await _shot("game_buttons")
 	await get_tree().create_timer(0.25).timeout
+
+	# The original painted cars, kept as the 2D option in Settings.
+	_set_cars_3d(false)
+	start_game()
+	await get_tree().create_timer(1.2).timeout
+	await _shot("game_2d")
+	_set_cars_3d(true)
+	await get_tree().create_timer(0.2).timeout
 	get_tree().quit()
 
 
@@ -2148,12 +2198,13 @@ func _qa_traffic_car(lane: int, y: float, sil: String, kind: int, col: Color, ex
 	return e
 
 
-func _qa_traffic_seq() -> void:
+func _qa_traffic_seq(use2d := false) -> void:
 	await get_tree().create_timer(1.0).timeout
 	in_game = true
 	_hide_screens()
 	hud.visible = false
 	game.start_demo()
+	game.use_3d_cars = not use2d
 	game.set_process(false)
 	game.cars.clear()
 	game.cars.append(_qa_traffic_car(0, 300.0, "hatch", 0, Color("#e8e7e3")))
@@ -2171,6 +2222,9 @@ func _qa_traffic_seq() -> void:
 	game.fog_amount = 0.0
 	game.wetness = 0.0
 	game.queue_redraw()
+	# Let the lazy 3D sprites bake before the shot; without this the sheet
+	# catches a half-2D, half-3D frame.
+	await get_tree().create_timer(2.4).timeout
 	await _shot("qa_traffic_day")
 
 	game.time_of_day = 0.68
