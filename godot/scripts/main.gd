@@ -2,7 +2,8 @@ extends Node2D
 
 # Screen manager: menu, garage, settings, HUD, pause, result + persistence.
 
-const VERSION := "0.4.0"
+# The menu uses the same version as the exported project.
+var version := str(ProjectSettings.get_setting("application/config/version", "dev"))
 const SAVE_PATH := "user://slipstream.cfg"
 const START_COINS := 300
 const VolumeSlider = preload("res://scripts/volume_slider.gd")
@@ -126,8 +127,8 @@ func _ready() -> void:
 	_setup_fonts()
 	game = Game.new()
 	game.name = "Game"
-	add_child(game)
 	game.use_3d_cars = cars_3d
+	add_child(game)
 	game.hud_changed.connect(_on_hud)
 	game.run_ended.connect(_on_crashed)
 	game.near_miss.connect(_on_near)
@@ -177,7 +178,7 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	if _hint_t > 0.0:
+	if _hint_t > 0.0 and in_game and not paused:
 		_hint_t = maxf(0.0, _hint_t - delta)
 		if _hint_t <= 0.0 and swipe_hint != null:
 			swipe_hint.visible = false
@@ -187,7 +188,7 @@ func _process(delta: float) -> void:
 		if _overheat_recovered_t <= 0.0 and overheat_label != null and not _was_overheated:
 			overheat_label.visible = false
 
-	if tutorial_active:
+	if tutorial_active and in_game and not paused and not result_open and game.running and not game.paused and not game.crashed and not game.rewinding:
 		tutorial_timer += delta
 		match tutorial_step:
 			1:
@@ -232,7 +233,7 @@ func _process(delta: float) -> void:
 						tutorial_title.add_theme_color_override("font_color", amber)
 						match control_mode:
 							"zones":
-								tutorial_text.text = "Нитро копится за обгоны впритирку. Дважды нажмите на экран или кнопку с молнией!"
+								tutorial_text.text = "Нитро копится за обгоны впритирку. Нажмите кнопку с молнией по центру внизу."
 							"buttons":
 								tutorial_text.text = "Нитро копится за обгоны впритирку. Нажмите кнопку с молнией справа внизу"
 							"swipe":
@@ -331,6 +332,10 @@ func _hide_screens() -> void:
 
 
 func show_menu() -> void:
+	_reset_driving_input()
+	tutorial_active = false
+	if tutorial_panel != null:
+		tutorial_panel.visible = false
 	in_game = false
 	paused = false
 	result_open = false
@@ -348,6 +353,10 @@ func show_menu() -> void:
 
 
 func show_garage() -> void:
+	_reset_driving_input()
+	tutorial_active = false
+	if tutorial_panel != null:
+		tutorial_panel.visible = false
 	Sfx.click()
 	in_game = false
 	paused = false
@@ -417,7 +426,7 @@ func start_game(force_tutorial := false) -> void:
 	result_open = false
 	game.car_index = selected
 	game.control_mode = control_mode
-	nitro_btn.reset()
+	_reset_driving_input()
 	_apply_control_ui()
 	_hint_t = 6.0 if control_mode == "swipe" else 0.0
 	if swipe_hint != null:
@@ -447,6 +456,7 @@ func start_game(force_tutorial := false) -> void:
 
 
 func _apply_control_ui() -> void:
+	_reset_driving_input()
 	if zones_pad != null:
 		zones_pad.visible = (control_mode == "zones")
 		if not zones_pad.visible:
@@ -474,6 +484,15 @@ func _apply_control_ui() -> void:
 		swipe_hint.text = "← → ПОЛОСЫ   |   ↓ ТОРМОЗ   |   ↑ НИТРО"
 
 
+func _reset_driving_input() -> void:
+	for control in [pad_left, pad_right, brake_btn, nitro_btn, zones_pad]:
+		if control != null:
+			control.reset()
+	if game != null:
+		game.reset_swipe()
+		game.set_braking(false)
+
+
 func _toggle_pause() -> void:
 	if not in_game or result_open:
 		return
@@ -483,10 +502,7 @@ func _toggle_pause() -> void:
 	pause_panel.visible = paused
 	Sfx.set_paused(paused)
 	if paused:
-		game.set_braking(false)
-		brake_btn.reset()
-		if zones_pad != null:
-			zones_pad.reset()
+		_reset_driving_input()
 	else:
 		_apply_control_ui()
 
@@ -642,7 +658,7 @@ func _refresh_tutorial_prompt() -> void:
 			tutorial_title.text = "ОБУЧЕНИЕ · НИТРО"
 			match control_mode:
 				"zones":
-					tutorial_text.text = "Нитро копится за обгоны впритирку. Дважды нажмите на экран или кнопку с молнией!"
+					tutorial_text.text = "Нитро копится за обгоны впритирку. Нажмите кнопку с молнией по центру внизу."
 				"buttons":
 					tutorial_text.text = "Нитро копится за обгоны впритирку. Нажмите кнопку с молнией справа внизу"
 				"swipe":
@@ -726,9 +742,6 @@ func _on_back() -> void:
 	if confirm_panel != null and confirm_panel.visible:
 		_hide_confirm()
 		return
-	if tutorial_active:
-		_skip_tutorial()
-		return
 	if how != null and how.visible:
 		_hide_how()
 		return
@@ -740,6 +753,13 @@ func _on_back() -> void:
 		return
 	if result_open:
 		show_menu()
+		return
+	# Dismiss settings and pause before interpreting Back as skipping a lesson.
+	if in_game and paused:
+		_toggle_pause()
+		return
+	if tutorial_active:
+		_skip_tutorial()
 		return
 	if in_game:
 		_toggle_pause()
@@ -996,7 +1016,7 @@ func _build_menu() -> void:
 	_place(bar, 310, 388, 100, 5)
 	menu.add_child(bar)
 
-	var sub := _label("РЕАЛИСТИЧНЫЙ ТРАФИК · v" + VERSION, 22, Color(0.76, 0.79, 0.79), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	var sub := _label("РЕАЛИСТИЧНЫЙ ТРАФИК · v" + version, 22, Color(0.76, 0.79, 0.79), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
 	_place(sub, 60, 406, 600, 30)
 	menu.add_child(sub)
 
@@ -1044,7 +1064,7 @@ func _build_menu() -> void:
 	menu_best = _label("РЕКОРД  0", 28, Color(0.78, 0.81, 0.81), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
 	vb.add_child(menu_best)
 
-	var ver := _label("v" + VERSION + " · GODOT EDITION", 16, Color(0.44, 0.48, 0.50), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	var ver := _label("v" + version + " · GODOT EDITION", 16, Color(0.44, 0.48, 0.50), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
 	vb.add_child(ver)
 
 
@@ -1142,7 +1162,6 @@ func _build_hud() -> void:
 	zones_pad.lane_left.connect(func(): game.move_lane(-1))
 	zones_pad.lane_right.connect(func(): game.move_lane(1))
 	zones_pad.brake_changed.connect(func(on: bool): game.set_braking(on))
-	zones_pad.nitro_triggered.connect(_tap_nitro)
 	_place_bottom(zones_pad, 0, 0, 720, 260)
 	hud.add_child(zones_pad)
 

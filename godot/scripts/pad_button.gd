@@ -10,6 +10,7 @@ signal held_changed(on: bool)
 var kind := "left"
 var label_font: Font
 var _down := false
+var _touches: Dictionary = {}
 var _repeat := 0.0
 var _pulse := 0.0
 
@@ -21,6 +22,8 @@ func _ready() -> void:
 
 
 func reset() -> void:
+	_touches.clear()
+	_repeat = 0.0
 	var was := _down
 	_down = false
 	if kind == "brake" and was:
@@ -108,14 +111,25 @@ func _release() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		if event.pressed:
-			_press()
-		else:
-			_release()
+		_update_touch(event.index, event.pressed and not event.canceled)
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			_press()
-		else:
-			_release()
+		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
+			return
+		_update_touch(-1, event.pressed)
 		accept_event()
+
+
+func _update_touch(id: int, down: bool) -> void:
+	if down:
+		_touches[id] = true
+		_press()
+	else:
+		_touches.erase(id)
+		if _touches.is_empty():
+			_release()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree():
+		reset()

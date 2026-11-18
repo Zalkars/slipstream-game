@@ -11,6 +11,7 @@ var charge := 0.0
 var active := false
 var label_font: Font
 var _down := false
+var _touch_id := -1
 var _flash := 0.0
 var _pulse := 0.0
 
@@ -22,6 +23,7 @@ func _ready() -> void:
 
 
 func reset() -> void:
+	_touch_id = -1
 	_down = false
 	active = false
 	_flash = 0.0
@@ -117,20 +119,33 @@ func _draw() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		if event.pressed:
+		if event.pressed and not _down:
+			_touch_id = event.index
 			_down = true
 			queue_redraw()
-		elif _down:
+		elif not event.pressed and _down and event.index == _touch_id:
+			_touch_id = -1
 			_down = false
 			queue_redraw()
-			tapped.emit()
+			if not event.canceled and Rect2(Vector2.ZERO, size).has_point(event.position):
+				tapped.emit()
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
+		# With touch emulation the corresponding ScreenTouch owns the press.
+		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
+			return
+		if event.pressed and not _down:
+			_touch_id = -1
 			_down = true
 			queue_redraw()
-		elif _down:
+		elif not event.pressed and _down and _touch_id == -1:
 			_down = false
 			queue_redraw()
-			tapped.emit()
+			if Rect2(Vector2.ZERO, size).has_point(event.position):
+				tapped.emit()
 		accept_event()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree():
+		reset()

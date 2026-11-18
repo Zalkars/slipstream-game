@@ -133,14 +133,21 @@ func _sync_car() -> void:
 func _frame_camera() -> void:
 	var bb: AABB = _model.bounds()
 	var c := bb.get_center()
-	var radius := maxf(0.5, bb.size.length() * 0.5)
 	var az := deg_to_rad(22.0)
 	var el := deg_to_rad(25.0)
 	var dir := Vector3(sin(az) * cos(el), sin(el), cos(az) * cos(el))
 	var half_v := deg_to_rad(_cam.fov * 0.5)
 	var half_h := atan(tan(half_v) * float(VP_W) / float(VP_H))
-	var half := minf(half_v, half_h)
-	_cam.position = c + dir * (radius / sin(half) * 0.66)
+	# Fit every corner of the actual car, including mirrors and wings. The
+	# previous shrunken bounding sphere cut bumpers off in the viewport.
+	var right := Vector3.UP.cross(dir).normalized()
+	var up := dir.cross(right).normalized()
+	var distance := 1.0
+	for i in range(8):
+		var p := bb.get_endpoint(i) - c
+		var extent := maxf(absf(p.dot(right)) / tan(half_h), absf(p.dot(up)) / tan(half_v))
+		distance = maxf(distance, p.dot(dir) + extent / 0.90)
+	_cam.position = c + dir * distance
 	_cam.look_at(c, Vector3.UP)
 
 

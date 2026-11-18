@@ -5,7 +5,7 @@ title SLIPSTREAM - Android release build
 
 set "ROOT_DIR=%~dp0"
 set "PROJECT_DIR=%ROOT_DIR%godot"
-set "OUTPUT_APK=%ROOT_DIR%Slipstream-0.5.7.apk"
+set "OUTPUT_APK=%ROOT_DIR%Slipstream-0.6.0.apk"
 set "GODOT_EXE="
 
 echo ===================================================
@@ -20,14 +20,15 @@ if not exist "%PROJECT_DIR%\project.godot" (
 
 rem Prefer an explicitly configured executable, known local installs, then PATH.
 if defined GODOT_BIN if exist "%GODOT_BIN%" set "GODOT_EXE=%GODOT_BIN%"
-if not defined GODOT_EXE if exist "%ROOT_DIR%tools\godot\Godot_v4.3-stable_win64_console.exe" set "GODOT_EXE=%ROOT_DIR%tools\godot\Godot_v4.3-stable_win64_console.exe"
+if not defined GODOT_EXE if exist "%ROOT_DIR%.work\tools\godot\Godot_v4.7.2-stable_win64_console.exe" set "GODOT_EXE=%ROOT_DIR%.work\tools\godot\Godot_v4.7.2-stable_win64_console.exe"
+if not defined GODOT_EXE if exist "%ROOT_DIR%tools\godot\Godot_v4.7.2-stable_win64_console.exe" set "GODOT_EXE=%ROOT_DIR%tools\godot\Godot_v4.7.2-stable_win64_console.exe"
 if not defined GODOT_EXE if exist "D:\DS\Work\Projects\Last Hook\tools\godot\Godot_v4.7.2-stable_win64_console.exe" set "GODOT_EXE=D:\DS\Work\Projects\Last Hook\tools\godot\Godot_v4.7.2-stable_win64_console.exe"
 if not defined GODOT_EXE for %%G in (godot.exe godot4.exe) do if not defined GODOT_EXE (
     for /f "delims=" %%P in ('where %%G 2^>nul') do if not defined GODOT_EXE set "GODOT_EXE=%%P"
 )
 
 if not defined GODOT_EXE (
-    set "FAIL_MESSAGE=Godot executable was not found. Set GODOT_BIN to the Godot 4.3 console executable, or add Godot to PATH."
+    set "FAIL_MESSAGE=Godot executable was not found. Set GODOT_BIN to the Godot 4.7.2 console executable, or add Godot to PATH."
     goto :fail
 )
 
@@ -39,6 +40,15 @@ if defined ANDROID_HOME echo [OK] ANDROID_HOME: %ANDROID_HOME%
 if not defined JAVA_HOME echo [INFO] JAVA_HOME is not set; using the Java path configured in Godot.
 if not defined ANDROID_HOME echo [INFO] ANDROID_HOME is not set; using the SDK path configured in Godot.
 echo.
+
+rem Keep export temporary files inside the writable workspace.
+set "TEMP=%ROOT_DIR%.work\build-temp"
+set "TMP=%TEMP%"
+if not exist "%TEMP%" mkdir "%TEMP%"
+if not exist "%TEMP%" (
+    set "FAIL_MESSAGE=Cannot create temporary build directory."
+    goto :fail
+)
 
 echo Importing project resources...
 "%GODOT_EXE%" --headless --path "%PROJECT_DIR%" --import

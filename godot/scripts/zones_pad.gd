@@ -8,7 +8,6 @@ extends Control
 signal lane_left
 signal lane_right
 signal brake_changed(on: bool)
-signal nitro_triggered
 
 var font_bold: Font
 var font_ui: Font
@@ -22,9 +21,6 @@ var _suppressed_touch_ids := {}
 var _left_down := false
 var _right_down := false
 var _braking := false
-
-var _last_tap_time := -999.0
-var _last_tap_side := 0
 
 var _pending_turn_side := 0 # -1 left, +1 right, 0 none
 var _pending_turn_timer := 0.0
@@ -55,8 +51,8 @@ func reset() -> void:
 	_pending_turn_timer = 0.0
 	_pending_turn_id = -999
 	_brake_release_cooldown = 0.0
-	_last_tap_time = -999.0
-	_last_tap_side = 0
+	_repeat_left = 0.0
+	_repeat_right = 0.0
 	if _braking:
 		_braking = false
 		brake_changed.emit(false)
@@ -69,11 +65,17 @@ func reset() -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		var idx: int = event.index
-		if event.pressed:
+		if event.pressed and not event.canceled:
 			touches[idx] = event.position
 			_on_touch_down(idx, event.position)
 		else:
-			_on_touch_up(idx)
+			if event.canceled:
+				if idx == _pending_turn_id:
+					_pending_turn_side = 0
+					_pending_turn_timer = 0.0
+					_pending_turn_id = -999
+			else:
+				_on_touch_up(idx)
 			touches.erase(idx)
 			_braking_touch_ids.erase(idx)
 			_suppressed_touch_ids.erase(idx)
@@ -81,10 +83,13 @@ func _gui_input(event: InputEvent) -> void:
 		accept_event()
 	elif event is InputEventScreenDrag:
 		var idx: int = event.index
-		touches[idx] = event.position
-		_evaluate_touches()
+		if touches.has(idx):
+			touches[idx] = event.position
+			_evaluate_touches()
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
+			return
 		var idx := -1
 		if event.pressed:
 			touches[idx] = event.position
@@ -117,7 +122,6 @@ func _on_touch_down(idx: int, pos: Vector2) -> void:
 		_pending_turn_side = 0
 		_pending_turn_timer = 0.0
 		_pending_turn_id = -999
-		_last_tap_time = -999.0
 		_suppress_all_current_touches()
 		if not _braking:
 			_braking = true
@@ -129,23 +133,14 @@ func _on_touch_down(idx: int, pos: Vector2) -> void:
 
 	if _braking:
 		_suppressed_touch_ids[idx] = true
-		_last_tap_time = -999.0
 		return
 
 	# If cooldown from a recent brake release is still running, suppress lingering finger
 	if _brake_release_cooldown > 0.0:
 		_suppressed_touch_ids[idx] = true
-		_last_tap_time = -999.0
 		return
 
-	# Double-tap detection on either zone triggers nitro without reaching for bottom button
-	var now := float(Time.get_ticks_msec()) * 0.001
-	if now - _last_tap_time < 0.28 and side == _last_tap_side:
-		nitro_triggered.emit()
-		_last_tap_time = -999.0
-	else:
-		_last_tap_time = now
-		_last_tap_side = side
+	# Steering taps never spend nitro; only the dedicated button does.
 
 	# Buffer single tap briefly (75ms) so if the other thumb lands almost simultaneously to brake,
 	# no accidental turn is triggered!
@@ -364,3 +359,8 @@ func _draw_rect_outline(rect: Rect2, rad: float, col: Color, width: float) -> vo
 			pts.append(cc + Vector2(cos(a), sin(a)) * rad)
 	pts.append(pts[0])
 	draw_polyline(pts, col, width, true)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree():
+		reset()

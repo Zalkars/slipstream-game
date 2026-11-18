@@ -20,6 +20,7 @@ const DEMO_SPEED := 620.0
 const NITRO_SEG := 1.0 / 3.0
 const RACE_ART := preload("res://scripts/race_art.gd")
 const BOOST_TIME := 1.6
+const FX_EMISSION_STEP := 1.0 / 60.0
 const BRAKE_MULT := 0.42
 const CRUISE_KMH := 100.0
 const TOP_KMH_SCALE := 0.3
@@ -32,6 +33,8 @@ const SLIP_BONUS := 0.15
 const CUTIN_WINDOW := 0.72
 const CUTIN_MAX_GAP := 230.0
 const ROAD_CYCLE := 3600.0
+const DECOR_CYCLE := 7800.0
+const ROADSIDE_ART := preload("res://scripts/roadside_art.gd")
 const DAY_LENGTH := 360.0
 const WEATHER_CLEAR := 0
 const WEATHER_CLOUDY := 1
@@ -54,20 +57,10 @@ const SKY_KEYS := [
 	[0.97, 0.95, 0.90, 0.84, 0.03],
 	[1.00, 1.00, 1.00, 1.00, 0.00],
 ]
-const TRAFFIC_COLORS := [
-	Color("#e8e7e3"), Color("#b9bdc1"), Color("#3d4147"), Color("#1b1e22"),
-	Color("#5e2b2b"), Color("#2c4a6e"), Color("#3c5c48"), Color("#c9c3b4"),
-	Color("#7a1f24"), Color("#1f6a78"), Color("#d1a12c"), Color("#e3ddd0"),
-	Color("#4b3b66"), Color("#8a5a2b"), Color("#2f6b3f"), Color("#9aa4ae"),
-]
-const TRAILER_COLORS := [
-	Color("#d9dad6"), Color("#c3c5c1"), Color("#8f969c"),
-	Color("#b7b0a4"), Color("#6d7c86"), Color("#a4483f"),
-]
-const BUS_ACCENTS := [
-	Color("#d64a3a"), Color("#2e7fbe"), Color("#3f9a5c"),
-	Color("#e0a52a"), Color("#e8e4d8"),
-]
+const PALETTE := preload("res://scripts/traffic_palette.gd")
+const TRAFFIC_COLORS = PALETTE.TRAFFIC_COLORS
+const TRAILER_COLORS = PALETTE.TRAILER_COLORS
+const BUS_ACCENTS = PALETTE.BUS_ACCENTS
 # kind: 0 car, 1 SUV, 2 truck, 3 van, 4 bus, 5 sports car, 6 pickup.
 const TRAFFIC_TYPES := [
 	{"kind": 0, "weight": 0.26, "w": 1.00, "h": 1.00, "rel": [0.70, 0.80]},
@@ -116,7 +109,9 @@ var crashed := false
 var shake := 0.0
 var flash := 0.0
 var particles: Array = []
+var _fx_emission_t := 0.0
 var decor: Array = []
+var roadside_art: Node
 var road_scars: Array = []
 var skid_marks: Array = []
 var _has_prev_skid := false
@@ -167,7 +162,11 @@ var player_wing := false
 var player_stripe_col := Color("#f0ede4")
 var player_silhouette := "sedan"
 # Settings toggle: 3D sprites for the race, or the original painted art.
-var use_3d_cars := true
+var use_3d_cars := true:
+	set(value):
+		use_3d_cars = value
+		if race_art != null:
+			race_art.set_enabled(value)
 var race_art: Node
 var _player_art: Dictionary = {}
 
@@ -178,6 +177,8 @@ var pickup_coins := 0
 
 var swipe_start := Vector2.ZERO
 var swipe_used := true
+var _swipe_touch_id := -1
+var _swipe_mouse_down := false
 
 var asphalt_tex: ImageTexture
 var grass_tex: ImageTexture
@@ -229,6 +230,7 @@ static func gauge_kmh(px_speed: float, base_px: float, top_px: float) -> int:
 
 
 func _ready() -> void:
+	texture_filter = TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	asphalt_tex = _noise_tex(256, Color(0.365, 0.375, 0.395), 0.034, 11)
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
 	beam_tex = Fx.headlight_tex()
@@ -236,13 +238,17 @@ func _ready() -> void:
 	rain_tex = Fx.rain_tex()
 	wet_tex = Fx.wet_tex()
 	streak_tex = Fx.streak_tex()
+	roadside_art = ROADSIDE_ART.new()
+	roadside_art.name = "RoadsideArt"
+	add_child(roadside_art)
 	race_art = RACE_ART.new()
 	race_art.name = "RaceArt"
 	add_child(race_art)
+	race_art.set_enabled(use_3d_cars)
+	_layout()
 	_gen_decor()
 	_gen_road_scars()
 	_gen_puddles()
-	_layout()
 	_gen_rain()
 	get_viewport().size_changed.connect(_layout)
 	start_demo()
@@ -290,6 +296,7 @@ func _gen_rain() -> void:
 # --- setup ------------------------------------------------------------------
 
 func _layout() -> void:
+	var previous_car_w := car_w
 	var vs := get_viewport_rect().size
 	W = vs.x
 	H = vs.y
@@ -301,6 +308,8 @@ func _layout() -> void:
 	player_y = H - 330.0
 	if demo:
 		player_x = _lane_x(lane)
+	if not decor.is_empty() and not is_equal_approx(car_w, previous_car_w):
+		_gen_decor()
 
 
 func _lane_x(l: int) -> float:
@@ -449,25 +458,93 @@ func _gen_decor() -> void:
 	rng.seed = 99017
 	decor.clear()
 	for side in [-1, 1]:
-		for i in range(22):
-			var roll := rng.randf()
-			var kind := 0
-			if roll < 0.50:
-				kind = 0
-			elif roll < 0.86:
-				kind = 1
-			elif roll < 0.94:
-				kind = 2
-			else:
-				kind = 3
-			decor.append({
-				"side": side,
-				"y": rng.randf() * 2600.0,
-				"kind": kind,
-				"size": rng.randf_range(0.85, 1.35),
-				"off": rng.randf_range(0.0, 24.0),
-				"tint": rng.randf_range(0.0, 1.0),
-			})
+		# Meadows and woodland alternate; the two verges have independent gaps.
+		for i in range(56):
+			var y := (float(i) + rng.randf_range(0.1, 0.9)) * DECOR_CYCLE / 56.0
+			var woodland := sin(y * TAU / DECOR_CYCLE * 3.0 + side * 1.7)
+			if woodland < -0.45 and rng.randf() < 0.8:
+				continue
+			var species := rng.randi_range(0, 3)
+			if woodland > 0.5:
+				species = 2 if rng.randf() < 0.65 else 3
+			_add_decor(rng, side, y, 0, species, rng.randf_range(0.78, 1.13), rng.randf_range(23, 64), 2)
+			# A smaller companion makes a grove rather than a line of trees.
+			if i % 4 == 0:
+				_add_decor(rng, side, y + 54, 0, species, 0.63, 56, 2)
+		for i in range(40):
+			var y := rng.randf() * DECOR_CYCLE
+			_add_decor(rng, side, y, 1, ROADSIDE_ART.SHRUB, rng.randf_range(0.6, 0.95), rng.randf_range(8, 35), 1)
+			if i % 3 == 0:
+				_add_decor(rng, side, y + 34, 4, ROADSIDE_ART.FERN, 0.7, rng.randf_range(12, 30), 1)
+		for i in range(95):
+			var prop := ROADSIDE_ART.FLOWERS
+			if i % 9 == 0:
+				prop = ROADSIDE_ART.ROCK
+			elif i % 23 == 0:
+				prop = ROADSIDE_ART.LOG
+			_add_decor(rng, side, rng.randf() * DECOR_CYCLE, 4, prop,
+				rng.randf_range(0.45, 0.85), rng.randf_range(-3, 48), 0)
+		# Small roadside destinations and maintenance details, spaced in groups.
+		for i in range(6):
+			var y := i * 1300.0 + (530.0 if side < 0 else 910.0)
+			var prop := ROADSIDE_ART.PICNIC if i % 2 == 0 else ROADSIDE_ART.WORKS
+			_add_decor(rng, side, y, 4, prop, 0.85, 19, 1)
+			_add_decor(rng, side, y + 80, 4, ROADSIDE_ART.CABINET, 0.8, 11, 1)
+			for j in range(3):
+				_add_decor(rng, side, y - 160 - j * 82, 4, ROADSIDE_ART.FENCE, 0.85, 35, 1)
+		for i in range(39):
+			_add_decor(rng, side, i * 200.0 + 70, 4, ROADSIDE_ART.MARKER, 0.85, -12, 1)
+		for i in range(12):
+			_add_decor(rng, side, i * 650.0 + 120, 4, ROADSIDE_ART.DRAIN, 0.65, -9, 0)
+		# Infrastructure has deliberate spacing and stays clear of the trees.
+		for i in range(12):
+			_add_decor(rng, side, i * 650.0 + (210.0 if side > 0 else 0.0), 2, 0, 1.0, 0.0, 3)
+		for i in range(5):
+			_add_decor(rng, side, i * 1560.0 + 330.0, 3, 0, 1.0, 0.0, 3)
+	# Buildings sit on cleared plots, away from the shoulder and guardrail.
+	# Filter the existing plants/furniture first so neither can hide a roof.
+	var plots: Array = []
+	for side in [-1, 1]:
+		for i in range(5):
+			plots.append({"side": side, "y": i * 1560.0 + (280.0 if side < 0 else 1040.0),
+				"prop": [ROADSIDE_ART.APARTMENT, ROADSIDE_ART.HOUSE, ROADSIDE_ART.SHOP, ROADSIDE_ART.BARN, ROADSIDE_ART.GARAGE][posmod(i + (2 if side > 0 else 0), 5)]})
+	decor = decor.filter(func(d: Dictionary) -> bool:
+		if int(d.prop) == ROADSIDE_ART.MARKER or int(d.prop) == ROADSIDE_ART.DRAIN:
+			return true
+		for plot in plots:
+			if int(plot.side) != int(d.side):
+				continue
+			var gap := fposmod(float(d.y) - float(plot.y) + DECOR_CYCLE * 0.5, DECOR_CYCLE) - DECOR_CYCLE * 0.5
+			var bounds := _building_plot_bounds(plot)
+			var margin := 45.0 if int(d.kind) == 2 else 70.0
+			if gap > bounds.position.y - float(plot.y) - margin and gap < bounds.end.y - float(plot.y) + margin:
+				return false
+		return true)
+	for plot in plots:
+		_add_decor(rng, int(plot.side), float(plot.y), 5, int(plot.prop), 1.0, 4.0, 2)
+	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a.layer) < int(b.layer))
+
+
+func _building_plot_bounds(plot: Dictionary) -> Rect2:
+	var side := float(plot.side)
+	var offset := float(plot.get("off", 4.0))
+	var x := road_x - 52.0 - offset if side < 0 else road_x + road_w + 52.0 + offset
+	return ROADSIDE_ART.building_bounds(Vector2(x, float(plot.y)), int(plot.prop),
+		int(plot.get("variant", 0)), float(plot.get("size", 1.0)) * car_w / 86.0, side)
+
+
+func _add_decor(rng: RandomNumberGenerator, side: int, y: float, kind: int,
+		prop: int, size: float, offset: float, layer: int) -> void:
+	# Keep rest areas and utility access readable, including across the loop seam.
+	if kind == 0 or kind == 1:
+		for i in range(6):
+			var center := i * 1300.0 + (530.0 if side < 0 else 910.0) + 40.0
+			var gap := fposmod(y - center + DECOR_CYCLE * 0.5, DECOR_CYCLE) - DECOR_CYCLE * 0.5
+			if absf(gap) < 130.0:
+				return
+	decor.append({"side": side, "y": fposmod(y, DECOR_CYCLE), "kind": kind,
+		"prop": prop, "variant": rng.randi_range(0, 3), "size": size,
+		"off": offset, "tint": rng.randf(), "layer": layer})
 
 
 func _apply_car() -> void:
@@ -492,6 +569,8 @@ func _apply_car() -> void:
 
 
 func start_run() -> void:
+	_fx_emission_t = 0.0
+	reset_swipe()
 	_layout()
 	_apply_car()
 	scroll = 0.0
@@ -560,6 +639,8 @@ func set_tutorial_mode(on: bool) -> void:
 
 
 func start_demo() -> void:
+	_fx_emission_t = 0.0
+	reset_swipe()
 	_apply_car()
 	cars.clear()
 	items.clear()
@@ -589,6 +670,8 @@ func start_demo() -> void:
 
 
 func stop_run() -> void:
+	_fx_emission_t = 0.0
+	reset_swipe()
 	running = false
 	demo = false
 	boosting = false
@@ -640,30 +723,46 @@ func tap_nitro() -> bool:
 	return true
 
 
+func reset_swipe() -> void:
+	var held_swipe := _swipe_touch_id != -1 or _swipe_mouse_down
+	_swipe_touch_id = -1
+	_swipe_mouse_down = false
+	swipe_used = true
+	swipe_start = Vector2.ZERO
+	if held_swipe:
+		set_braking(false)
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not running or paused or crashed or control_mode != "swipe":
+		reset_swipe()
 		return
 	if event is InputEventScreenTouch:
-		if event.pressed:
-			swipe_start = event.position
-			swipe_used = false
-		else:
-			if braking:
-				set_braking(false)
-			if not swipe_used:
+		if event.pressed and not event.canceled:
+			if _swipe_touch_id == -1 and not _swipe_mouse_down:
+				_swipe_touch_id = event.index
+				swipe_start = event.position
+				swipe_used = false
+		elif event.index == _swipe_touch_id:
+			if not event.canceled and not swipe_used:
 				_try_swipe(event.position)
-	elif event is InputEventScreenDrag and not swipe_used:
-		_try_swipe(event.position)
+			reset_swipe()
+	elif event is InputEventScreenDrag:
+		if event.index == _swipe_touch_id and not swipe_used:
+			_try_swipe(event.position)
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
+			return
 		if event.pressed:
-			swipe_start = event.position
-			swipe_used = false
-		else:
-			if braking:
-				set_braking(false)
+			if _swipe_touch_id == -1 and not _swipe_mouse_down:
+				_swipe_mouse_down = true
+				swipe_start = event.position
+				swipe_used = false
+		elif _swipe_mouse_down:
 			if not swipe_used:
 				_try_swipe(event.position)
-	elif event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) and not swipe_used:
+			reset_swipe()
+	elif event is InputEventMouseMotion and _swipe_mouse_down and not swipe_used:
 		_try_swipe(event.position)
 
 
@@ -755,7 +854,8 @@ func _update_slipstream(dt: float) -> void:
 			best = maxf(best, along * lateral)
 	slip = lerpf(slip, best, minf(1.0, dt * (3.6 if best > slip else 2.4)))
 	if slip > 0.32 and not braking:
-		bonus += int(15.0 * slip * dt * 8.0)
+		# Accumulate fractions; round only when presenting the total score.
+		bonus += 120.0 * slip * dt
 
 
 func _update_cutin(dt: float) -> void:
@@ -877,6 +977,7 @@ func _spawn_rear(ref_speed: float) -> bool:
 			entry["wing"] = randf() < 0.75
 		6:
 			entry["cargo"] = randf() < 0.6
+	entry.merge(PALETTE.pick(str(entry.silhouette), col), true)
 	if use_3d_cars and race_art != null:
 		race_art.take(entry)
 	cars.append(entry)
@@ -899,6 +1000,7 @@ func _snapshot_state() -> Dictionary:
 		"score": score,
 		"bonus": bonus,
 		"near": near,
+		"pickup_coins": pickup_coins,
 		"combo": combo,
 		"combo_t": combo_t,
 		"nitro": nitro,
@@ -938,6 +1040,7 @@ func _apply_snapshot(s: Dictionary) -> void:
 	score = float(s.score)
 	bonus = float(s.bonus)
 	near = int(s.near)
+	pickup_coins = int(s.pickup_coins)
 	combo = int(s.combo)
 	combo_t = float(s.combo_t)
 	nitro = float(s.nitro)
@@ -1000,6 +1103,7 @@ func _tick_rewind(dt: float) -> void:
 
 
 func _finish_rewind() -> void:
+	_fx_emission_t = 0.0
 	rewinding = false
 	crashed = false
 	running = true
@@ -1531,17 +1635,24 @@ func _traffic_stripe(body: Color) -> Color:
 	return Color(0.94, 0.93, 0.90)
 
 
-# Traffic borrows the garage classes for the car-like kinds, so the road shows
-# hatchbacks, off-roaders and coupes instead of one repainted sedan. The
-# dedicated van/truck/bus/pickup drawings keep their own bodies.
+# Every traffic kind resolves to a dedicated model; passenger cars also vary
+# between hatchback and sedan. The same descriptors feed the 2D fallback.
 func _traffic_silhouette(kind: int) -> String:
 	match kind:
 		0:
-			return "hatch" if randf() < 0.45 else "sedan"
+			return ["hatch", "hatch", "sedan", "sedan", "ev"][randi() % 5]
 		1:
 			return "offroad"
+		2:
+			return "truck"
+		3:
+			return "van"
+		4:
+			return "bus"
 		5:
-			return "sport"
+			return ["sport", "sport", "sport", "muscle", "muscle", "hyper"][randi() % 6]
+		6:
+			return "pickup"
 	return ""
 
 
@@ -1616,6 +1727,7 @@ func _spawn(is_demo: bool) -> void:
 			entry["wing"] = randf() < 0.75
 		6:
 			entry["cargo"] = randf() < 0.6
+	entry.merge(PALETTE.pick(str(entry.silhouette), col), true)
 	if use_3d_cars and race_art != null:
 		race_art.take(entry)
 	cars.append(entry)
@@ -1649,6 +1761,7 @@ func _crash() -> void:
 func _update_fx(dt: float) -> void:
 	shake = maxf(0.0, shake - dt * 42.0)
 	flash = maxf(0.0, flash - dt * 2.2)
+	var damping := pow(0.985, dt * 60.0)
 	for i in range(particles.size() - 1, -1, -1):
 		var p: Dictionary = particles[i]
 		p.life -= dt
@@ -1657,8 +1770,16 @@ func _update_fx(dt: float) -> void:
 			continue
 		p.p += p.v * dt
 		p.v.y += 640.0 * dt
-		p.v *= 0.985
+		p.v *= damping
 
+	# Preserve the original 60 Hz effect density at every display frame rate.
+	_fx_emission_t += dt
+	while _fx_emission_t + 0.000000001 >= FX_EMISSION_STEP:
+		_fx_emission_t = maxf(0.0, _fx_emission_t - FX_EMISSION_STEP)
+		_emit_driving_particles()
+
+
+func _emit_driving_particles() -> void:
 	if braking and not overheated and running and not crashed and speed > 180.0 and randf() < 0.40:
 		for side in [-1, 1]:
 			particles.append({
@@ -2090,37 +2211,44 @@ func _draw_rails() -> void:
 
 
 func _draw_scenery() -> void:
-	var period := 2600.0
+	var ambient := get_sky_ambient()
 	for d in decor:
-		var base_y := fposmod(float(d.y) + scroll, period)
-		for k in [-1, 0, 1]:
-			var y: float = base_y + k * period
-			if y < -170.0 or y > H + 170.0:
+		var base_y := fposmod(float(d.y) + scroll, DECOR_CYCLE)
+		# Include every repeated copy for tall viewports as well as wraparound.
+		for k in range(-1, int(ceil(H / DECOR_CYCLE)) + 1):
+			var y: float = base_y + k * DECOR_CYCLE
+			var margin := 1400.0 if int(d.kind) == 5 else 100.0
+			if y < -margin or y > H + margin:
 				continue
 			var side: float = d.side
 			var x: float = (road_x - 52.0 - float(d.off)) if side < 0 else (road_x + road_w + 52.0 + float(d.off))
+			var p := Vector2(x, y)
 			var kind: int = d.kind
-			var s: float = d.size
-			if kind == 0:
-				Art.tree(self, Vector2(x, y), 41.0 * s, d.tint)
-			elif kind == 1:
-				Art.bush(self, Vector2(x, y), 34.0 * s)
+			var size: float = d.size
+			if kind == 5:
+				roadside_art.draw_building(self, p, int(d.prop), int(d.variant), size * car_w / 86.0, side, ambient, Vector2(_sx, _sy), (1.0 - get_light_factor()) * (1.0 - cloud_amount * 0.7))
 			elif kind == 2:
-				Art.streetlight(self, Vector2(x, y), 1.0 if side < 0 else -1.0, 0.9 * s)
-			else:
-				Art.road_sign(self, Vector2(x, y), side)
+				Art.streetlight(self, p, -side, 0.9 * size)
+			elif kind == 3:
+				Art.road_sign(self, p, side)
+			elif not roadside_art.draw_prop(self, p, int(d.prop), int(d.variant), size, ambient):
+				# The atlas becomes ready after the first rendered frame.
+				if kind == 0:
+					Art.tree(self, p, 41.0 * size, d.tint)
+				elif kind == 1:
+					Art.bush(self, p, 34.0 * size)
 
 
 func _draw_streetlight_glows() -> void:
 	var light := get_light_factor()
 	if light <= 0.04:
 		return
-	var period := 2600.0
+	var period := DECOR_CYCLE
 	for d in decor:
 		if int(d.kind) != 2:
 			continue
 		var base_y := fposmod(float(d.y) + scroll, period)
-		for k in [-1, 0, 1]:
+		for k in range(-1, int(ceil(H / DECOR_CYCLE)) + 1):
 			var y: float = base_y + float(k) * period
 			if y < -200.0 or y > H + 200.0:
 				continue
@@ -2316,7 +2444,10 @@ func _draw_player() -> void:
 func _race_sprite(car: Dictionary) -> Dictionary:
 	if not use_3d_cars or race_art == null or car.is_empty():
 		return {}
-	return race_art.take(car)
+	# Appearance is fixed for each spawned car (including rewind snapshots).
+	if not car.has("_race_sprite"):
+		car["_race_sprite"] = race_art.take(car)
+	return car["_race_sprite"]
 
 
 func _draw_vehicle_shadow(center: Vector2, w: float, h: float) -> void:
