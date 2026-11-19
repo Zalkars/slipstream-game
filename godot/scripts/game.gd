@@ -14,13 +14,26 @@ signal status_changed(slip: float, brake_heat: float, overheated: bool)
 signal rewind_started()
 signal rewind_finished()
 signal nitro_boosted()
+signal slingshot_ready()
+signal slingshot_fired(combo: int, bonus_pts: int)
+signal chrono_shield_triggered()
+signal ram_used(bonus_pts: int)
+signal road_event_banner(title: String, sub: String, col: Color)
+signal duel_milestone(kind: String)
+signal challenge_hud_changed(info: Dictionary)
 
 const LANES := 4
 const DEMO_SPEED := 620.0
 const NITRO_SEG := 1.0 / 3.0
 const RACE_ART := preload("res://scripts/race_art.gd")
 const BOOST_TIME := 1.6
+const SLINGSHOT_TIME := 0.85
+const SLINGSHOT_MULT := 1.32
 const FX_EMISSION_STEP := 1.0 / 60.0
+const EVENT_NONE := 0
+const EVENT_RADAR := 1
+const EVENT_ROADWORKS := 2
+const EVENT_BLACKOUT := 3
 const BRAKE_MULT := 0.42
 const CRUISE_KMH := 100.0
 const TOP_KMH_SCALE := 0.3
@@ -150,6 +163,53 @@ var _snapshot_t := 0.0
 var _cutin_window := 0.0
 var _cutin_lane := -1
 var _rear_spawn_t := 0.5
+var _hud_font: Font
+
+# Deterministic simulation RNG & async challenge / ghost duel state.
+var run_rng := RandomNumberGenerator.new()
+var active_run_seed := 1
+var start_tod := 0.15
+var start_weather := 0
+var challenge_config: Dictionary = {}
+var duel_clock := 0.0
+var ghost_rec: Array = []
+var _ghost_rec_t := 0.0
+var _duel_passed_crash := false
+var _duel_beaten_score := false
+var _ghost_art: Dictionary = {}
+var _ghost_sprite: Dictionary = {}
+var _ghost_state: Dictionary = {}
+
+# Per-car unique perks, Slingshot Draft, Chrono-Shield, Road Events, Traffic Signals.
+var car_perk := "compact"
+var max_nitro := 1.0
+var ram_charges := 0
+var hyperdrive_active := false
+var coin_mult := 1.0
+var hitbox_w_mult := 1.0
+var cutin_window_mult := 1.0
+var cutin_gap_mult := 1.0
+var cutin_nitro_mult := 1.0
+var brake_heat_mult := 1.0
+var brake_cool_mult := 1.0
+var slingshot_rate_mult := 1.0
+var _puddle_cd := 0.0
+
+var slingshot_charge := 0.0
+var slingshot_t := 0.0
+var slingshot_grace := 0.0
+var _slingshot_notified := false
+var _shield_post_nitro := -1.0
+var _shield_active := false
+
+var _traffic_lc_t := 2.4
+var road_event_type := EVENT_NONE
+var road_event: Dictionary = {}
+var road_event_t := 18.0
+var _last_event_type := EVENT_NONE
+var blackout_amount := 0.0
+var score_mult := 1
+var closed_lane := -1
 
 var car_index := 0
 var base_speed := 740.0
@@ -231,6 +291,9 @@ static func gauge_kmh(px_speed: float, base_px: float, top_px: float) -> int:
 
 func _ready() -> void:
 	texture_filter = TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	var rf := load("res://fonts/Rajdhani-Bold.ttf") as Font
+	_hud_font = rf if rf != null else ThemeDB.fallback_font
+	run_rng.seed = 1729
 	asphalt_tex = _noise_tex(256, Color(0.365, 0.375, 0.395), 0.034, 11)
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
 	beam_tex = Fx.headlight_tex()
@@ -295,9 +358,14 @@ func _gen_rain() -> void:
 
 # --- setup ------------------------------------------------------------------
 
-func _layout() -> void:
+func _layout(size: Vector2 = Vector2.ZERO) -> void:
 	var previous_car_w := car_w
-	var vs := get_viewport_rect().size
+	var old_road_x := road_x
+	var old_lane_w := lane_w
+	var old_car_w := car_w
+	var old_car_h := car_h
+	var old_player_y := player_y
+	var vs := size if size != Vector2.ZERO else get_viewport_rect().size
 	W = vs.x
 	H = vs.y
 	road_w = minf(W * 0.72, 640.0)
@@ -308,6 +376,24 @@ func _layout() -> void:
 	player_y = H - 330.0
 	if demo:
 		player_x = _lane_x(lane)
+	# A window resize moves the road and the player; already-spawned traffic and
+	# pickups must follow their lanes instead of staying in the old coordinates.
+	if old_lane_w > 0.0 and (
+		not is_equal_approx(road_x, old_road_x)
+		or not is_equal_approx(lane_w, old_lane_w)
+		or not is_equal_approx(player_y, old_player_y)
+	):
+		var kx := car_w / maxf(1.0, old_car_w)
+		var ky := car_h / maxf(1.0, old_car_h)
+		var dy := player_y - old_player_y
+		for c in cars:
+			c.x = road_x + lane_w * clampf((float(c.x) - old_road_x) / old_lane_w, 0.0, float(LANES))
+			c.w = float(c.w) * kx
+			c.h = float(c.h) * ky
+			c.y = float(c.y) + dy
+		for it in items:
+			it.x = road_x + lane_w * clampf((float(it.x) - old_road_x) / old_lane_w, 0.0, float(LANES))
+			it.y = float(it.y) + dy
 	if not decor.is_empty() and not is_equal_approx(car_w, previous_car_w):
 		_gen_decor()
 
@@ -547,6 +633,29 @@ func _add_decor(rng: RandomNumberGenerator, side: int, y: float, kind: int,
 		"off": offset, "tint": rng.randf(), "layer": layer})
 
 
+func _rf() -> float:
+	return randf() if demo else run_rng.randf()
+
+
+func _rfr(a: float, b: float) -> float:
+	return randf_range(a, b) if demo else run_rng.randf_range(a, b)
+
+
+func _ri() -> int:
+	return randi() if demo else run_rng.randi()
+
+
+func _rir(a: int, b: int) -> int:
+	return randi_range(a, b) if demo else run_rng.randi_range(a, b)
+
+
+func _effective_score_mult() -> int:
+	var m := score_mult
+	if hyperdrive_active:
+		m = maxi(m + 1, 2) if m > 1 else 2
+	return m
+
+
 func _apply_car() -> void:
 	var car := Cars.get_car(car_index)
 	base_speed = float(car.speed)
@@ -557,6 +666,16 @@ func _apply_car() -> void:
 	player_wing = bool(car.wing)
 	player_stripe_col = Color(str(car.stripe_color))
 	player_silhouette = str(car.get("silhouette", "sedan"))
+	car_perk = str(car.get("perk_id", "compact"))
+	max_nitro = (4.0 / 3.0) if car_perk == "extra_tank" else 1.0
+	coin_mult = 1.35 if car_perk == "taxi_magnet" else 1.0
+	hitbox_w_mult = 0.88 if car_perk == "compact" else 1.0
+	cutin_window_mult = 1.45 if car_perk == "wide_cutin" else 1.0
+	cutin_gap_mult = 1.25 if car_perk == "wide_cutin" else 1.0
+	cutin_nitro_mult = 1.25 if car_perk == "wide_cutin" else 1.0
+	brake_heat_mult = 0.55 if car_perk == "carbon_brakes" else 1.0
+	brake_cool_mult = 1.35 if car_perk == "carbon_brakes" else 1.0
+	slingshot_rate_mult = 1.35 if car_perk == "carbon_brakes" else 1.0
 	_player_art = {
 		"kind": 0,
 		"silhouette": player_silhouette,
@@ -568,28 +687,66 @@ func _apply_car() -> void:
 		race_art.take(_player_art)
 
 
+func _snap_challenge_weather(tod: float, w_state: int) -> void:
+	time_of_day = fposmod(tod, 1.0)
+	weather_state = clampi(w_state, 0, 4)
+	var goal := _weather_targets()
+	rain_amount = float(goal[0])
+	fog_amount = float(goal[1])
+	cloud_amount = float(goal[2])
+	storm_amount = float(goal[3])
+	wetness = clampf(rain_amount * 1.12 + storm_amount * 0.15, 0.0, 1.0)
+	wind = clampf(0.12 + rain_amount * 0.42 + storm_amount * 0.72 + cloud_amount * 0.10, 0.0, 1.2)
+	weather_timer = 55.0
+	lightning = 0.0
+	thunder_delay = 0.0
+	lightning_next = 7.0
+
+
 func start_run() -> void:
 	_fx_emission_t = 0.0
 	reset_swipe()
 	_layout()
+	if not challenge_config.is_empty():
+		car_index = clampi(int(challenge_config.get("car_index", car_index)), 0, Cars.LIST.size() - 1)
+		active_run_seed = int(challenge_config.get("seed", 1))
+		if active_run_seed == 0:
+			active_run_seed = 1
+		_snap_challenge_weather(float(challenge_config.get("tod", 0.15)), int(challenge_config.get("weather", WEATHER_CLEAR)))
+	else:
+		active_run_seed = (randi() & 0x7FFFFFFF) | 1
+	run_rng.seed = active_run_seed
+	start_tod = time_of_day
+	start_weather = weather_state
+
 	_apply_car()
 	scroll = 0.0
 	speed = base_speed
 	t = 0.0
+	duel_clock = 0.0
 	distance = 0.0
 	score = 0.0
 	bonus = 0.0
 	near = 0
 	combo = 0
 	combo_t = 0.0
-	nitro = NITRO_SEG
+	nitro = (NITRO_SEG * 2.0) if car_perk == "extra_tank" else NITRO_SEG
 	boosting = false
 	boost_t = 0.0
 	_nitro_cooldown = 0.0
+	ram_charges = 0
+	hyperdrive_active = false
+	_puddle_cd = 0.0
 	braking = false
 	brake_heat = 0.0
 	overheated = false
 	slip = 0.0
+	slingshot_charge = 0.0
+	slingshot_t = 0.0
+	slingshot_grace = 0.0
+	_slingshot_notified = false
+	_shield_post_nitro = -1.0
+	_shield_active = false
 	rear_hazards.clear()
 	rewinding = false
 	rewind_frames.clear()
@@ -599,6 +756,14 @@ func start_run() -> void:
 	_cutin_window = 0.0
 	_cutin_lane = -1
 	_rear_spawn_t = 0.45
+	_traffic_lc_t = 2.4
+	road_event_type = EVENT_NONE
+	road_event.clear()
+	road_event_t = 18.0
+	_last_event_type = EVENT_NONE
+	blackout_amount = 0.0
+	score_mult = 1
+	closed_lane = -1
 	tutorial_mode = false
 	lane = 1
 	player_x = _lane_x(lane)
@@ -620,8 +785,30 @@ func start_run() -> void:
 	time_scale = 1.0
 	shake = 0.0
 	flash = 0.0
+
+	ghost_rec.clear()
+	_ghost_rec_t = 0.0
+	_duel_passed_crash = false
+	_duel_beaten_score = false
+	_ghost_state.clear()
+	_ghost_art.clear()
+	_ghost_sprite.clear()
+	if str(challenge_config.get("type", "")) == "duel":
+		var rcar := Cars.get_car(int(challenge_config.get("car_index", 0)))
+		_ghost_art = {
+			"kind": 0,
+			"silhouette": str(rcar.get("silhouette", "sedan")),
+			"color": Color(str(rcar.color)),
+			"stripe": bool(rcar.stripe),
+			"stripe_color": Color(str(rcar.stripe_color)),
+		}
+		if use_3d_cars and race_art != null:
+			_ghost_sprite = race_art.take(_ghost_art)
+	_record_ghost_sample(true)
+
 	hud_changed.emit(0, gauge_kmh(speed, base_speed, top_speed), nitro, 0, 0, false)
 	status_changed.emit(slip, brake_heat, overheated)
+	_emit_challenge_hud()
 
 
 func set_tutorial_mode(on: bool) -> void:
@@ -666,6 +853,16 @@ func start_demo() -> void:
 	rewinding = false
 	rewind_frames.clear()
 	_rewind_invuln = 0.0
+	slingshot_charge = 0.0
+	slingshot_t = 0.0
+	slingshot_grace = 0.0
+	hyperdrive_active = false
+	road_event_type = EVENT_NONE
+	road_event.clear()
+	blackout_amount = 0.0
+	score_mult = 1
+	closed_lane = -1
+	_ghost_state.clear()
 	spawn_t = 0.5
 
 
@@ -684,9 +881,35 @@ func move_lane(dir: int) -> void:
 	var old_lane := lane
 	lane = clampi(lane + dir, 0, LANES - 1)
 	if lane != old_lane:
-		_cutin_window = CUTIN_WINDOW
+		_cutin_window = CUTIN_WINDOW * cutin_window_mult
 		_cutin_lane = lane
+		if slingshot_charge >= 0.99 and not tutorial_mode:
+			_fire_slingshot(lane - old_lane)
 		lane_changed.emit(lane)
+
+
+func _fire_slingshot(dir: int) -> void:
+	slingshot_charge = 0.0
+	slingshot_grace = 0.0
+	_slingshot_notified = false
+	slingshot_t = SLINGSHOT_TIME
+	nitro = minf(max_nitro, nitro + NITRO_SEG * 0.75)
+	combo += 1
+	combo_t = 3.2
+	var pts := 80 * combo * _effective_score_mult()
+	bonus += pts
+	shake = maxf(shake, 4.5)
+	Sfx.slingshot_snap()
+	for i in range(16):
+		particles.append({
+			"p": Vector2(player_x + randf_range(-car_w * 0.3, car_w * 0.3), player_y + randf_range(-car_h * 0.2, car_h * 0.45)),
+			"v": Vector2(-float(dir) * randf_range(90.0, 240.0), randf_range(120.0, 320.0)),
+			"life": randf_range(0.25, 0.52),
+			"max": 0.52,
+			"col": Color(0.36, 0.90, 0.98) if i % 2 == 0 else Color(1.0, 0.86, 0.32),
+			"size": randf_range(2.5, 5.5),
+		})
+	slingshot_fired.emit(combo, pts)
 
 
 func set_braking(on: bool) -> void:
@@ -719,6 +942,8 @@ func tap_nitro() -> bool:
 	boost_t = BOOST_TIME
 	boosting = true
 	_nitro_cooldown = 0.35
+	if car_perk == "ram_nitro":
+		ram_charges = 1
 	nitro_boosted.emit()
 	return true
 
@@ -818,13 +1043,16 @@ func _process(delta: float) -> void:
 
 
 func _coins_total() -> int:
-	return int(distance / 10.0) + pickup_coins + near * 2
+	var raw := int(distance / 10.0) + pickup_coins + near * 2
+	if coin_mult > 1.01:
+		return int(round(float(raw) * coin_mult))
+	return raw
 
 
 func _update_brake_heat(dt: float) -> void:
 	if braking and not crashed:
 		var load := clampf(speed / maxf(1.0, top_speed), 0.35, 1.25)
-		brake_heat = clampf(brake_heat + dt * (BRAKE_HEAT_RATE + load * BRAKE_HEAT_LOAD), 0.0, 1.0)
+		brake_heat = clampf(brake_heat + dt * (BRAKE_HEAT_RATE + load * BRAKE_HEAT_LOAD) * brake_heat_mult, 0.0, 1.0)
 		if brake_heat >= 1.0 and not overheated:
 			overheated = true
 			braking = false
@@ -832,7 +1060,7 @@ func _update_brake_heat(dt: float) -> void:
 			shake = maxf(shake, 14.0)
 			Sfx.brake_overheat()
 	else:
-		var cool := BRAKE_COOL_RATE + (0.12 if speed < 260.0 else 0.0)
+		var cool := (BRAKE_COOL_RATE + (0.12 if speed < 260.0 else 0.0)) * brake_cool_mult
 		brake_heat = maxf(0.0, brake_heat - dt * cool)
 		if overheated and brake_heat <= BRAKE_RESTART_HEAT:
 			overheated = false
@@ -843,6 +1071,8 @@ func _update_slipstream(dt: float) -> void:
 	var best := 0.0
 	if not braking and not boosting and not crashed:
 		for c in cars:
+			if bool(c.get("rammed", false)):
+				continue
 			var dy := player_y - float(c.y)
 			if dy <= car_h * 0.35 or dy > car_h * 7.5:
 				continue
@@ -856,6 +1086,23 @@ func _update_slipstream(dt: float) -> void:
 	if slip > 0.32 and not braking:
 		# Accumulate fractions; round only when presenting the total score.
 		bonus += 120.0 * slip * dt
+	if not tutorial_mode and not crashed:
+		if slip >= 0.30 and not braking and not boosting:
+			var rate := (0.68 + 0.52 * slip) * slingshot_rate_mult
+			var was_ready := slingshot_charge >= 0.99
+			slingshot_charge = minf(1.0, slingshot_charge + dt * rate)
+			slingshot_grace = 0.45
+			if not was_ready and slingshot_charge >= 0.99:
+				_slingshot_notified = true
+				Sfx.slingshot_ready()
+				slingshot_ready.emit()
+		else:
+			if slingshot_grace > 0.0:
+				slingshot_grace = maxf(0.0, slingshot_grace - dt)
+			else:
+				slingshot_charge = maxf(0.0, slingshot_charge - dt * 0.95)
+				if slingshot_charge < 0.90:
+					_slingshot_notified = false
 
 
 func _update_cutin(dt: float) -> void:
@@ -866,12 +1113,14 @@ func _update_cutin(dt: float) -> void:
 	if absf(player_x - target_x) > lane_w * 0.38:
 		return
 	for c in cars:
-		if int(c.get("lane", -1)) != lane or bool(c.get("cutin", false)):
+		if int(c.get("lane", -1)) != lane or bool(c.get("cutin", false)) or bool(c.get("near", false)):
 			continue
 		var gap := (float(c.y) - float(c.h) * 0.5) - (player_y + car_h * 0.5)
-		if gap < 5.0 or gap > CUTIN_MAX_GAP:
+		if gap < 5.0 or gap > CUTIN_MAX_GAP * cutin_gap_mult:
 			continue
-		var traffic_speed := float(c.get("rel", 0.7)) * lerpf(base_speed, top_speed, clampf(t / 70.0, 0.0, 1.0))
+		# Compare against the car's actual speed, not its theoretical target:
+		# a chasing car that is still closing the gap has not been overtaken.
+		var traffic_speed := float(c.get("cur_speed", float(c.get("rel", 0.7)) * lerpf(base_speed, top_speed, clampf(t / 70.0, 0.0, 1.0))))
 		if speed < traffic_speed + 15.0:
 			continue
 		c["cutin"] = true
@@ -879,13 +1128,14 @@ func _update_cutin(dt: float) -> void:
 		near += 1
 		combo += 1
 		combo_t = 3.2
-		bonus += 45 * combo
-		var seg_gain := NITRO_SEG if gap <= 130.0 else (NITRO_SEG * 0.5)
-		if nitro >= 0.999:
-			bonus += 250 * combo
+		var mult := _effective_score_mult()
+		bonus += 45 * combo * mult
+		var seg_gain := (NITRO_SEG if gap <= 130.0 * cutin_gap_mult else (NITRO_SEG * 0.5)) * cutin_nitro_mult
+		if nitro >= max_nitro - 0.001:
+			bonus += 250 * combo * mult
 			pickup_coins += 5
 		else:
-			nitro = minf(1.0, nitro + seg_gain)
+			nitro = minf(max_nitro, nitro + seg_gain)
 		cut_in.emit(combo)
 		for i in range(14):
 			particles.append({
@@ -905,7 +1155,7 @@ func _update_rear_spawning(dt: float, ref_speed: float) -> void:
 		_rear_spawn_t -= dt
 		if _rear_spawn_t <= 0.0:
 			if _spawn_rear(ref_speed):
-				_rear_spawn_t = randf_range(0.55, 0.90)
+				_rear_spawn_t = _rfr(0.55, 0.90)
 			else:
 				_rear_spawn_t = 0.20
 	else:
@@ -917,8 +1167,8 @@ func _spawn_rear(ref_speed: float) -> bool:
 		return false
 	var chosen := -1
 	for attempt in range(20):
-		var l := randi() % LANES
-		if l == free_lane:
+		var l := _ri() % LANES
+		if l == free_lane or l == closed_lane:
 			continue
 		var blocked := false
 		for c in cars:
@@ -935,8 +1185,8 @@ func _spawn_rear(ref_speed: float) -> bool:
 	var kind := int(type.kind)
 	var w := car_w * float(type.w)
 	var h := car_h * float(type.h)
-	var target_rel := randf_range(float(type.rel[0]), float(type.rel[1]))
-	var col: Color = TRAFFIC_COLORS[randi() % TRAFFIC_COLORS.size()]
+	var target_rel := _rfr(float(type.rel[0]), float(type.rel[1]))
+	var col: Color = TRAFFIC_COLORS[_ri() % TRAFFIC_COLORS.size()]
 	var entry := {
 		"lane": chosen,
 		"x": _lane_x(chosen),
@@ -948,7 +1198,7 @@ func _spawn_rear(ref_speed: float) -> bool:
 		"rel": target_rel,
 		"cur_speed": target_rel * ref_speed,
 		"braking": false,
-		"demo_speed": randf_range(280.0, 460.0),
+		"demo_speed": _rfr(280.0, 460.0),
 		"near": false,
 		"cutin": false,
 		"from_rear": true,
@@ -962,21 +1212,21 @@ func _spawn_rear(ref_speed: float) -> bool:
 	}
 	match kind:
 		0:
-			entry["stripe"] = randf() < 0.35
-			if entry["stripe"] and randf() < 0.18:
+			entry["stripe"] = _rf() < 0.35
+			if entry["stripe"] and _rf() < 0.18:
 				entry["wing"] = true
-			entry["roof_sign"] = randf() < 0.06
+			entry["roof_sign"] = _rf() < 0.06
 		1:
 			entry["rails"] = true
 		2:
-			entry["trailer"] = TRAILER_COLORS[randi() % TRAILER_COLORS.size()]
+			entry["trailer"] = TRAILER_COLORS[_ri() % TRAILER_COLORS.size()]
 		4:
-			entry["accent"] = BUS_ACCENTS[randi() % BUS_ACCENTS.size()]
+			entry["accent"] = BUS_ACCENTS[_ri() % BUS_ACCENTS.size()]
 		5:
 			entry["stripe"] = true
-			entry["wing"] = randf() < 0.75
+			entry["wing"] = _rf() < 0.75
 		6:
-			entry["cargo"] = randf() < 0.6
+			entry["cargo"] = _rf() < 0.6
 	entry.merge(PALETTE.pick(str(entry.silhouette), col), true)
 	if use_3d_cars and race_art != null:
 		race_art.take(entry)
@@ -1008,6 +1258,8 @@ func _snapshot_state() -> Dictionary:
 		"lane": lane,
 		"player_x": player_x,
 		"player_tilt": player_tilt,
+		"cutin_window": _cutin_window,
+		"cutin_lane": _cutin_lane,
 		"braking": braking,
 		"boost_t": boost_t,
 		"boosting": boosting,
@@ -1029,7 +1281,7 @@ func _record_rewind_snapshot(dt: float) -> void:
 		return
 	_snapshot_t = 0.0
 	rewind_frames.append(_snapshot_state())
-	while rewind_frames.size() > 42:
+	while rewind_frames.size() > 36:
 		rewind_frames.pop_front()
 
 
@@ -1048,6 +1300,8 @@ func _apply_snapshot(s: Dictionary) -> void:
 	lane = int(s.lane)
 	player_x = float(s.player_x)
 	player_tilt = float(s.player_tilt)
+	_cutin_window = float(s.get("cutin_window", 0.0))
+	_cutin_lane = int(s.get("cutin_lane", -1))
 	braking = bool(s.braking)
 	boost_t = float(s.boost_t)
 	boosting = bool(s.boosting)
@@ -1092,6 +1346,13 @@ func _begin_rewind() -> void:
 func _tick_rewind(dt: float) -> void:
 	if not rewinding:
 		return
+	if not tutorial_mode and not demo:
+		duel_clock += dt
+		_ghost_rec_t += dt
+		if _ghost_rec_t >= 0.20:
+			_ghost_rec_t -= 0.20
+			_record_ghost_sample(false)
+		_update_ghost_duel()
 	shake = maxf(0.0, shake - dt * 38.0)
 	flash = maxf(0.0, flash - dt * 2.0)
 	_rewind_step_t += dt
@@ -1110,21 +1371,34 @@ func _finish_rewind() -> void:
 	boosting = false
 	braking = false
 	boost_t = 0.0
+	slingshot_t = 0.0
+	slingshot_charge = 0.0
+	slingshot_grace = 0.0
+	_slingshot_notified = false
+	ram_charges = 0
 	_nitro_cooldown = 0.0
+	if _shield_active and _shield_post_nitro >= 0.0:
+		nitro = _shield_post_nitro
+	_shield_active = false
+	_shield_post_nitro = -1.0
 	brake_heat = minf(brake_heat, 0.18)
 	overheated = false
 	slip = 0.0
-	_rewind_invuln = 1.35
+	_rewind_invuln = 1.60 if not tutorial_mode else 1.35
 	particles.clear()
 	skid_marks.clear()
 	_has_prev_skid = false
 	spawn_t = maxf(spawn_t, 0.8)
+	if closed_lane >= 0 and lane == closed_lane:
+		lane = 1 if closed_lane == 0 else LANES - 2
+		player_x = _lane_x(lane)
 	for c in cars:
 		if absf(float(c.x) - player_x) < lane_w * 0.85:
 			if float(c.y) > player_y - 380.0 and float(c.y) < player_y + 160.0:
 				c.y -= 480.0
 	status_changed.emit(slip, brake_heat, overheated)
 	hud_changed.emit(int(score), gauge_kmh(speed, base_speed, top_speed), nitro, combo, _coins_total(), boosting)
+	_emit_challenge_hud()
 	rewind_finished.emit()
 
 
@@ -1245,18 +1519,18 @@ func _next_weather() -> void:
 			pool = [WEATHER_RAIN, WEATHER_RAIN, WEATHER_CLOUDY]
 		_:
 			pool = [WEATHER_CLOUDY, WEATHER_CLEAR, WEATHER_RAIN]
-	weather_state = int(pool[randi() % pool.size()])
+	weather_state = int(pool[_ri() % pool.size()])
 	match weather_state:
 		WEATHER_CLEAR:
-			weather_timer = randf_range(80.0, 125.0)
+			weather_timer = _rfr(80.0, 125.0)
 		WEATHER_CLOUDY:
-			weather_timer = randf_range(65.0, 105.0)
+			weather_timer = _rfr(65.0, 105.0)
 		WEATHER_RAIN:
-			weather_timer = randf_range(55.0, 88.0)
+			weather_timer = _rfr(55.0, 88.0)
 		WEATHER_STORM:
-			weather_timer = randf_range(38.0, 66.0)
+			weather_timer = _rfr(38.0, 66.0)
 		_:
-			weather_timer = randf_range(50.0, 82.0)
+			weather_timer = _rfr(50.0, 82.0)
 
 
 func _weather_targets() -> Array:
@@ -1332,17 +1606,31 @@ func _tick(dt: float) -> void:
 			boosting = false
 			_nitro_cooldown = 0.35
 
+	if boost_t <= 0.0:
+		ram_charges = 0
+
+	if slingshot_t > 0.0:
+		slingshot_t = maxf(0.0, slingshot_t - dt)
+
 	if _rewind_invuln > 0.0:
 		_rewind_invuln = maxf(0.0, _rewind_invuln - dt)
 
+	if _puddle_cd > 0.0:
+		_puddle_cd = maxf(0.0, _puddle_cd - dt)
+
 	_update_brake_heat(dt)
 	_update_slipstream(dt)
+
+	if car_perk == "regen_brake" and braking and not overheated and not tutorial_mode and speed > 160.0:
+		nitro = minf(max_nitro, nitro + dt * 0.28)
 
 	var ramp := clampf(t / 70.0, 0.0, 1.0)
 	var ref := lerpf(base_speed, top_speed, ramp)
 	var want := ref
 	if boosting:
 		want *= 1.5
+	if slingshot_t > 0.0:
+		want *= SLINGSHOT_MULT
 	if braking and not overheated:
 		# Heat makes the pads fade before they lock out completely.
 		want *= lerpf(BRAKE_MULT, BRAKE_MULT * 1.85, brake_heat)
@@ -1351,13 +1639,17 @@ func _tick(dt: float) -> void:
 	var k := 2.4
 	if braking and not overheated:
 		k = 5.5
-	elif boosting:
-		k = 5.0
+	elif boosting or slingshot_t > 0.0:
+		k = 5.2
 	speed = lerpf(speed, want, minf(1.0, dt * k))
+
+	var cur_kmh := gauge_kmh(speed, base_speed, top_speed)
+	hyperdrive_active = (car_perk == "hyperdrive") and (cur_kmh >= 310) and not braking and not crashed and not tutorial_mode
 
 	var travel := speed * dt
 	scroll += travel
-	distance += travel / 12.0
+	var dist_delta := travel / 12.0
+	distance += dist_delta
 
 	# Update existing skid marks with road travel
 	for i in range(skid_marks.size() - 1, -1, -1):
@@ -1419,33 +1711,50 @@ func _tick(dt: float) -> void:
 	item_t -= dt
 	if item_t <= 0.0:
 		_spawn_item()
-		item_t = randf_range(1.7, 3.1)
+		item_t = _rfr(1.7, 3.1)
+
+	if not tutorial_mode:
+		duel_clock += dt
+		_ghost_rec_t += dt
+		if _ghost_rec_t >= 0.20:
+			_ghost_rec_t -= 0.20
+			_record_ghost_sample(false)
+		_update_road_events(dt, travel)
+		_update_traffic_signals(dt)
+		_check_offroad_puddles()
+		_update_ghost_duel()
 
 	_update_rear_spawning(dt, ref)
 	_move_traffic(dt, speed, ref, false)
-	if rewinding:
+	if rewinding or crashed:
 		return
 	_update_cutin(dt)
 	_move_items(dt)
 	_update_fx(dt)
 
-	if tutorial_mode and running and not crashed:
+	if running and not crashed:
 		_record_rewind_snapshot(dt)
 
+	var mult := _effective_score_mult()
+	if mult > 1 and not tutorial_mode:
+		bonus += dist_delta * float(mult - 1)
 	score = floor(distance) + float(bonus)
 	hud_changed.emit(int(score), gauge_kmh(speed, base_speed, top_speed), nitro, combo, _coins_total(), boosting)
 	status_changed.emit(slip, brake_heat, overheated)
+	_emit_challenge_hud()
 
 
 func _rotate_free_lane() -> void:
 	var nl := free_lane
-	for attempt in range(10):
-		var cand := randi() % LANES
-		if cand != free_lane:
+	for attempt in range(12):
+		var cand := _ri() % LANES
+		if cand != free_lane and cand != closed_lane:
 			nl = cand
 			break
+	if nl == closed_lane:
+		nl = 1 if closed_lane == 0 else LANES - 2
 	free_lane = nl
-	free_t = randf_range(6.0, 9.0)
+	free_t = _rfr(6.0, 9.0)
 
 
 func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bool) -> void:
@@ -1460,6 +1769,18 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 	var py := player_y
 	for i in range(cars.size() - 1, -1, -1):
 		var c: Dictionary = cars[i]
+		if bool(c.get("rammed", false)):
+			c.x = float(c.x) + float(c.get("ram_vx", 360.0)) * dt
+			c.y = float(c.y) + float(c.get("ram_vy", -240.0)) * dt
+			c["ram_rot"] = float(c.get("ram_rot", 0.0)) + float(c.get("ram_spin", 7.0)) * dt
+			if float(c.x) < -240.0 or float(c.x) > W + 240.0 or float(c.y) < -400.0 or float(c.y) > H + 340.0:
+				cars.remove_at(i)
+			continue
+		if float(c.get("lane_move_t", 0.0)) > 0.0:
+			c["lane_move_t"] = maxf(0.0, float(c.lane_move_t) - dt)
+			c.x = lerpf(float(c.x), _lane_x(int(c.lane)), minf(1.0, dt * 6.5))
+			if float(c.lane_move_t) <= 0.0:
+				c["signal_dir"] = 0
 		var desired_speed: float = float(c.get("rel", 0.72)) * ref_speed
 		var target_speed := desired_speed
 		var wants_brake := false
@@ -1524,12 +1845,36 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 			cars.remove_at(i)
 			continue
 
-		var pw := car_w * 0.78
+		var pw := car_w * 0.78 * hitbox_w_mult
 		var ph := car_h * 0.80
 		var cw: float = float(c.w) * 0.78
 		var ch: float = float(c.h) * 0.80
 		if _rewind_invuln <= 0.0 and absf(float(c.x) - player_x) < (pw + cw) * 0.5 and absf(float(c.y) - py) < (ph + ch) * 0.5:
 			var dy := float(c.y) - py
+			if not tutorial_mode and boosting and car_perk == "ram_nitro" and ram_charges > 0 and not (int(c.get("kind", 0)) in [2, 4]):
+				ram_charges -= 1
+				var side_dir := 1.0 if float(c.x) >= player_x else -1.0
+				c["rammed"] = true
+				c["ram_vx"] = side_dir * 720.0
+				c["ram_vy"] = -380.0
+				c["ram_spin"] = side_dir * 8.5
+				c["ram_rot"] = 0.0
+				var ram_pts := 250 * _effective_score_mult()
+				bonus += ram_pts
+				shake = maxf(shake, 16.0)
+				flash = maxf(flash, 0.25)
+				Sfx.ram_hit()
+				for k in range(22):
+					particles.append({
+						"p": Vector2((player_x + float(c.x)) * 0.5, (py + float(c.y)) * 0.5),
+						"v": Vector2(side_dir * randf_range(120.0, 440.0), randf_range(-340.0, 120.0)),
+						"life": randf_range(0.28, 0.62),
+						"max": 0.62,
+						"col": Color(1.0, 0.78, 0.26) if k % 2 == 0 else Color(0.95, 0.96, 1.0),
+						"size": randf_range(2.5, 5.5),
+					})
+				ram_used.emit(ram_pts)
+				continue
 			if dy > car_h * 0.18:
 				# Bumper bump: arcade knock from trailing car without instant death
 				Sfx.bump()
@@ -1566,24 +1911,32 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 				near += 1
 				combo += 1
 				combo_t = 2.6
-				bonus += 10 * combo
+				bonus += 10 * combo * _effective_score_mult()
 				near_miss.emit(combo)
 
 
 func _move_items(dt: float) -> void:
+	var pull_mult := 1.25 if car_perk == "taxi_magnet" else 1.0
 	for i in range(items.size() - 1, -1, -1):
 		var it: Dictionary = items[i]
 		it.y += speed * dt
 		it.phase += dt
+		if car_perk == "taxi_magnet" and int(it.kind) == 0 and dt > 0.0:
+			var dx := player_x - float(it.x)
+			var dy := player_y - float(it.y)
+			if absf(dx) < lane_w * 1.65 and absf(dy) < car_h * 1.85:
+				var pull := Vector2(dx, dy).normalized()
+				it.x = float(it.x) + pull.x * 920.0 * dt
+				it.y = float(it.y) + pull.y * 540.0 * dt
 		if it.y > H + 110.0:
 			items.remove_at(i)
 			continue
-		if absf(float(it.x) - player_x) < car_w * 0.60 and absf(float(it.y) - player_y) < car_h * 0.62:
+		if absf(float(it.x) - player_x) < car_w * 0.60 * pull_mult and absf(float(it.y) - player_y) < car_h * 0.62 * pull_mult:
 			if int(it.kind) == 0:
 				pickup_coins += 12
 				pickup_taken.emit(0)
 			else:
-				nitro = minf(1.0, nitro + 0.20)
+				nitro = minf(max_nitro, nitro + 0.20)
 				pickup_taken.emit(1)
 			items.remove_at(i)
 
@@ -1593,7 +1946,9 @@ func _spawn_item() -> void:
 		return
 	var chosen := -1
 	for attempt in range(14):
-		var l := randi() % LANES
+		var l := _ri() % LANES
+		if l == closed_lane:
+			continue
 		var blocked := false
 		for c in cars:
 			if int(c.lane) == l and float(c.y) < 420.0:
@@ -1614,13 +1969,13 @@ func _spawn_item() -> void:
 		"lane": chosen,
 		"x": _lane_x(chosen),
 		"y": -50.0,
-		"kind": 1 if randf() < 0.18 else 0,
-		"phase": randf() * 4.0,
+		"kind": 1 if _rf() < 0.18 else 0,
+		"phase": _rf() * 4.0,
 	})
 
 
 func _pick_traffic_type() -> Dictionary:
-	var roll := randf()
+	var roll := _rf()
 	var acc := 0.0
 	for tp in TRAFFIC_TYPES:
 		acc += float(tp.weight)
@@ -1640,7 +1995,7 @@ func _traffic_stripe(body: Color) -> Color:
 func _traffic_silhouette(kind: int) -> String:
 	match kind:
 		0:
-			return ["hatch", "hatch", "sedan", "sedan", "ev"][randi() % 5]
+			return ["hatch", "hatch", "sedan", "sedan", "ev"][_ri() % 5]
 		1:
 			return "offroad"
 		2:
@@ -1650,7 +2005,7 @@ func _traffic_silhouette(kind: int) -> String:
 		4:
 			return "bus"
 		5:
-			return ["sport", "sport", "sport", "muscle", "muscle", "hyper"][randi() % 6]
+			return ["sport", "sport", "sport", "muscle", "muscle", "hyper"][_ri() % 6]
 		6:
 			return "pickup"
 	return ""
@@ -1668,8 +2023,8 @@ func _spawn(is_demo: bool) -> void:
 
 	var chosen := -1
 	for attempt in range(20):
-		var l := randi() % LANES
-		if not is_demo and l == free_lane:
+		var l := _ri() % LANES
+		if not is_demo and (l == free_lane or l == closed_lane):
 			continue
 		var blocked := false
 		for c in cars:
@@ -1686,8 +2041,8 @@ func _spawn(is_demo: bool) -> void:
 	var kind := int(type.kind)
 	var w := car_w * float(type.w)
 	var h := car_h * float(type.h)
-	var rel := randf_range(float(type.rel[0]), float(type.rel[1]))
-	var col: Color = TRAFFIC_COLORS[randi() % TRAFFIC_COLORS.size()]
+	var rel := _rfr(float(type.rel[0]), float(type.rel[1]))
+	var col: Color = TRAFFIC_COLORS[_ri() % TRAFFIC_COLORS.size()]
 	var entry := {
 		"lane": chosen,
 		"x": _lane_x(chosen),
@@ -1699,7 +2054,7 @@ func _spawn(is_demo: bool) -> void:
 		"rel": rel,
 		"cur_speed": rel * (lerpf(base_speed, top_speed, clampf(t / 70.0, 0.0, 1.0)) if running else DEMO_SPEED),
 		"braking": false,
-		"demo_speed": randf_range(250.0, 420.0),
+		"demo_speed": _rfr(250.0, 420.0),
 		"near": false,
 		"cutin": false,
 		"stripe": false,
@@ -1712,38 +2067,50 @@ func _spawn(is_demo: bool) -> void:
 	}
 	match kind:
 		0:
-			entry["stripe"] = randf() < 0.35
-			if entry["stripe"] and randf() < 0.18:
+			entry["stripe"] = _rf() < 0.35
+			if entry["stripe"] and _rf() < 0.18:
 				entry["wing"] = true
-			entry["roof_sign"] = randf() < 0.06
+			entry["roof_sign"] = _rf() < 0.06
 		1:
 			entry["rails"] = true
 		2:
-			entry["trailer"] = TRAILER_COLORS[randi() % TRAILER_COLORS.size()]
+			entry["trailer"] = TRAILER_COLORS[_ri() % TRAILER_COLORS.size()]
 		4:
-			entry["accent"] = BUS_ACCENTS[randi() % BUS_ACCENTS.size()]
+			entry["accent"] = BUS_ACCENTS[_ri() % BUS_ACCENTS.size()]
 		5:
 			entry["stripe"] = true
-			entry["wing"] = randf() < 0.75
+			entry["wing"] = _rf() < 0.75
 		6:
-			entry["cargo"] = randf() < 0.6
+			entry["cargo"] = _rf() < 0.6
 	entry.merge(PALETTE.pick(str(entry.silhouette), col), true)
 	if use_3d_cars and race_art != null:
 		race_art.take(entry)
 	cars.append(entry)
 
 
-func _crash() -> void:
+func _crash(allow_shield := true) -> void:
 	if crashed:
 		return
 	if tutorial_mode:
 		_begin_rewind()
 		return
+	if allow_shield and not rewinding and _rewind_invuln <= 0.0 and nitro >= 1.0 - 0.002 and not rewind_frames.is_empty():
+		_shield_post_nitro = maxf(0.0, nitro - 1.0)
+		_shield_active = true
+		nitro = _shield_post_nitro
+		Sfx.shield_trigger()
+		chrono_shield_triggered.emit()
+		_begin_rewind()
+		return
+	_record_ghost_sample(true)
 	crashed = true
 	running = false
 	boosting = false
 	braking = false
 	boost_t = 0.0
+	slingshot_t = 0.0
+	ram_charges = 0
+	hyperdrive_active = false
 	shake = 24.0
 	flash = 0.7
 	for i in range(30):
@@ -1825,7 +2192,350 @@ func _emit_driving_particles() -> void:
 func finish_run() -> void:
 	if running:
 		tutorial_mode = false
-		_crash()
+		_crash(false)
+
+
+# --- traffic signals, road events, perks & ghost duel -----------------------
+
+func _lane_wall_safe(y_center: float, adding_lane: int) -> bool:
+	var occupied := {}
+	occupied[adding_lane] = true
+	if closed_lane >= 0:
+		occupied[closed_lane] = true
+	for c in cars:
+		if bool(c.get("rammed", false)):
+			continue
+		if absf(float(c.y) - y_center) < 260.0:
+			occupied[int(c.lane)] = true
+	return occupied.size() < LANES
+
+
+func _try_start_lane_change(c: Dictionary, force_fast := false) -> bool:
+	if bool(c.get("rammed", false)) or int(c.get("signal_dir", 0)) != 0 or float(c.get("lane_move_t", 0.0)) > 0.0:
+		return false
+	var clane := int(c.get("lane", 0))
+	var dirs := [-1, 1]
+	if _rf() < 0.5:
+		dirs = [1, -1]
+	for d in dirs:
+		var cand := clane + int(d)
+		if cand < 0 or cand >= LANES or cand == closed_lane:
+			continue
+		var safe := true
+		for c2 in cars:
+			if c2 == c or bool(c2.get("rammed", false)):
+				continue
+			if int(c2.lane) == cand and absf(float(c2.y) - float(c.y)) < float(c.h) * 1.45 + float(c2.h) * 0.75:
+				safe = false
+				break
+		if not safe:
+			continue
+		if not _lane_wall_safe(float(c.y), cand):
+			continue
+		c["signal_dir"] = int(d)
+		c["signal_target"] = cand
+		c["signal_t"] = 0.55 if force_fast else 1.25
+		return true
+	return false
+
+
+func _update_traffic_signals(dt: float) -> void:
+	for c in cars:
+		if bool(c.get("rammed", false)):
+			continue
+		var st := float(c.get("signal_t", 0.0))
+		if st > 0.0:
+			st -= dt
+			c["signal_t"] = st
+			if st <= 0.0:
+				var cand := int(c.get("signal_target", c.lane))
+				var clear := cand >= 0 and cand < LANES and cand != closed_lane
+				if clear:
+					for c2 in cars:
+						if c2 == c or bool(c2.get("rammed", false)):
+							continue
+						if int(c2.lane) == cand and absf(float(c2.y) - float(c.y)) < float(c.h) * 1.1 + float(c2.h) * 0.6:
+							clear = false
+							break
+				if clear and _lane_wall_safe(float(c.y), cand):
+					c["lane"] = cand
+					c["lane_move_t"] = 0.72
+				else:
+					c["signal_dir"] = 0
+					c["signal_t"] = 0.0
+
+	# OFF-ROAD LED lightbar makes traffic ahead politely move aside if safe.
+	if car_perk == "all_weather" and not crashed:
+		for c in cars:
+			if int(c.get("lane", -1)) == lane:
+				var dy := player_y - float(c.y)
+				if dy > car_h * 1.1 and dy < 420.0:
+					_try_start_lane_change(c, true)
+
+	_traffic_lc_t -= dt
+	if _traffic_lc_t <= 0.0:
+		_traffic_lc_t = _rfr(1.5, 2.7)
+		var candidates: Array = []
+		for c in cars:
+			if bool(c.get("rammed", false)) or int(c.get("signal_dir", 0)) != 0 or float(c.get("lane_move_t", 0.0)) > 0.0:
+				continue
+			if int(c.get("kind", 0)) in [2, 4]:
+				continue
+			var cy := float(c.y)
+			if cy > -60.0 and cy < player_y - car_h * 2.4:
+				candidates.append(c)
+		if not candidates.is_empty():
+			var pick: Dictionary = candidates[_ri() % candidates.size()]
+			_try_start_lane_change(pick, false)
+
+
+func _check_offroad_puddles() -> void:
+	if car_perk != "all_weather" or wetness <= 0.12 or _puddle_cd > 0.0 or crashed:
+		return
+	for p in puddles:
+		var base_y := fposmod(float(p.y) + scroll, ROAD_CYCLE)
+		for k in [-1, 0, 1]:
+			var py: float = base_y + float(k) * ROAD_CYCLE
+			if absf(py - player_y) < float(p.ry) * 0.85:
+				var px := road_x + road_w * float(p.x)
+				if absf(px - player_x) < float(p.rx) * 0.90 + car_w * 0.35:
+					_puddle_cd = 1.25
+					var pts := 85 * _effective_score_mult()
+					bonus += pts
+					nitro = minf(max_nitro, nitro + 0.08)
+					Sfx.pickup_nitro()
+					for s_i in range(10):
+						particles.append({
+							"p": Vector2(player_x + randf_range(-car_w * 0.35, car_w * 0.35), player_y + car_h * 0.3),
+							"v": Vector2(randf_range(-160.0, 160.0), randf_range(60.0, 220.0)),
+							"life": randf_range(0.22, 0.44),
+							"max": 0.44,
+							"col": Color(0.70, 0.88, 1.0, 0.65),
+							"size": randf_range(2.5, 5.5),
+						})
+					road_event_banner.emit("СПЛЕШ В ЛУЖЕ!", "+%d ОЧКОВ · +НИТРО" % pts, Color("#5ce1e6"))
+					return
+
+
+func _update_road_events(dt: float, travel: float) -> void:
+	if road_event_type == EVENT_NONE:
+		blackout_amount = maxf(0.0, blackout_amount - dt * 1.4)
+		score_mult = 1
+		closed_lane = -1
+		road_event_t -= dt
+		if road_event_t <= 0.0:
+			_start_next_road_event()
+		return
+
+	match road_event_type:
+		EVENT_RADAR:
+			blackout_amount = maxf(0.0, blackout_amount - dt * 1.4)
+			score_mult = 1
+			closed_lane = -1
+			road_event.y = float(road_event.y) + travel
+			var ry := float(road_event.y)
+			if not bool(road_event.get("warned", false)) and ry > -980.0:
+				road_event["warned"] = true
+				var tgt := int(road_event.target_kmh)
+				if str(road_event.mode) == "fast":
+					road_event_banner.emit("РАДАР СКОРОСТИ!", "ПРОБЕЙ %d+ КМ/Ч" % tgt, Color("#5ce1e6"))
+				else:
+					road_event_banner.emit("КАМЕРА ТИХОГО ХОДА!", "СБРОСЬ ДО %d КМ/Ч" % tgt, Color("#f2b134"))
+			if not bool(road_event.get("resolved", false)) and ry >= player_y:
+				road_event["resolved"] = true
+				var kmh := gauge_kmh(speed, base_speed, top_speed)
+				var tgt := int(road_event.target_kmh)
+				var ok := (kmh >= tgt) if str(road_event.mode) == "fast" else (kmh <= tgt)
+				if ok:
+					flash = maxf(flash, 0.30)
+					pickup_coins += 25
+					var pts := 300 * _effective_score_mult()
+					bonus += pts
+					Sfx.radar_ok()
+					road_event_banner.emit("РАДАР ПРОЙДЕН!", "+25 МОНЕТ · +%d ОЧКОВ" % pts, Color("#5ddb75"))
+				else:
+					road_event_banner.emit("РАДАР НЕ ЗАСЧИТАН", "БЫЛО %d · ЦЕЛЬ %d КМ/Ч" % [kmh, tgt], Color("#9aa3ac"))
+			if ry > H + 240.0:
+				_end_road_event()
+		EVENT_ROADWORKS:
+			blackout_amount = maxf(0.0, blackout_amount - dt * 1.4)
+			road_event.head_y = float(road_event.head_y) + travel
+			var head_y := float(road_event.head_y)
+			var taper_len := float(road_event.taper_len)
+			var zone_len := float(road_event.zone_len)
+			var tail_y := head_y - taper_len - zone_len
+			var barrier_head := head_y - taper_len
+			if not bool(road_event.get("warned", false)) and head_y > -950.0:
+				road_event["warned"] = true
+				road_event_banner.emit("ДОРОЖНЫЕ РАБОТЫ!", "СУЖЕНИЕ ПОЛОСЫ · ОЧКИ ×2", Color("#f2b134"))
+			# Nudge traffic out of closed lane ahead of barrier
+			for c in cars:
+				if int(c.get("lane", -1)) == closed_lane and float(c.y) < barrier_head + 160.0 and float(c.y) > tail_y - 220.0:
+					_try_start_lane_change(c, true)
+			if head_y >= player_y - car_h * 0.5 and tail_y <= player_y + car_h * 0.5:
+				score_mult = 2
+			else:
+				score_mult = 1
+			# Taper cone warning bump
+			if not bool(road_event.get("cone_hit", false)) and player_y <= head_y and player_y >= barrier_head:
+				var frac := clampf((head_y - player_y) / maxf(1.0, taper_len), 0.0, 1.0)
+				var edge_x := (road_x + 12.0) if closed_lane == 0 else (road_x + road_w - 12.0)
+				var inner_x := (road_x + lane_w) if closed_lane == 0 else (road_x + road_w - lane_w)
+				var cone_x := lerpf(edge_x, inner_x, frac)
+				var hit_taper := (player_x - car_w * 0.36 < cone_x) if closed_lane == 0 else (player_x + car_w * 0.36 > cone_x)
+				if hit_taper:
+					road_event["cone_hit"] = true
+					shake = maxf(shake, 8.5)
+					speed *= 0.88
+					Sfx.bump()
+					for k in range(10):
+						particles.append({
+							"p": Vector2(cone_x, player_y - car_h * 0.35),
+							"v": Vector2(randf_range(-180.0, 180.0), randf_range(-140.0, 140.0)),
+							"life": randf_range(0.22, 0.45),
+							"max": 0.45,
+							"col": Color(1.0, 0.52, 0.14),
+							"size": randf_range(3.0, 6.0),
+						})
+			# Solid barrier collision
+			if _rewind_invuln <= 0.0 and player_y + car_h * 0.36 >= tail_y and player_y - car_h * 0.36 <= barrier_head:
+				if absf(player_x - _lane_x(closed_lane)) < lane_w * 0.42 + car_w * 0.34:
+					_crash()
+					return
+			if tail_y > H + 200.0:
+				_end_road_event()
+		EVENT_BLACKOUT:
+			road_event.time_left = float(road_event.time_left) - dt
+			blackout_amount = lerpf(blackout_amount, 1.0, minf(1.0, dt * 2.2))
+			score_mult = 2
+			closed_lane = -1
+			if float(road_event.time_left) <= 0.0:
+				_end_road_event()
+
+
+func _start_next_road_event() -> void:
+	var pool := [EVENT_RADAR, EVENT_ROADWORKS, EVENT_BLACKOUT]
+	if _last_event_type in pool:
+		pool.erase(_last_event_type)
+	var chosen := int(pool[_ri() % pool.size()])
+	_last_event_type = chosen
+	road_event_type = chosen
+	match chosen:
+		EVENT_RADAR:
+			var is_fast := _rf() < 0.65
+			var tgt := int(round(float(top_kmh(top_speed)) * 0.78 / 10.0) * 10.0) if is_fast else 175
+			road_event = {
+				"type": EVENT_RADAR,
+				"mode": "fast" if is_fast else "slow",
+				"target_kmh": tgt,
+				"y": -1150.0,
+				"warned": false,
+				"resolved": false,
+			}
+		EVENT_ROADWORKS:
+			closed_lane = 0 if _rf() < 0.5 else LANES - 1
+			if free_lane == closed_lane:
+				_rotate_free_lane()
+			road_event = {
+				"type": EVENT_ROADWORKS,
+				"head_y": -1200.0,
+				"taper_len": 440.0,
+				"zone_len": 2600.0,
+				"warned": false,
+				"cone_hit": false,
+			}
+		EVENT_BLACKOUT:
+			road_event = {
+				"type": EVENT_BLACKOUT,
+				"time_left": 10.5,
+			}
+			road_event_banner.emit("БЛЭКАУТ НА ТРАССЕ!", "ФАРЫ ВКЛЮЧЕНЫ · ОЧКИ ×2", Color("#7fc4ff"))
+
+
+func _end_road_event() -> void:
+	road_event_type = EVENT_NONE
+	road_event.clear()
+	score_mult = 1
+	closed_lane = -1
+	road_event_t = _rfr(20.0, 29.0)
+
+
+func _record_ghost_sample(force := false) -> void:
+	if tutorial_mode or demo:
+		return
+	if not force and ghost_rec.size() >= 3600:
+		return
+	var flags := 0
+	if braking and not overheated:
+		flags |= 1
+	if boosting:
+		flags |= 2
+	if slingshot_t > 0.0:
+		flags |= 4
+	if rewinding:
+		flags |= 8
+	var x_norm := clampf((player_x - road_x) / maxf(1.0, road_w), 0.0, 1.0)
+	ghost_rec.append({
+		"scroll": scroll,
+		"x_norm": x_norm,
+		"flags": flags,
+	})
+
+
+func _update_ghost_duel() -> void:
+	if str(challenge_config.get("type", "")) != "duel":
+		return
+	_ghost_state = ChallengeCodec.sample_ghost(challenge_config, duel_clock)
+	var end_scroll := float(challenge_config.get("end_scroll", 0.0))
+	if not _duel_passed_crash and end_scroll > 50.0 and scroll > end_scroll:
+		_duel_passed_crash = true
+		Sfx.record()
+		duel_milestone.emit("crash_passed")
+	var rival_score := int(challenge_config.get("score", 0))
+	if not _duel_beaten_score and rival_score > 0 and int(floor(distance) + float(bonus)) > rival_score:
+		_duel_beaten_score = true
+		Sfx.duel_win()
+		duel_milestone.emit("score_beaten")
+
+
+func _emit_challenge_hud() -> void:
+	if challenge_config.is_empty():
+		challenge_hud_changed.emit({})
+		return
+	var ctype := str(challenge_config.get("type", ""))
+	if ctype == "duel":
+		var g_scroll := float(_ghost_state.get("scroll", 0.0))
+		var gap_m := int(round((scroll - g_scroll) / 12.0))
+		challenge_hud_changed.emit({
+			"type": "duel",
+			"name": str(challenge_config.get("name", "ДРУГ")),
+			"rival_score": int(challenge_config.get("score", 0)),
+			"gap_m": gap_m,
+			"ghost_finished": bool(_ghost_state.get("finished", false)),
+		})
+	elif ctype == "daily":
+		challenge_hud_changed.emit({
+			"type": "daily",
+			"bronze": int(challenge_config.get("bronze", 6500)),
+			"silver": int(challenge_config.get("silver", 14500)),
+			"gold": int(challenge_config.get("gold", 26000)),
+		})
+
+
+func build_challenge_payload(player_name: String) -> Dictionary:
+	return {
+		"seed": active_run_seed,
+		"car_index": car_index,
+		"score": int(score),
+		"distance": int(distance),
+		"near": near,
+		"tod": start_tod,
+		"weather": start_weather,
+		"step_ms": ChallengeCodec.BASE_STEP_MS,
+		"end_time": duel_clock,
+		"name": player_name,
+		"samples": ghost_rec,
+	}
 
 
 # --- drawing ----------------------------------------------------------------
@@ -1851,6 +2561,7 @@ func _draw() -> void:
 	_draw_puddles()
 	_draw_cloud_shadows()
 	_draw_scenery()
+	_draw_road_event_under()
 	_draw_cars()
 	_draw_night_atmosphere()
 	_draw_streetlight_glows()
@@ -1861,6 +2572,7 @@ func _draw() -> void:
 	_draw_wet_reflections()
 	_draw_rain_splashes()
 	_draw_road_mist()
+	_draw_road_event_over()
 	_draw_particles()
 	_draw_rain()
 	_draw_fog()
@@ -1919,8 +2631,8 @@ func get_night_factor() -> float:
 
 
 func get_light_factor() -> float:
-	# Headlights come on at dusk, in rain, fog and storms.
-	return clampf(maxf(get_night_factor(), maxf(fog_amount * 0.68, maxf(rain_amount * 0.42, storm_amount * 0.52))), 0.0, 1.0)
+	# Headlights come on at dusk, in rain, fog, storms and blackouts.
+	return clampf(maxf(get_night_factor(), maxf(blackout_amount * 0.90, maxf(fog_amount * 0.68, maxf(rain_amount * 0.42, storm_amount * 0.52)))), 0.0, 1.0)
 
 
 func get_weather_name() -> String:
@@ -2240,7 +2952,7 @@ func _draw_scenery() -> void:
 
 
 func _draw_streetlight_glows() -> void:
-	var light := get_light_factor()
+	var light := get_light_factor() * clampf(1.0 - blackout_amount, 0.0, 1.0)
 	if light <= 0.04:
 		return
 	var period := DECOR_CYCLE
@@ -2366,6 +3078,8 @@ func _draw_road_mist() -> void:
 
 
 func _draw_cars() -> void:
+	if running and not demo and str(challenge_config.get("type", "")) == "duel" and not _ghost_state.is_empty():
+		_draw_ghost_car()
 	var list := cars.duplicate()
 	list.sort_custom(func(a, b): return float(a.y) < float(b.y))
 	var player_drawn := false
@@ -2375,6 +3089,10 @@ func _draw_cars() -> void:
 			_draw_player()
 			player_drawn = true
 		var center := Vector2(float(c.x), float(c.y))
+		var ram_rot := float(c.get("ram_rot", 0.0))
+		if ram_rot != 0.0:
+			draw_set_transform(center + Vector2(_sx, _sy), ram_rot)
+			center = Vector2.ZERO
 		var sprite := _race_sprite(c)
 		if sprite.is_empty():
 			Art.traffic(self, center, float(c.w), float(c.h), int(c.get("kind", 0)), c.color, {
@@ -2398,12 +3116,39 @@ func _draw_cars() -> void:
 				for side in [-1, 1]:
 					_glow(center + Vector2(float(side) * float(c.w) * 0.30, float(c.h) * 0.435),
 						float(c.w) * 0.12, Color(1.0, 0.12, 0.07, 0.45))
+		var sig := int(c.get("signal_dir", 0))
+		if sig != 0 and ram_rot == 0.0 and sin(t * 22.0) > 0.0:
+			var sx_off := float(sig) * float(c.w) * 0.44
+			for end_y in [-float(c.h) * 0.42, float(c.h) * 0.42]:
+				var bp := center + Vector2(sx_off, end_y)
+				_glow(bp, float(c.w) * 0.17, Color(1.0, 0.62, 0.10, 0.65))
+				draw_circle(bp, float(c.w) * 0.055, Color(1.0, 0.80, 0.22, 0.96))
+		if ram_rot != 0.0:
+			draw_set_transform(Vector2(_sx, _sy))
 	if running and not demo and not player_drawn:
 		_draw_player()
 
 
 func _draw_player() -> void:
 	draw_set_transform(Vector2(player_x + _sx, player_y + _sy), player_tilt)
+	if _rewind_invuln > 0.0 and fposmod(t * 14.0, 1.0) < 0.35:
+		draw_arc(Vector2.ZERO, car_h * 0.56, 0.0, TAU, 36, Color(0.45, 0.90, 1.0, 0.55), 3.0, true)
+	if hyperdrive_active:
+		var hp := 0.5 + 0.5 * sin(t * 12.0)
+		_glow(Vector2.ZERO, car_h * 0.65, Color(0.88, 0.24, 0.34, 0.18 + hp * 0.12), Vector2(0.65, 1.12))
+		draw_arc(Vector2.ZERO, car_h * 0.52, -PI * 0.85, -PI * 0.15, 22, Color(1.0, 0.35, 0.42, 0.55), 3.0, true)
+	if not tutorial_mode and nitro >= 1.0 - 0.002:
+		var cp := 0.5 + 0.5 * sin(t * 5.0)
+		draw_arc(Vector2.ZERO, car_h * 0.54, PI * 0.18, PI * 0.82, 24, Color(0.36, 0.88, 0.96, 0.32 + cp * 0.28), 3.0, true)
+	if slingshot_charge > 0.04 and not tutorial_mode:
+		var ready := slingshot_charge >= 0.99
+		var col := Color(1.0, 0.86, 0.28, 0.88) if ready else Color(0.36, 0.90, 0.98, 0.72)
+		var ang_span := (PI * 0.38) * slingshot_charge
+		var rad := car_h * 0.58
+		draw_arc(Vector2.ZERO, rad, -PI * 0.5 - ang_span, -PI * 0.5, 18, col, 4.5 if ready else 3.2, true)
+		draw_arc(Vector2.ZERO, rad, -PI * 0.5, -PI * 0.5 + ang_span, 18, col, 4.5 if ready else 3.2, true)
+	if slingshot_t > 0.0:
+		_glow(Vector2(0.0, car_h * 0.36), car_w * 0.72, Color(0.36, 0.92, 1.0, 0.30 * (slingshot_t / SLINGSHOT_TIME)), Vector2(0.8, 1.4))
 	if boosting:
 		for side in [-1, 1]:
 			var fx: float = float(side) * car_w * 0.23
@@ -2899,7 +3644,159 @@ func _draw_night_atmosphere() -> void:
 	if night > 0.02:
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.03, 0.04, 0.10, night * 0.52))
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.02, 0.03, 0.07, night * 0.12))
+	if blackout_amount > 0.02:
+		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.01, 0.015, 0.04, blackout_amount * 0.38))
 	if storm_amount > 0.02:
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.04, 0.05, 0.09, storm_amount * 0.08))
 	if rain_amount > 0.02:
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.14, 0.20, 0.28, rain_amount * 0.05))
+
+
+func _draw_ghost_car() -> void:
+	var gx := road_x + float(_ghost_state.get("x_norm", 0.5)) * road_w
+	var g_scroll := float(_ghost_state.get("scroll", 0.0))
+	var gy := player_y - (g_scroll - scroll)
+	if gy < -260.0 or gy > H + 260.0:
+		return
+	var ghost_col := Color(0.32, 0.88, 0.98, 0.55)
+	_glow(Vector2(gx, gy), car_h * 0.60, Color(0.30, 0.86, 0.96, 0.16), Vector2(0.65, 1.08))
+	if not _ghost_sprite.is_empty() and race_art != null:
+		race_art.draw(self, Vector2(gx, gy), car_w, car_h, _ghost_sprite, Color(0.75, 0.96, 1.0, 0.50))
+	else:
+		Art.car(self, Vector2(gx, gy), car_w, car_h, Color(0.28, 0.78, 0.92, 0.55), {
+			"player": false,
+			"stripe": bool(_ghost_art.get("stripe", false)),
+			"wing": false,
+			"stripe_color": Color(0.85, 0.98, 1.0, 0.55),
+			"silhouette": str(_ghost_art.get("silhouette", "sedan")),
+			"details": false,
+		})
+	draw_rect(Rect2(gx - car_w * 0.46, gy - car_h * 0.48, car_w * 0.92, car_h * 0.96), ghost_col, false, 2.0)
+	if bool(_ghost_state.get("boosting", false)):
+		_glow(Vector2(gx, gy + car_h * 0.52), car_w * 0.34, Color(0.36, 0.90, 1.0, 0.50))
+	var tag := str(challenge_config.get("name", "ДРУГ"))
+	if _hud_font != null:
+		var tw := _hud_font.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
+		draw_rect(Rect2(gx - tw * 0.5 - 8.0, gy - car_h * 0.62 - 20.0, tw + 16.0, 24.0), Color(0.04, 0.08, 0.12, 0.80))
+		draw_string(_hud_font, Vector2(gx - tw * 0.5, gy - car_h * 0.62 - 2.0), tag, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.45, 0.94, 1.0, 0.95))
+
+
+func _draw_road_event_under() -> void:
+	# Ghost crash/finish line across highway
+	if running and not demo and str(challenge_config.get("type", "")) == "duel":
+		var end_sc := float(challenge_config.get("end_scroll", 0.0))
+		if end_sc > 40.0:
+			var fy := player_y - (end_sc - scroll)
+			if fy > -80.0 and fy < H + 80.0:
+				var sq := road_w / 16.0
+				for i in range(16):
+					var col := Color(0.36, 0.92, 1.0, 0.55) if i % 2 == 0 else Color(1.0, 0.85, 0.25, 0.45)
+					draw_rect(Rect2(road_x + float(i) * sq, fy - 7.0, sq, 14.0), col)
+				if _hud_font != null:
+					var lbl := "ФИНИШ СОПЕРНИКА"
+					var tw := _hud_font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 18).x
+					draw_string(_hud_font, Vector2(road_x + road_w * 0.5 - tw * 0.5, fy - 14.0), lbl, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 18, Color(0.45, 0.95, 1.0, 0.90))
+
+	if road_event_type == EVENT_RADAR:
+		var ry := float(road_event.get("y", -2000.0))
+		if ry > -60.0 and ry < H + 60.0:
+			var lcol := Color(0.34, 0.90, 1.0, 0.65) if str(road_event.get("mode", "fast")) == "fast" else Color(0.98, 0.70, 0.18, 0.70)
+			draw_rect(Rect2(road_x, ry - 4.0, road_w, 8.0), Color(lcol.r, lcol.g, lcol.b, 0.22))
+			draw_line(Vector2(road_x, ry), Vector2(road_x + road_w, ry), lcol, 3.0)
+	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
+		var head_y := float(road_event.get("head_y", -2000.0))
+		var taper_len := float(road_event.get("taper_len", 440.0))
+		var zone_len := float(road_event.get("zone_len", 2600.0))
+		var barrier_head := head_y - taper_len
+		var tail_y := barrier_head - zone_len
+		var y0 := maxf(-40.0, tail_y)
+		var y1 := minf(H + 40.0, barrier_head)
+		if y1 > y0:
+			var lx := road_x + float(closed_lane) * lane_w
+			draw_rect(Rect2(lx + 4.0, y0, lane_w - 8.0, y1 - y0), Color(0.95, 0.48, 0.12, 0.18))
+			var step := 140.0
+			var sy: float = floor(y0 / step) * step
+			while sy < y1:
+				if sy >= tail_y and sy <= barrier_head - 40.0:
+					draw_line(Vector2(lx + 14.0, sy), Vector2(lx + lane_w - 14.0, sy + 52.0), Color(1.0, 0.62, 0.18, 0.35), 4.0)
+					draw_line(Vector2(lx + lane_w - 14.0, sy), Vector2(lx + 14.0, sy + 52.0), Color(1.0, 0.62, 0.18, 0.35), 4.0)
+				sy += step
+
+
+func _draw_road_event_over() -> void:
+	# Traffic lane-change chevron indicator
+	for c in cars:
+		var sig := int(c.get("signal_dir", 0))
+		if sig != 0 and float(c.get("signal_t", 0.0)) > 0.0 and not bool(c.get("rammed", false)):
+			var alpha := 0.35 + 0.35 * sin(t * 16.0)
+			var cx := float(c.x) + float(sig) * lane_w * 0.52
+			var cy := float(c.y)
+			var pts := PackedVector2Array([
+				Vector2(cx - float(sig) * 10.0, cy - 12.0),
+				Vector2(cx + float(sig) * 8.0, cy),
+				Vector2(cx - float(sig) * 10.0, cy + 12.0),
+			])
+			draw_polyline(pts, Color(1.0, 0.70, 0.16, alpha), 3.0, true)
+
+	# Off-screen Ghost indicator
+	if running and not demo and str(challenge_config.get("type", "")) == "duel" and not _ghost_state.is_empty():
+		var gx := road_x + float(_ghost_state.get("x_norm", 0.5)) * road_w
+		var g_scroll := float(_ghost_state.get("scroll", 0.0))
+		var gy := player_y - (g_scroll - scroll)
+		var gap_m := int(round((g_scroll - scroll) / 12.0))
+		if gy < 60.0 and _hud_font != null:
+			var txt := "%s +%dм" % [str(challenge_config.get("name", "ДРУГ")), maxi(1, gap_m)]
+			var tw := _hud_font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
+			draw_rect(Rect2(gx - tw * 0.5 - 10.0, 266.0, tw + 20.0, 28.0), Color(0.04, 0.08, 0.12, 0.85))
+			draw_string(_hud_font, Vector2(gx - tw * 0.5, 286.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.45, 0.94, 1.0, 0.95))
+		elif gy > H - 40.0 and _hud_font != null:
+			var txt := "%s %dм" % [str(challenge_config.get("name", "ДРУГ")), gap_m]
+			var tw := _hud_font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
+			draw_rect(Rect2(gx - tw * 0.5 - 10.0, H - 78.0, tw + 20.0, 28.0), Color(0.04, 0.08, 0.12, 0.85))
+			draw_string(_hud_font, Vector2(gx - tw * 0.5, H - 58.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.45, 0.94, 1.0, 0.85))
+
+	if road_event_type == EVENT_RADAR:
+		var ry := float(road_event.get("y", -2000.0))
+		var tgt := int(road_event.target_kmh)
+		var is_fast := str(road_event.get("mode", "fast")) == "fast"
+		var rcol := Color(0.34, 0.92, 1.0) if is_fast else Color(0.98, 0.72, 0.20)
+		if ry > -120.0 and ry < H + 120.0:
+			for sx in [road_x - 16.0, road_x + road_w + 16.0]:
+				draw_circle(Vector2(sx, ry), 14.0, Color(0.14, 0.16, 0.18))
+				draw_circle(Vector2(sx, ry), 8.0, rcol)
+				_glow(Vector2(sx, ry), 36.0, Color(rcol.r, rcol.g, rcol.b, 0.45))
+			if _hud_font != null:
+				var badge := ("РАДАР %d+ КМ/Ч" % tgt) if is_fast else ("ЛИМИТ ≤ %d КМ/Ч" % tgt)
+				var tw := _hud_font.get_string_size(badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20).x
+				draw_rect(Rect2(road_x + road_w * 0.5 - tw * 0.5 - 14.0, ry - 42.0, tw + 28.0, 32.0), Color(0.05, 0.07, 0.09, 0.90))
+				draw_string(_hud_font, Vector2(road_x + road_w * 0.5 - tw * 0.5, ry - 19.0), badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20, rcol)
+	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
+		var head_y := float(road_event.get("head_y", -2000.0))
+		var taper_len := float(road_event.get("taper_len", 440.0))
+		var zone_len := float(road_event.get("zone_len", 2600.0))
+		var barrier_head := head_y - taper_len
+		var tail_y := barrier_head - zone_len
+		var edge_x := (road_x + 12.0) if closed_lane == 0 else (road_x + road_w - 12.0)
+		var inner_x := (road_x + lane_w) if closed_lane == 0 else (road_x + road_w - lane_w)
+		# Taper cones
+		for i in range(7):
+			var frac := float(i) / 6.0
+			var cy := lerpf(head_y, barrier_head, frac)
+			if cy < -40.0 or cy > H + 40.0:
+				continue
+			var cx := lerpf(edge_x, inner_x, frac)
+			draw_circle(Vector2(cx, cy), 10.0, Color(0.98, 0.44, 0.10))
+			draw_circle(Vector2(cx, cy), 5.0, Color(0.98, 0.96, 0.92))
+		# Barrier blocks along closed lane
+		var y0 := maxf(-60.0, tail_y)
+		var y1 := minf(H + 60.0, barrier_head)
+		if y1 > y0:
+			var step := 110.0
+			var by: float = floor(y0 / step) * step
+			var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 14.0))
+			while by < y1:
+				if by >= tail_y and by <= barrier_head:
+					draw_rect(Rect2(inner_x - 8.0, by, 16.0, 62.0), Color(0.95, 0.46, 0.12))
+					draw_rect(Rect2(inner_x - 8.0, by + 18.0, 16.0, 22.0), Color(0.95, 0.95, 0.95))
+					_glow(Vector2(inner_x, by + 31.0), 22.0, Color(1.0, 0.65, 0.12, 0.42 * blink))
+				by += step

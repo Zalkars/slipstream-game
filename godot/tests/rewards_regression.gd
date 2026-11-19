@@ -19,7 +19,8 @@ func run() -> void:
 	check_slipstream_scores(game)
 	check_particle_density(game)
 	check_back_and_version(game)
-	print("[rewards] rewind coins, FPS-independent score/effects, Back navigation, menu version: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
+	await check_crash_rewards_and_reset()
+	print("[rewards] rewind coins, score/effects, navigation, crash rewards, progress reset: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
 
 func check_rewind_rewards(game: Game) -> void:
@@ -121,4 +122,51 @@ func check_back_and_version(game: Game) -> void:
 	check(not main.tutorial_active and main.tutorial_done and main.save_calls == 1, "Back in the running lesson must retain the explicit skip behavior")
 	check(main.version == str(ProjectSettings.get_setting("application/config/version")), "Menu version must come from project settings")
 	controls.free()
+	main.free()
+
+
+func check_crash_rewards_and_reset() -> void:
+	Sfx.set_music_enabled(false)
+	var main = load("res://tests/main_without_persistence.gd").new()
+	main.cars_3d = false
+	main.music_on = false
+	main.tutorial_done = true
+	add_child(main)
+	main.game.set_process(false)
+	main.start_game()
+	main.game.score = 1234
+	main.game.distance = 1200.0
+	main.game.pickup_coins = 24
+	main.game.near = 4
+	main.game.finish_run()
+	check(main.coins == 477 and main.best == 1234 and main.save_calls == 1,
+		"Crash must save coins and record before showing results")
+	main._toggle_pause()
+	main.show_menu()
+	main.start_game()
+	await get_tree().create_timer(0.5).timeout
+	main.game.score = 100
+	main.game.pickup_coins = 12
+	main.game.finish_run()
+	await get_tree().create_timer(0.65).timeout
+	check(not main.result_open and main.save_calls == 2 and main.coins == 489,
+		"Earlier result timer must not finish the new run or award coins again")
+	await get_tree().create_timer(0.5).timeout
+	check(main.result_open and main.result_score.text == "100" and main.save_calls == 2,
+		"Only the new result should appear after its own delay")
+
+	main.owned = [0, 8]
+	main.selected = 8
+	main.start_game()
+	main.game.score = 2000
+	main.game.pickup_coins = 24
+	main._toggle_pause()
+	main._show_settings(true)
+	main._show_confirm()
+	main._do_reset()
+	main.game.finish_run()
+	check(main.menu.visible and not main.in_game and not main.game.running and main.game.car_index == 0,
+		"Reset from pause must discard the old race and car")
+	check(main.coins == 300 and main.best == 0 and main.owned == [0] and main.save_calls == 3,
+		"Discarded race must not restore the old progress")
 	main.free()

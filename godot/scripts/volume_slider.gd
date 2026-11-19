@@ -50,31 +50,36 @@ func _process(delta: float) -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		if event.pressed:
-			_pointer_id = event.index
-			_dragging = true
-			_update_from_pos(event.position.x)
-			accept_event()
-		elif event.index == _pointer_id:
-			_dragging = false
-			_pointer_id = -999
-			accept_event()
+		_update_pointer(event.index, event.pressed and not event.canceled, event.position.x)
+		accept_event()
 	elif event is InputEventScreenDrag and _dragging and event.index == _pointer_id:
 		_update_from_pos(event.position.x)
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			_pointer_id = -1
-			_dragging = true
-			_update_from_pos(event.position.x)
-			accept_event()
-		else:
-			_dragging = false
-			_pointer_id = -999
-			accept_event()
+		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
+			return
+		_update_pointer(-1, event.pressed and not event.canceled, event.position.x)
+		accept_event()
 	elif event is InputEventMouseMotion and _dragging and _pointer_id == -1:
 		_update_from_pos(event.position.x)
 		accept_event()
+
+
+func _update_pointer(id: int, down: bool, px: float) -> void:
+	if down and not _dragging:
+		_pointer_id = id
+		_dragging = true
+		_update_from_pos(px)
+	elif not down and id == _pointer_id:
+		_dragging = false
+		_pointer_id = -999
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT or (what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree()):
+		_dragging = false
+		_pointer_id = -999
+		_hover = false
 
 
 func _update_from_pos(px: float) -> void:

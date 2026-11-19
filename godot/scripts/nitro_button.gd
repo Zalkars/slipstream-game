@@ -1,14 +1,17 @@
 class_name NitroButton
 extends Control
 
-# Tap-to-fire nitro: three charge segments, tap spends one segment.
+# Tap-to-fire nitro: configurable charge segments, tap spends one segment.
+# Three full charges also arm the Chrono-Shield crash rewind.
 
 signal tapped
 
 const SEGMENTS := 3
 
+var segments := SEGMENTS
 var charge := 0.0
 var active := false
+var shield_ready := false
 var label_font: Font
 var _down := false
 var _touch_id := -1
@@ -26,12 +29,21 @@ func reset() -> void:
 	_touch_id = -1
 	_down = false
 	active = false
+	shield_ready = false
 	_flash = 0.0
 	queue_redraw()
 
 
+func set_segments(s: int) -> void:
+	s = clampi(s, 1, 6)
+	if segments != s:
+		segments = s
+		queue_redraw()
+
+
 func set_charge(v: float) -> void:
-	v = clampf(v, 0.0, 1.0)
+	var max_v := float(segments) / float(SEGMENTS)
+	v = clampf(v, 0.0, max_v)
 	if absf(v - charge) > 0.002:
 		if v > charge + 0.05:
 			_flash = 1.0
@@ -45,13 +57,19 @@ func set_active(v: bool) -> void:
 		queue_redraw()
 
 
+func set_shield_ready(v: bool) -> void:
+	if shield_ready != v:
+		shield_ready = v
+		queue_redraw()
+
+
 func _process(delta: float) -> void:
 	_pulse += delta
 	var dirty := false
 	if _flash > 0.0:
 		_flash = maxf(0.0, _flash - delta * 2.0)
 		dirty = true
-	if active or _flash > 0.0 or charge >= 1.0 - 0.001:
+	if active or _flash > 0.0 or shield_ready or charge >= 1.0 - 0.001:
 		dirty = true
 	if dirty:
 		queue_redraw()
@@ -62,23 +80,26 @@ func _draw() -> void:
 	var r := minf(size.x, size.y) * 0.5 - 4.0
 	draw_circle(c + Vector2(0, 3), r, Color(0, 0, 0, 0.32))
 	draw_circle(c, r, Color(0.04, 0.05, 0.06, 0.88))
-	draw_arc(c, r - 1.5, 0.0, TAU, 48, Color(1, 1, 1, 0.13), 1.5, true)
+	if shield_ready:
+		var sp := 0.5 + 0.5 * sin(_pulse * 4.5)
+		draw_arc(c, r + 1.0, 0.0, TAU, 48, Color(0.36, 0.88, 0.96, 0.35 + sp * 0.40), 2.8, true)
+	draw_arc(c, r - 1.5, 0.0, TAU, 48, Color(0.42, 0.90, 0.98, 0.45) if shield_ready else Color(1, 1, 1, 0.13), 1.5, true)
 
 	if active:
 		draw_circle(c, r - 2.0, Color(0.95, 0.25, 0.16, 0.15))
 		draw_arc(c, r - 4.0, 0.0, TAU, 48, Color(1.0, 0.45, 0.30, 0.50), 3.0, true)
 
 	var ring_r := r - 10.0
-	var span := TAU / float(SEGMENTS)
+	var span := TAU / float(segments)
 	var gap := 0.12
 	var start := -PI * 0.5 + gap * 0.5
-	for i in range(SEGMENTS):
+	for i in range(segments):
 		var a0 := start + span * float(i)
 		var a1 := a0 + span - gap
 		draw_arc(c, ring_r, a0, a1, 24, Color(1, 1, 1, 0.09), 7.0, true)
 		var frac := clampf(charge * float(SEGMENTS) - float(i), 0.0, 1.0)
 		if frac > 0.01:
-			var col := Color("#ffd06b") if active else Color("#f2b134")
+			var col := Color("#ffd06b") if active else (Color("#5ce1e6") if (shield_ready and i < 3) else Color("#f2b134"))
 			draw_arc(c, ring_r, a0, a0 + (a1 - a0) * frac, 24, col, 7.0, true)
 
 	var inner := ring_r - 14.0
@@ -91,7 +112,7 @@ func _draw() -> void:
 	var ready := charge >= 1.0 / float(SEGMENTS) - 0.001
 	if ready and not active:
 		var p := 0.5 + 0.5 * sin(_pulse * 3.4)
-		draw_arc(c, inner + 2.0, 0.0, TAU, 40, Color(1.0, 0.75, 0.25, 0.10 + p * 0.12), 2.0, true)
+		draw_arc(c, inner + 2.0, 0.0, TAU, 40, Color(0.36, 0.88, 0.96, 0.16 + p * 0.16) if shield_ready else Color(1.0, 0.75, 0.25, 0.10 + p * 0.12), 2.0, true)
 
 	var glyph := Color(1, 1, 1, 0.95) if (ready or active) else Color(1, 1, 1, 0.36)
 	var s := inner * 0.52
@@ -108,10 +129,11 @@ func _draw() -> void:
 	)
 
 	if label_font:
-		var txt := "НИТРО"
+		var txt := "ЩИТ" if (shield_ready and not active) else "НИТРО"
 		var fs := 15
 		var tw := label_font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs).x
-		draw_string(label_font, c + Vector2(-tw * 0.5, inner * 0.82), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs, Color(1, 1, 1, 0.58))
+		var tcol := Color(0.50, 0.95, 1.0, 0.88) if (shield_ready and not active) else Color(1, 1, 1, 0.58)
+		draw_string(label_font, c + Vector2(-tw * 0.5, inner * 0.82), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs, tcol)
 
 	if _flash > 0.0:
 		draw_arc(c, r - 2.0, 0.0, TAU, 48, Color(1.0, 0.85, 0.40, _flash * 0.55), 2.5, true)

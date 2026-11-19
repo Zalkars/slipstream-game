@@ -7,8 +7,7 @@ var on := true
 var label_font: Font
 var accent := Color("#e23b30")
 var _anim := 1.0
-var _down := false
-var _pointer_id := -1
+var _pointer_id := -2
 
 
 func _ready() -> void:
@@ -56,27 +55,28 @@ func _draw() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		if event.pressed:
-			_down = true
-			_pointer_id = event.index
-			accept_event()
-		elif _down and (_pointer_id == event.index or _pointer_id == -1):
-			_down = false
-			_pointer_id = -1
-			accept_event()
-			if Rect2(Vector2.ZERO, size).grow(24.0).has_point(event.position):
-				_toggle()
+		_update_press(event.index, event.pressed, event.position, event.canceled)
+		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			_down = true
-			_pointer_id = -1
-			accept_event()
-		elif _down:
-			_down = false
-			_pointer_id = -1
-			accept_event()
-			if Rect2(Vector2.ZERO, size).grow(24.0).has_point(event.position):
-				_toggle()
+		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
+			return
+		_update_press(-1, event.pressed, event.position, event.canceled)
+		accept_event()
+
+
+func _update_press(id: int, down: bool, pos: Vector2, canceled: bool) -> void:
+	if down and not canceled:
+		if _pointer_id == -2:
+			_pointer_id = id
+	elif _pointer_id == id:
+		_pointer_id = -2
+		if not canceled and Rect2(Vector2.ZERO, size).grow(24.0).has_point(pos):
+			_toggle()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT or (what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree()):
+		_pointer_id = -2
 
 
 func _toggle() -> void:

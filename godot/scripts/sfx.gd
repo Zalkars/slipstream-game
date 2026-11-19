@@ -34,6 +34,11 @@ var slip_snd: AudioStreamPlayer
 var rain_snd: AudioStreamPlayer
 var wet_snd: AudioStreamPlayer
 var storm_snd: AudioStreamPlayer
+var slingshot_ready_snd: AudioStreamPlayer
+var slingshot_snap_snd: AudioStreamPlayer
+var ram_snd: AudioStreamPlayer
+var radar_snd: AudioStreamPlayer
+var shield_snd: AudioStreamPlayer
 var music_player: AudioStreamPlayer
 
 var sfx_bus := 0
@@ -89,6 +94,11 @@ func _ready() -> void:
 	rain_snd = _player(_make_rain(), -60.0)
 	wet_snd = _player(_make_wet_road(), -60.0)
 	storm_snd = _player(_make_storm(), -60.0)
+	slingshot_ready_snd = _player(_make_slingshot_ready(), -11.0)
+	slingshot_snap_snd = _player(_make_slingshot_snap(), -8.0)
+	ram_snd = _player(_make_ram_hit(), -6.0)
+	radar_snd = _player(_make_radar_ok(), -10.0)
+	shield_snd = _player(_make_shield_trigger(), -8.0)
 
 	music_player = AudioStreamPlayer.new()
 	music_player.bus = "Music"
@@ -117,7 +127,7 @@ func _bus_setup_pan(bus_name: String, pan: float, gain_db: float) -> void:
 	if idx < 0:
 		return
 	AudioServer.set_bus_volume_db(idx, gain_db)
-	AudioServer.set_bus_send(idx, "Master")
+	AudioServer.set_bus_send(idx, "SFX")
 	var effect_count := AudioServer.get_bus_effect_count(idx)
 	var found := false
 	for e in range(effect_count):
@@ -379,7 +389,11 @@ func update_engine(px_speed: float, boost: bool, is_braking := false, overheated
 	nitro_snd.volume_db = lerpf(nitro_snd.volume_db, -12.0 if boost else -60.0, 0.30)
 	nitro_snd.pitch_scale = 0.96 + ratio * 0.16
 	overheat_snd.volume_db = lerpf(overheat_snd.volume_db, -17.0 if _overheated else -60.0, 0.20)
-	slip_snd.volume_db = -60.0
+	var slip_target := -60.0
+	if _slip > 0.25 and not _braking and not _boost:
+		slip_target = -36.0 + (_slip - 0.25) * 18.0
+	slip_snd.volume_db = lerpf(slip_snd.volume_db, clampf(slip_target, -60.0, -21.0), 0.18)
+	slip_snd.pitch_scale = 0.90 + _slip * 0.28
 
 	if is_braking and px_speed > 100.0 and not _overheated:
 		var k := clampf(px_speed / 1000.0, 0.30, 1.05)
@@ -497,6 +511,38 @@ func rewind_start() -> void:
 
 func rewind_stop() -> void:
 	_rewinding = false
+
+
+func slingshot_ready() -> void:
+	if slingshot_ready_snd != null:
+		slingshot_ready_snd.play()
+
+
+func slingshot_snap() -> void:
+	if slingshot_snap_snd != null:
+		slingshot_snap_snd.play()
+
+
+func ram_hit() -> void:
+	if ram_snd != null:
+		ram_snd.play()
+
+
+func radar_ok() -> void:
+	if radar_snd != null:
+		radar_snd.play()
+
+
+func shield_trigger() -> void:
+	if shield_snd != null:
+		shield_snd.play()
+
+
+func duel_win() -> void:
+	if chime_snd != null:
+		chime_snd.pitch_scale = 1.08
+		chime_snd.play()
+		chime_snd.pitch_scale = 1.0
 
 
 # --- synthesis helpers ------------------------------------------------------
@@ -1130,6 +1176,93 @@ func _make_storm() -> AudioStreamWAV:
 		var distant := 0.5 + 0.5 * sin(TAU * 0.11 * tt)
 		f[i] = _soft(rumble * gust + mid * 0.11 + sin(TAU * 38.0 * tt) * 0.022 * distant)
 	return _loop_wav(f, loop_len, fade)
+
+
+func _make_slingshot_ready() -> AudioStreamWAV:
+	var n := int(RATE * 0.24)
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var ph := 0.0
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var fr := 880.0 if tt < 0.07 else 1318.5
+		ph += TAU * fr / float(RATE)
+		var env := exp(-12.0 * (tt if tt < 0.07 else tt - 0.07))
+		f[i] = _soft((sin(ph) * 0.42 + sin(ph * 2.0) * 0.16) * env)
+	return _wav(f, false)
+
+
+func _make_slingshot_snap() -> AudioStreamWAV:
+	var n := int(RATE * 0.56)
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var low := 0.0
+	var band := 0.0
+	var ph := 0.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 6161
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var k := clampf(tt / 0.56, 0.0, 1.0)
+		var env := sin(PI * pow(k, 0.45)) * (1.0 - k * 0.25)
+		var raw := rng.randf_range(-1.0, 1.0)
+		var fc := lerpf(420.0, 3200.0, pow(k, 0.55))
+		var fcoef := 2.0 * sin(PI * fc / float(RATE))
+		low += fcoef * band
+		var high := raw - low - 0.80 * band
+		band += fcoef * high
+		ph += TAU * lerpf(240.0, 960.0, k) / float(RATE)
+		var punch := sin(TAU * lerpf(110.0, 46.0, minf(1.0, tt * 8.0)) * tt) * exp(-10.0 * tt) * 0.65
+		f[i] = _soft(punch + (band * 2.8 + sin(ph) * 0.22) * env)
+	return _wav(f, false)
+
+
+func _make_ram_hit() -> AudioStreamWAV:
+	var n := int(RATE * 0.45)
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var lp := 0.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7373
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var raw := rng.randf_range(-1.0, 1.0)
+		lp = lerpf(lp, raw, 0.24)
+		var thud := sin(TAU * lerpf(92.0, 32.0, minf(1.0, tt * 10.0)) * tt) * exp(-7.5 * tt) * 0.95
+		var clang := (sin(TAU * 430.0 * tt) + sin(TAU * 685.0 * tt) * 0.6) * exp(-14.0 * tt) * 0.34
+		var crunch := lp * exp(-12.0 * tt) * 0.60
+		f[i] = _soft((thud + clang + crunch) * 1.15)
+	return _wav(f, false)
+
+
+func _make_radar_ok() -> AudioStreamWAV:
+	var n := int(RATE * 0.32)
+	var f := PackedFloat32Array()
+	f.resize(n)
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var a := sin(TAU * 1568.0 * tt) * exp(-14.0 * tt) * 0.42
+		if tt > 0.08:
+			var t2 := tt - 0.08
+			a += sin(TAU * 2093.0 * t2) * exp(-11.0 * t2) * 0.48
+		f[i] = _soft(a)
+	return _wav(f, false)
+
+
+func _make_shield_trigger() -> AudioStreamWAV:
+	var n := int(RATE * 0.68)
+	var f := PackedFloat32Array()
+	f.resize(n)
+	var ph := 0.0
+	for i in range(n):
+		var tt := float(i) / float(RATE)
+		var k := clampf(tt / 0.68, 0.0, 1.0)
+		var env := sin(PI * pow(k, 0.35))
+		ph += TAU * lerpf(780.0, 290.0, k * k) / float(RATE)
+		var sub := sin(TAU * 72.0 * tt) * exp(-5.0 * tt) * 0.50
+		var bell := sin(ph) * 0.38 + sin(ph * 1.5) * 0.22
+		f[i] = _soft((sub + bell) * env * 1.15)
+	return _wav(f, false)
 
 
 # --- music ------------------------------------------------------------------

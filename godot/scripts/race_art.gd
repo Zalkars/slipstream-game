@@ -104,7 +104,7 @@ func take(car: Dictionary) -> Dictionary:
 
 
 # Draws a cached sprite centred in a w x h box, keeping the model's aspect.
-func draw(ci: CanvasItem, center: Vector2, w: float, h: float, sprite: Dictionary) -> void:
+func draw(ci: CanvasItem, center: Vector2, w: float, h: float, sprite: Dictionary, modulate := Color.WHITE) -> void:
 	var sw := float(sprite.w)
 	var sh := float(sprite.h)
 	if sw < 1.0 or sh < 1.0:
@@ -112,7 +112,7 @@ func draw(ci: CanvasItem, center: Vector2, w: float, h: float, sprite: Dictionar
 	var k := minf(h * 0.96 / sh, w * 0.99 / sw)
 	var size := Vector2(sw, sh) * k
 	ci.draw_texture_rect_region(_pages[int(sprite.page)], Rect2(center - size * 0.5, size),
-		sprite.region)
+		sprite.region, modulate)
 
 
 # QA hook: render straight away and hand back the cropped image.

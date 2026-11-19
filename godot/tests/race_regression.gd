@@ -116,6 +116,8 @@ func run() -> void:
 	check(flat.race_art._pages.is_empty(), "Starting in 2D must not load atlases")
 	flat.free()
 	await check_controls_and_tutorial(game, zones, button)
+	check_menu_controls()
+	check_pass_audio_routing()
 	print("[regression] multitouch, pause, tutorial, 8000 traffic spawns, catalogue, atlas release/reload: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	if "--benchmark" in OS.get_cmdline_user_args() and failures == 0:
 		zones.queue_free()
@@ -144,6 +146,61 @@ func run() -> void:
 				total += ms
 			print("[perf] 3D=", enabled, " avg=%.2f p95=%.2f max=%.2f ms" % [total / frames.size(), frames[int(frames.size() * 0.95)], frames.back()])
 	get_tree().quit(1 if failures else 0)
+
+
+func check_menu_controls() -> void:
+	var icon := IconButton.new()
+	var toggle := ToggleSwitch.new()
+	var slider := VolumeSlider.new()
+	var controls := Control.new()
+	add_child(controls)
+	for control in [icon, toggle, slider]:
+		controls.add_child(control)
+	icon.size = Vector2(76, 76)
+	toggle.size = Vector2(116, 58)
+	slider.size = Vector2(300, 48)
+	var presses := [0]
+	icon.pressed.connect(func(): presses[0] += 1)
+	touch(icon, 1, true)
+	touch(icon, 2, false)
+	touch(icon, 1, false, Vector2(40, 40), true)
+	check(presses[0] == 0, "Icon must ignore unrelated and canceled releases")
+	touch(icon, 1, true)
+	touch(icon, 1, false, Vector2(140, 40))
+	check(presses[0] == 0, "Icon must ignore releases outside its bounds")
+	touch(icon, 1, true)
+	touch(icon, 1, false)
+	check(presses[0] == 1, "Normal tap must activate icon once")
+
+	toggle.on = false
+	touch(toggle, 1, true)
+	touch(toggle, 2, true)
+	touch(toggle, 2, false)
+	touch(toggle, 1, false, Vector2(40, 40), true)
+	check(not toggle.on, "Second finger and canceled release must not flip the switch")
+	touch(toggle, 1, true)
+	touch(toggle, 1, false)
+	check(toggle.on, "Normal tap must flip the switch")
+
+	touch(slider, 1, true)
+	var first_value := slider.value
+	touch(slider, 2, true, Vector2(220, 25))
+	touch(slider, 2, false, Vector2(220, 25))
+	check(slider.value == first_value and slider._dragging, "Second finger must not take over slider")
+	var drag := InputEventScreenDrag.new()
+	drag.index = 1
+	drag.position = Vector2(120, 25)
+	slider._gui_input(drag)
+	check(slider.value > first_value, "First finger must keep control of the slider")
+	touch(slider, 1, false, Vector2(120, 25), true)
+	check(not slider._dragging, "Canceled drag must release the slider")
+	controls.free()
+
+
+func check_pass_audio_routing() -> void:
+	for bus_name in ["PassL", "PassR"]:
+		var bus := AudioServer.get_bus_index(bus_name)
+		check(AudioServer.get_bus_send(bus) == &"SFX", "Side pass audio must use the SFX volume and mute: " + bus_name)
 
 
 func swipe_touch(game: Game, id: int, down: bool, pos: Vector2, canceled := false) -> void:

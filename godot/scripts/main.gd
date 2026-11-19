@@ -19,7 +19,9 @@ var how: Control
 var pause_panel: Control
 var result_panel: Control
 var confirm_panel: Control
+var confirm_text: Label
 var exit_panel: Control
+var challenges_panel: Control
 
 var score_label: Label
 var combo_label: Label
@@ -27,6 +29,12 @@ var coins_label: Label
 var speed_label: Label
 var slip_label: Label
 var weather_label: Label
+var challenge_hud_panel: PanelContainer
+var challenge_hud_label: Label
+var event_banner: PanelContainer
+var event_banner_title: Label
+var event_banner_sub: Label
+var _event_banner_t := 0.0
 var brake_heat_bar: ProgressBar
 var brake_heat_fill: StyleBoxFlat
 var brake_heat_mark: ColorRect
@@ -52,6 +60,8 @@ var g_hint: Label
 var g_action: Button
 var g_vals: Array = []
 var g_bars: Array = []
+var g_perk_title: Label
+var g_perk_desc: Label
 
 var settings_coins: Label
 var sfx_switch: ToggleSwitch
@@ -88,6 +98,8 @@ var result_near: Label
 var result_best: Label
 var result_coins: Label
 var result_total: Label
+var result_mode_banner: Label
+var result_share_btn: Button
 
 var font_ui: Font
 var font_bold: Font
@@ -117,8 +129,27 @@ var settings_from_pause := false
 var in_game := false
 var paused := false
 var result_open := false
+var _run_id := 0
 var _shots := false
 var _hint_t := 0.0
+
+var player_name := "ГОНЩИК"
+var daily_date := ""
+var daily_best := 0
+var daily_tier := 0
+var beaten_duels: Array = []
+var active_challenge: Dictionary = {}
+var loaded_duel: Dictionary = {}
+var last_challenge_code := ""
+var last_share_message := ""
+
+var ch_name_input: LineEdit
+var ch_code_input: LineEdit
+var ch_daily_info: Label
+var ch_daily_status: Label
+var ch_duel_preview: Label
+var ch_accept_btn: Button
+var ch_copy_last_btn: Button
 
 
 func _ready() -> void:
@@ -140,6 +171,13 @@ func _ready() -> void:
 	game.rewind_started.connect(_on_rewind_started)
 	game.rewind_finished.connect(_on_rewind_finished)
 	game.nitro_boosted.connect(_on_game_nitro_boosted)
+	game.slingshot_ready.connect(_on_slingshot_ready)
+	game.slingshot_fired.connect(_on_slingshot_fired)
+	game.chrono_shield_triggered.connect(_on_chrono_shield)
+	game.ram_used.connect(_on_ram_used)
+	game.road_event_banner.connect(_show_event_banner)
+	game.duel_milestone.connect(_on_duel_milestone)
+	game.challenge_hud_changed.connect(_on_challenge_hud)
 
 	ui = CanvasLayer.new()
 	ui.layer = 5
@@ -152,6 +190,7 @@ func _ready() -> void:
 	_build_how()
 	_build_pause()
 	_build_result()
+	_build_challenges()
 	_build_confirm()
 	_build_exit_panel()
 	_build_tutorial()
@@ -178,6 +217,16 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if _event_banner_t > 0.0 and in_game and not paused:
+		_event_banner_t = maxf(0.0, _event_banner_t - delta)
+		if event_banner != null:
+			if _event_banner_t <= 0.0:
+				event_banner.visible = false
+			elif _event_banner_t < 0.35:
+				event_banner.modulate.a = _event_banner_t / 0.35
+			else:
+				event_banner.modulate.a = 1.0
+
 	if _hint_t > 0.0 and in_game and not paused:
 		_hint_t = maxf(0.0, _hint_t - delta)
 		if _hint_t <= 0.0 and swipe_hint != null:
@@ -298,6 +347,13 @@ func _load() -> void:
 		fps_limit = fl if fl in [30, 60, 120] else 60
 		cars_3d = bool(cf.get_value("display", "cars_3d", true))
 		tutorial_done = bool(cf.get_value("game", "tutorial_done", false))
+		player_name = ChallengeCodec.sanitize_name(str(cf.get_value("challenge", "player_name", "ГОНЩИК")))
+		daily_date = str(cf.get_value("challenge", "daily_date", ""))
+		daily_best = int(cf.get_value("challenge", "daily_best", 0))
+		daily_tier = int(cf.get_value("challenge", "daily_tier", 0))
+		var bd = cf.get_value("challenge", "beaten_duels", [])
+		beaten_duels = bd if bd is Array else []
+	_sync_daily_date()
 	if "--mute" in OS.get_cmdline_user_args():
 		sfx_on = false
 		music_on = false
@@ -318,13 +374,18 @@ func _save() -> void:
 	cf.set_value("display", "fps", fps_limit)
 	cf.set_value("display", "cars_3d", cars_3d)
 	cf.set_value("game", "tutorial_done", tutorial_done)
+	cf.set_value("challenge", "player_name", player_name)
+	cf.set_value("challenge", "daily_date", daily_date)
+	cf.set_value("challenge", "daily_best", daily_best)
+	cf.set_value("challenge", "daily_tier", daily_tier)
+	cf.set_value("challenge", "beaten_duels", beaten_duels)
 	cf.save(SAVE_PATH)
 
 
 # --- screens ----------------------------------------------------------------
 
 func _hide_screens() -> void:
-	for s in [menu, garage, settings, how]:
+	for s in [menu, garage, settings, how, challenges_panel]:
 		if s != null:
 			s.visible = false
 	if exit_panel != null:
@@ -340,11 +401,15 @@ func show_menu() -> void:
 	paused = false
 	result_open = false
 	_hide_screens()
+	active_challenge = {}
+	if game != null:
+		game.challenge_config = {}
 	menu.visible = true
 	hud.visible = false
 	pause_panel.visible = false
 	result_panel.visible = false
 	confirm_panel.visible = false
+	game.car_index = selected
 	game.start_demo()
 	Sfx.stop_engine()
 	Sfx.set_paused(false)
@@ -367,7 +432,11 @@ func show_garage() -> void:
 	pause_panel.visible = false
 	result_panel.visible = false
 	confirm_panel.visible = false
+	active_challenge = {}
+	if game != null:
+		game.challenge_config = {}
 	garage_index = selected
+	game.car_index = selected
 	game.start_demo()
 	Sfx.stop_engine()
 	Sfx.set_paused(false)
@@ -412,7 +481,13 @@ func _hide_settings() -> void:
 		show_menu()
 
 
+func _start_solo_game() -> void:
+	active_challenge = {}
+	start_game(false)
+
+
 func start_game(force_tutorial := false) -> void:
+	_run_id += 1
 	Sfx.click()
 	_hide_screens()
 	pause_panel.visible = false
@@ -420,11 +495,19 @@ func start_game(force_tutorial := false) -> void:
 	confirm_panel.visible = false
 	if exit_panel != null:
 		exit_panel.visible = false
+	if event_banner != null:
+		event_banner.visible = false
+	_event_banner_t = 0.0
+	if challenge_hud_panel != null:
+		challenge_hud_panel.visible = not active_challenge.is_empty() and not force_tutorial
 	hud.visible = true
 	in_game = true
 	paused = false
 	result_open = false
-	game.car_index = selected
+	if force_tutorial:
+		active_challenge = {}
+	game.challenge_config = active_challenge.duplicate() if not active_challenge.is_empty() else {}
+	game.car_index = int(active_challenge.get("car_index", selected)) if not active_challenge.is_empty() else selected
 	game.control_mode = control_mode
 	_reset_driving_input()
 	_apply_control_ui()
@@ -432,7 +515,7 @@ func start_game(force_tutorial := false) -> void:
 	if swipe_hint != null:
 		swipe_hint.visible = control_mode == "swipe"
 
-	if force_tutorial or not tutorial_done:
+	if force_tutorial or (not tutorial_done and active_challenge.is_empty()):
 		tutorial_active = true
 		tutorial_step = 1
 		tutorial_timer = 0.0
@@ -580,9 +663,28 @@ func _on_cut_in(_combo: int) -> void:
 
 func _on_status_changed(slip: float, heat: float, over: bool) -> void:
 	if slip_label != null:
-		slip_label.visible = slip > 0.18 and in_game and not result_open
-		if slip_label.visible:
-			slip_label.text = "СЛИПСТРИМ  +%d%%" % int(round(slip * Game.SLIP_BONUS * 100.0))
+		var show_slip := in_game and not result_open
+		if show_slip and game != null and game.slingshot_charge >= 0.99 and not tutorial_active:
+			slip_label.visible = true
+			slip_label.text = "РОГАТКА ГОТОВА! ПЕРЕСТРОЙСЯ →"
+			slip_label.add_theme_color_override("font_color", Color("#ffd447"))
+		elif show_slip and slip > 0.18:
+			slip_label.visible = true
+			if not tutorial_active and game != null and game.slingshot_charge > 0.08:
+				slip_label.text = "СЛИПСТРИМ +%d%% · РОГАТКА %d%%" % [int(round(slip * Game.SLIP_BONUS * 100.0)), int(round(game.slingshot_charge * 100.0))]
+			else:
+				slip_label.text = "СЛИПСТРИМ  +%d%%" % int(round(slip * Game.SLIP_BONUS * 100.0))
+			slip_label.add_theme_color_override("font_color", Color("#9bd6ff"))
+		elif show_slip and game != null and game.hyperdrive_active:
+			slip_label.visible = true
+			slip_label.text = "ГИПЕРДРАЙВ · ОЧКИ ×%d" % game._effective_score_mult()
+			slip_label.add_theme_color_override("font_color", Color("#ff6b7a"))
+		elif show_slip and game != null and game.score_mult > 1:
+			slip_label.visible = true
+			slip_label.text = "БОНУС-ЗОНА · ОЧКИ ×%d" % game._effective_score_mult()
+			slip_label.add_theme_color_override("font_color", amber)
+		else:
+			slip_label.visible = false
 	if brake_heat_bar != null:
 		brake_heat_bar.value = heat
 		var show_bar := in_game and not result_open and (heat > 0.02 or over)
@@ -682,8 +784,10 @@ func _on_pickup(kind: int) -> void:
 func _on_hud(score: int, kmh: int, nitro: float, combo: int, run_coins: int, boosting: bool) -> void:
 	score_label.text = _fmt(score)
 	speed_label.text = str(kmh)
+	nitro_btn.set_segments(4 if (game != null and game.car_perk == "extra_tank") else 3)
 	nitro_btn.set_charge(nitro)
 	nitro_btn.set_active(boosting)
+	nitro_btn.set_shield_ready(not tutorial_active and nitro >= 1.0 - 0.002)
 	if weather_label != null:
 		weather_label.text = game.weather_status_text()
 	coins_label.text = ("МОНЕТЫ  " + _fmt(run_coins)) if run_coins > 0 else ""
@@ -694,7 +798,73 @@ func _on_hud(score: int, kmh: int, nitro: float, combo: int, run_coins: int, boo
 	Sfx.update_engine(game.speed, boosting, game.braking, game.overheated, game.slip)
 
 
+func _show_event_banner(title: String, sub: String, col: Color) -> void:
+	if event_banner == null or not in_game or tutorial_active:
+		return
+	event_banner_title.text = title
+	event_banner_title.add_theme_color_override("font_color", col)
+	event_banner_sub.text = sub
+	event_banner.modulate.a = 1.0
+	event_banner.visible = true
+	_event_banner_t = 2.3
+
+
+func _on_slingshot_ready() -> void:
+	_show_event_banner("РОГАТКА ЗАРЯЖЕНА!", "РЕЗКО ПЕРЕСТРОЙСЯ ДЛЯ РЫВКА", Color("#ffd447"))
+
+
+func _on_slingshot_fired(combo: int, bonus_pts: int) -> void:
+	_show_event_banner("ВЫСТРЕЛ ИЗ СЛИПСТРИМА!", "+%d ОЧКОВ · ×%d СЕРИЯ · +НИТРО" % [bonus_pts, combo], Color("#5ce1e6"))
+
+
+func _on_chrono_shield() -> void:
+	_show_event_banner("ХРОНО-ЩИТ АКТИВИРОВАН!", "3 ЗАРЯДА НИТРО СПАСЛИ ОТ АВАРИИ", Color("#5ce1e6"))
+
+
+func _on_ram_used(bonus_pts: int) -> void:
+	_show_event_banner("ТАРАН НА НИТРО!", "+%d ОЧКОВ" % bonus_pts, Color("#ff8a3d"))
+
+
+func _on_duel_milestone(kind: String) -> void:
+	if kind == "crash_passed":
+		_show_event_banner("МЕСТО АВАРИИ ПРОЙДЕНО!", "ТЫ ПРОЕХАЛ ДАЛЬШЕ СОПЕРНИКА", Color("#5ce1e6"))
+	elif kind == "score_beaten":
+		_show_event_banner("СЧЁТ СОПЕРНИКА ПОБИТ!", "УДЕРЖИ ПРЕИМУЩЕСТВО", Color("#5ddb75"))
+
+
+func _on_challenge_hud(info: Dictionary) -> void:
+	if challenge_hud_panel == null or challenge_hud_label == null:
+		return
+	if info.is_empty() or not in_game or tutorial_active:
+		challenge_hud_panel.visible = false
+		return
+	challenge_hud_panel.visible = true
+	var ctype := str(info.get("type", ""))
+	if ctype == "duel":
+		var gap_m := int(info.get("gap_m", 0))
+		var sign_txt := ("+%d м" % gap_m) if gap_m >= 0 else ("%d м" % gap_m)
+		var rscore := int(info.get("rival_score", 0))
+		var finished_txt := " (ФИНИШ)" if bool(info.get("ghost_finished", false)) else ""
+		challenge_hud_label.text = "VS %s%s · %s · ЦЕЛЬ %s" % [str(info.get("name", "ДРУГ")), finished_txt, sign_txt, _fmt(rscore)]
+		challenge_hud_label.add_theme_color_override("font_color", Color("#5ddb75") if gap_m >= 0 else Color("#ff8a6b"))
+	elif ctype == "daily":
+		var b := int(info.get("bronze", 6500))
+		var s := int(info.get("silver", 14500))
+		var g := int(info.get("gold", 26000))
+		var cur := int(game.score) if game != null else 0
+		var next_lbl := "ЗОЛОТО %s" % _fmt(g)
+		if cur < b:
+			next_lbl = "БРОНЗА %s" % _fmt(b)
+		elif cur < s:
+			next_lbl = "СЕРЕБРО %s" % _fmt(s)
+		elif cur >= g:
+			next_lbl = "ВСЕ ЦЕЛИ ВЗЯТЫ!"
+		challenge_hud_label.text = "ВЫЗОВ ДНЯ · ЦЕЛЬ: %s" % next_lbl
+		challenge_hud_label.add_theme_color_override("font_color", amber)
+
+
 func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
+	var was_tutorial := tutorial_active
 	if tutorial_active:
 		tutorial_active = false
 		if tutorial_panel != null:
@@ -705,27 +875,100 @@ func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
 		Sfx.rewind_stop()
 	Sfx.crash()
 	Sfx.stop_engine()
+	var finished_run := _run_id
+	var is_record := score > best
+	if is_record:
+		best = score
+
+	var mode_bonus := 0
+	var mode_banner_txt := ""
+	var mode_banner_col := amber
+	var ctype := str(active_challenge.get("type", ""))
+	if ctype == "duel" and not was_tutorial:
+		var rscore := int(active_challenge.get("score", 0))
+		var rname := str(active_challenge.get("name", "ДРУГ"))
+		var won := score > rscore
+		if won:
+			var cid := str(active_challenge.get("id", ""))
+			if cid != "" and not beaten_duels.has(cid):
+				beaten_duels.append(cid)
+				if beaten_duels.size() > 50:
+					beaten_duels.pop_front()
+				mode_bonus = 150
+				mode_banner_txt = "ПОБЕДА НАД %s! +150 МОНЕТ" % rname
+			else:
+				mode_banner_txt = "ПОБЕДА НАД %s! (+%s ОЧК.)" % [rname, _fmt(score - rscore)]
+			mode_banner_col = Color("#5ddb75")
+		else:
+			mode_banner_txt = "ВЫЗОВ %s: НЕ ХВАТИЛО %s ОЧКОВ" % [rname, _fmt(maxi(1, rscore - score + 1))]
+			mode_banner_col = Color("#ff8a6b")
+	elif ctype == "daily" and not was_tutorial:
+		_sync_daily_date()
+		if score > daily_best:
+			daily_best = score
+		var rewards := [100, 200, 350]
+		var targets := [int(active_challenge.get("bronze", 6500)), int(active_challenge.get("silver", 14500)), int(active_challenge.get("gold", 26000))]
+		var tier_names := ["БРОНЗА", "СЕРЕБРО", "ЗОЛОТО"]
+		var hit_tier := 0
+		for idx in range(3):
+			if score >= targets[idx]:
+				hit_tier = idx + 1
+				if daily_tier < idx + 1:
+					mode_bonus += rewards[idx]
+					daily_tier = idx + 1
+		if mode_bonus > 0:
+			mode_banner_txt = "ВЫЗОВ ДНЯ · %s! +%d МОНЕТ" % [tier_names[hit_tier - 1], mode_bonus]
+			mode_banner_col = Color("#5ddb75")
+		elif hit_tier > 0:
+			mode_banner_txt = "ВЫЗОВ ДНЯ · %s (РЕКОРД ДНЯ %s)" % [tier_names[hit_tier - 1], _fmt(daily_best)]
+			mode_banner_col = amber
+		else:
+			mode_banner_txt = "ВЫЗОВ ДНЯ · ДО БРОНЗЫ %s ОЧК." % _fmt(maxi(0, targets[0] - score))
+			mode_banner_col = dim_col
+
+	if not was_tutorial and game != null and game.ghost_rec.size() > 0:
+		var payload := game.build_challenge_payload(player_name)
+		last_challenge_code = ChallengeCodec.encode(payload)
+		last_share_message = ChallengeCodec.format_share_message(payload, last_challenge_code, ctype == "duel")
+	else:
+		last_challenge_code = ""
+		last_share_message = ""
+
+	var earned := run_coins + (25 if is_record else 0) + mode_bonus
+	coins += earned
+	_save()
 	await get_tree().create_timer(1.05).timeout
-	if not game.crashed:
+	if not in_game or finished_run != _run_id or not game.crashed:
 		return
 	in_game = false
 	result_open = true
 	paused = false
 	hud.visible = false
+	pause_panel.visible = false
+	confirm_panel.visible = false
+	_hide_screens()
 	game.paused = true
-	_show_result(score, dist, near, run_coins)
+	Sfx.set_paused(false)
+	_show_result(score, dist, near, earned, is_record, mode_banner_txt, mode_banner_col)
 
 
-func _show_result(score: int, dist: int, near: int, run_coins: int) -> void:
-	var is_record := score > best
+func _show_result(score: int, dist: int, near: int, earned: int, is_record: bool, mode_txt := "", mode_col := Color.WHITE) -> void:
 	if is_record:
-		best = score
 		Sfx.record()
-	var earned := run_coins + (25 if is_record else 0)
-	coins += earned
-	_save()
 	result_score.text = _fmt(score)
 	result_record.visible = is_record
+	if result_mode_banner != null:
+		result_mode_banner.visible = mode_txt != ""
+		if result_mode_banner.visible:
+			result_mode_banner.text = mode_txt
+			result_mode_banner.add_theme_color_override("font_color", mode_col)
+	if result_share_btn != null:
+		var can_share := last_challenge_code != ""
+		result_share_btn.visible = can_share
+		if can_share:
+			var is_duel := str(active_challenge.get("type", "")) == "duel"
+			result_share_btn.text = "ОТПРАВИТЬ РЕВАНШ (КОД)" if is_duel else "ВЫЗВАТЬ ДРУГА (КОД)"
+			result_share_btn.add_theme_color_override("font_color", Color("#eaf6f8"))
 	result_dist.text = "%d м" % dist
 	result_near.text = str(near)
 	result_best.text = _fmt(best)
@@ -747,6 +990,9 @@ func _on_back() -> void:
 		return
 	if settings != null and settings.visible:
 		_hide_settings()
+		return
+	if challenges_panel != null and challenges_panel.visible:
+		show_menu()
 		return
 	if garage != null and garage.visible:
 		show_menu()
@@ -1033,27 +1279,43 @@ func _build_menu() -> void:
 	vb.anchor_bottom = 1.0
 	vb.offset_left = 70
 	vb.offset_right = 650
-	vb.offset_top = -540
-	vb.offset_bottom = -60
+	vb.offset_top = -530
+	vb.offset_bottom = -52
 	menu.add_child(vb)
 
 	var play := _button("ПОЕХАЛИ", true)
-	play.custom_minimum_size = Vector2(0, 88)
-	play.pressed.connect(start_game)
+	play.custom_minimum_size = Vector2(0, 86)
+	play.pressed.connect(_start_solo_game)
 	vb.add_child(play)
 
+	var chall_btn := _button("ВЫЗОВЫ · ДУЭЛЬ И ДЕНЬ", false)
+	chall_btn.custom_minimum_size = Vector2(0, 78)
+	chall_btn.add_theme_font_size_override("font_size", 28)
+	chall_btn.add_theme_color_override("font_color", Color("#7fe9ff"))
+	chall_btn.pressed.connect(show_challenges)
+	vb.add_child(chall_btn)
+
+	var row_mid := HBoxContainer.new()
+	row_mid.add_theme_constant_override("separation", 12)
+	vb.add_child(row_mid)
+
 	var garage_btn := _button("ГАРАЖ", false)
-	garage_btn.custom_minimum_size = Vector2(0, 88)
+	garage_btn.custom_minimum_size = Vector2(0, 78)
+	garage_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	garage_btn.add_theme_font_size_override("font_size", 30)
 	garage_btn.pressed.connect(show_garage)
-	vb.add_child(garage_btn)
+	row_mid.add_child(garage_btn)
 
 	var settings_btn := _button("НАСТРОЙКИ", false)
-	settings_btn.custom_minimum_size = Vector2(0, 88)
+	settings_btn.custom_minimum_size = Vector2(0, 78)
+	settings_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	settings_btn.add_theme_font_size_override("font_size", 28)
 	settings_btn.pressed.connect(func(): _show_settings(false))
-	vb.add_child(settings_btn)
+	row_mid.add_child(settings_btn)
 
 	var how_btn := _button("КАК ИГРАТЬ", false)
-	how_btn.custom_minimum_size = Vector2(0, 88)
+	how_btn.custom_minimum_size = Vector2(0, 66)
+	how_btn.add_theme_font_size_override("font_size", 28)
 	how_btn.pressed.connect(_show_how)
 	vb.add_child(how_btn)
 
@@ -1152,6 +1414,56 @@ func _build_hud() -> void:
 	overheat_label.visible = false
 	hud.add_child(overheat_label)
 
+	challenge_hud_panel = PanelContainer.new()
+	challenge_hud_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var ch_sb := StyleBoxFlat.new()
+	ch_sb.bg_color = Color(0.04, 0.06, 0.09, 0.78)
+	ch_sb.set_corner_radius_all(12)
+	ch_sb.border_width_left = 1
+	ch_sb.border_width_right = 1
+	ch_sb.border_width_top = 1
+	ch_sb.border_width_bottom = 1
+	ch_sb.border_color = Color(0.36, 0.88, 0.96, 0.35)
+	ch_sb.content_margin_left = 14
+	ch_sb.content_margin_right = 14
+	ch_sb.content_margin_top = 4
+	ch_sb.content_margin_bottom = 4
+	challenge_hud_panel.add_theme_stylebox_override("panel", ch_sb)
+	_place(challenge_hud_panel, 46, 254, 628, 36)
+	challenge_hud_panel.visible = false
+	hud.add_child(challenge_hud_panel)
+
+	challenge_hud_label = _label("", 19, Color("#7fe9ff"), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	challenge_hud_panel.add_child(challenge_hud_label)
+
+	event_banner = PanelContainer.new()
+	event_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var eb_sb := StyleBoxFlat.new()
+	eb_sb.bg_color = Color(0.05, 0.07, 0.10, 0.88)
+	eb_sb.set_corner_radius_all(16)
+	eb_sb.border_width_left = 1
+	eb_sb.border_width_right = 1
+	eb_sb.border_width_top = 1
+	eb_sb.border_width_bottom = 1
+	eb_sb.border_color = Color(1.0, 1.0, 1.0, 0.18)
+	eb_sb.content_margin_left = 18
+	eb_sb.content_margin_right = 18
+	eb_sb.content_margin_top = 8
+	eb_sb.content_margin_bottom = 8
+	event_banner.add_theme_stylebox_override("panel", eb_sb)
+	_place(event_banner, 80, 304, 560, 74)
+	event_banner.visible = false
+	hud.add_child(event_banner)
+
+	var eb_vb := VBoxContainer.new()
+	eb_vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	eb_vb.add_theme_constant_override("separation", 0)
+	event_banner.add_child(eb_vb)
+	event_banner_title = _label("", 24, amber, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	eb_vb.add_child(event_banner_title)
+	event_banner_sub = _label("", 18, Color(0.86, 0.90, 0.94), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	eb_vb.add_child(event_banner_sub)
+
 	var bot := _vgrad(Color(0.02, 0.025, 0.03, 0.0), Color(0.02, 0.025, 0.03, 0.14), Color(0.02, 0.025, 0.03, 0.46))
 	_place_bottom(bot, 0, 0, 720, 330)
 	hud.add_child(bot)
@@ -1234,29 +1546,29 @@ func _build_garage() -> void:
 	garage_coins = _coin_chip(garage, 440.0, 50.0, 246.0)
 
 	g_stage = CarStage.new()
-	_place(g_stage, 52, 132, 616, 600)
+	_place(g_stage, 52, 132, 616, 560)
 	garage.add_child(g_stage)
 
 	var left := PadButton.new()
 	left.kind = "left"
 	left.label_font = font_bold
 	left.pressed.connect(func(): _garage_step(-1))
-	_place(left, 18, 384, 76, 76)
+	_place(left, 18, 368, 76, 76)
 	garage.add_child(left)
 
 	var right := PadButton.new()
 	right.kind = "right"
 	right.label_font = font_bold
 	right.pressed.connect(func(): _garage_step(1))
-	_place(right, 626, 384, 76, 76)
+	_place(right, 626, 368, 76, 76)
 	garage.add_child(right)
 
 	g_name = _label("", 42, ink, font_num, HORIZONTAL_ALIGNMENT_CENTER)
-	_place(g_name, 52, 744, 616, 54)
+	_place(g_name, 52, 702, 616, 50)
 	garage.add_child(g_name)
 
 	g_sub = _label("", 19, dim_col, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
-	_place(g_sub, 52, 798, 616, 28)
+	_place(g_sub, 52, 752, 616, 26)
 	garage.add_child(g_sub)
 
 	var card := Panel.new()
@@ -1269,26 +1581,52 @@ func _build_garage() -> void:
 	sb.border_width_bottom = 1
 	sb.border_color = Color(1, 1, 1, 0.07)
 	card.add_theme_stylebox_override("panel", sb)
-	_place(card, 52, 848, 616, 216)
+	_place(card, 52, 792, 616, 200)
 	garage.add_child(card)
 
 	var titles := ["СКОРОСТЬ", "РАЗГОН", "МАНЁВРЕННОСТЬ"]
 	for i in range(3):
-		var ry := 868.0 + float(i) * 62.0
+		var ry := 808.0 + float(i) * 58.0
 		var lab := _label(titles[i], 20, Color(0.66, 0.71, 0.74), font_bold)
-		_place(lab, 78, ry, 300, 28)
+		_place(lab, 78, ry, 300, 26)
 		garage.add_child(lab)
 		var val := _label("", 22, ink, font_bold, HORIZONTAL_ALIGNMENT_RIGHT)
-		_place(val, 360, ry, 254, 28)
+		_place(val, 360, ry, 254, 26)
 		garage.add_child(val)
 		g_vals.append(val)
-		g_bars.append(_stat_bar(garage, 78, ry + 30.0, 564))
+		g_bars.append(_stat_bar(garage, 78, ry + 28.0, 564))
 
-	g_desc = _label("", 19, Color(0.62, 0.67, 0.70), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	g_desc = _label("", 18, Color(0.62, 0.67, 0.70), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
 	g_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	g_desc.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	_place(g_desc, 76, 1080, 568, 64)
+	_place(g_desc, 72, 1004, 576, 48)
 	garage.add_child(g_desc)
+
+	var perk_card := PanelContainer.new()
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = Color(0.08, 0.11, 0.14, 1.0)
+	psb.set_corner_radius_all(18)
+	psb.border_width_left = 1
+	psb.border_width_right = 1
+	psb.border_width_top = 1
+	psb.border_width_bottom = 1
+	psb.border_color = Color(0.95, 0.70, 0.20, 0.35)
+	psb.content_margin_left = 20
+	psb.content_margin_right = 20
+	psb.content_margin_top = 10
+	psb.content_margin_bottom = 10
+	perk_card.add_theme_stylebox_override("panel", psb)
+	_place(perk_card, 52, 1062, 616, 134)
+	garage.add_child(perk_card)
+
+	var pvb := VBoxContainer.new()
+	pvb.add_theme_constant_override("separation", 4)
+	perk_card.add_child(pvb)
+	g_perk_title = _label("", 20, amber, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	pvb.add_child(g_perk_title)
+	g_perk_desc = _label("", 19, Color(0.86, 0.90, 0.92), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	g_perk_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	pvb.add_child(g_perk_desc)
 
 	g_price = _label("", 24, amber, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
 	_place_bottom(g_price, 52, 250, 616, 34)
@@ -1341,6 +1679,10 @@ func _update_garage() -> void:
 	g_name.text = str(car.name)
 	g_sub.text = str(car.sub)
 	g_desc.text = str(car.desc)
+	if g_perk_title != null:
+		g_perk_title.text = "ОСОБЕННОСТЬ · %s" % str(car.get("perk_name", ""))
+	if g_perk_desc != null:
+		g_perk_desc.text = str(car.get("perk_desc", ""))
 	var top_kmh := Game.top_kmh(float(car.top))
 	var sr := Cars.speed_rating(car)
 	var ar := Cars.accel_rating(car)
@@ -1717,12 +2059,11 @@ func _build_how() -> void:
 	vb.add_child(gap)
 
 	var items := [
-		["3 РЕЖИМА УПРАВЛЕНИЯ", "Две зоны (руль по бокам, обе — тормоз), крупные кнопки или свайпы (вниз — тормоз, вверх — нитро). Выбор в настройках."],
-		["ТОРМОЖЕНИЕ", "Тормоза греются: долго держать педаль нельзя. Дай им остыть, иначе они отключатся."],
-		["НИТРО", "Копится за обгоны впритирку — когда перестраиваешься прямо перед машиной. Синие баллоны тоже дают заряд."],
-		["СЛИПСТРИМ", "Держись за машиной впереди — воздушный мешок даёт прибавку к скорости."],
-		["МОНЕТЫ", "Золото на дороге и дистанция пополняют кошелёк. Новые машины открываются в гараже."],
-		["ОБУЧЕНИЕ", "Покажет перестроение, торможение и нитро. Ошибки отматывают время назад."],
+		["РОГАТКА (СЛИПСТРИМ)", "Держись за машиной впереди — шкала зарядится вокруг авто. Резко перестройся, чтобы выстрелить вперёд, получить очки и нитро!"],
+		["ХРОНО-ЩИТ (3 НИТРО)", "Полный бак из 3 зарядов нитро работает как щит: при аварии сгорает и отматывает время на 2 секунды назад."],
+		["УПРАВЛЕНИЕ И ТОРМОЗ", "Две зоны, кнопки или свайпы (выбор в настройках). Тормоз сбрасывает скорость, но колодки греются."],
+		["9 СПОСОБНОСТЕЙ МАШИН", "У каждой машины в гараже своя фишка: таран на нитро, магнит монет, 4-й баллон, рекуперация тормоза и гипердрайв."],
+		["ВЫЗОВ ДРУГА И ВЫЗОВ ДНЯ", "Скопируй код после финиша и отправь другу в мессенджер — он сможет проехать с твоим живым призраком по той же трассе!"],
 	]
 	for it in items:
 		vb.add_child(_label(it[0], 19, accent, font_bold))
@@ -1838,6 +2179,11 @@ func _build_result() -> void:
 	result_record.visible = false
 	vb.add_child(result_record)
 
+	result_mode_banner = _label("", 20, Color("#5ddb75"), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	result_mode_banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	result_mode_banner.visible = false
+	vb.add_child(result_mode_banner)
+
 	result_coins = _label("+0 МОНЕТ", 27, amber, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
 	vb.add_child(result_coins)
 
@@ -1876,6 +2222,14 @@ func _build_result() -> void:
 	again.pressed.connect(start_game)
 	vb.add_child(again)
 
+	result_share_btn = _button("ВЫЗВАТЬ ДРУГА (КОД)", false)
+	result_share_btn.custom_minimum_size = Vector2(0, 78)
+	result_share_btn.add_theme_font_size_override("font_size", 26)
+	result_share_btn.add_theme_color_override("font_color", Color("#7fe9ff"))
+	result_share_btn.pressed.connect(_copy_last_challenge)
+	result_share_btn.visible = false
+	vb.add_child(result_share_btn)
+
 	var row2 := HBoxContainer.new()
 	row2.add_theme_constant_override("separation", 10)
 	vb.add_child(row2)
@@ -1893,6 +2247,265 @@ func _build_result() -> void:
 	to_menu.add_theme_font_size_override("font_size", 28)
 	to_menu.pressed.connect(show_menu)
 	row2.add_child(to_menu)
+
+
+# --- challenges (daily & friend ghost duel) ---------------------------------
+
+func _sync_daily_date() -> void:
+	var today := str(ChallengeCodec.daily_challenge().date_key)
+	if daily_date != today:
+		daily_date = today
+		daily_best = 0
+		daily_tier = 0
+
+
+func _line_edit_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.10, 0.13, 1.0)
+	sb.set_corner_radius_all(12)
+	sb.border_width_left = 1
+	sb.border_width_right = 1
+	sb.border_width_top = 1
+	sb.border_width_bottom = 1
+	sb.border_color = Color(0.35, 0.42, 0.48, 0.85)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	return sb
+
+
+func _build_challenges() -> void:
+	challenges_panel = Control.new()
+	_full(challenges_panel)
+	challenges_panel.visible = false
+	challenges_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui.add_child(challenges_panel)
+	challenges_panel.add_child(_screen_bg())
+
+	var back := IconButton.new()
+	back.kind = "back"
+	back.pressed.connect(show_menu)
+	_place(back, 36, 38, 76, 76)
+	challenges_panel.add_child(back)
+
+	var title := _label("ВЫЗОВЫ", 42, ink, font_num, HORIZONTAL_ALIGNMENT_CENTER)
+	_place(title, 0, 46, 720, 64)
+	challenges_panel.add_child(title)
+
+	var scroll_c := ScrollContainer.new()
+	scroll_c.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_place(scroll_c, 36, 132, 648, 1380)
+	challenges_panel.add_child(scroll_c)
+
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_theme_constant_override("separation", 18)
+	scroll_c.add_child(vb)
+
+	# Card 1: Daily Challenge
+	var daily_card := _card(640)
+	vb.add_child(daily_card)
+	var dvb := VBoxContainer.new()
+	dvb.add_theme_constant_override("separation", 10)
+	daily_card.add_child(dvb)
+
+	dvb.add_child(_label("ВЫЗОВ ДНЯ · ОБЩАЯ ТРАССА", 20, amber, font_bold))
+	ch_daily_info = _label("", 22, ink, font_ui)
+	ch_daily_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	dvb.add_child(ch_daily_info)
+
+	ch_daily_status = _label("", 19, Color(0.72, 0.78, 0.82), font_bold)
+	ch_daily_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	dvb.add_child(ch_daily_status)
+
+	var daily_play := _button("ИГРАТЬ ВЫЗОВ ДНЯ", true)
+	daily_play.custom_minimum_size = Vector2(0, 78)
+	daily_play.add_theme_font_size_override("font_size", 28)
+	daily_play.pressed.connect(_start_daily_challenge)
+	dvb.add_child(daily_play)
+
+	# Card 2: Friend Ghost Duel
+	var duel_card := _card(640)
+	vb.add_child(duel_card)
+	var fvb := VBoxContainer.new()
+	fvb.add_theme_constant_override("separation", 12)
+	duel_card.add_child(fvb)
+
+	fvb.add_child(_label("ДУЭЛЬ С ДРУГОМ · ПРИЗРАК ПО КОДУ", 20, Color("#7fe9ff"), font_bold))
+	var duel_sub := _label("Скопируй сообщение от друга из Telegram или другого чата и вставь сюда. Машина и поток трафика будут на 100% одинаковыми!", 19, Color(0.76, 0.80, 0.83), font_ui)
+	duel_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	fvb.add_child(duel_sub)
+
+	var name_row := HBoxContainer.new()
+	name_row.add_theme_constant_override("separation", 10)
+	fvb.add_child(name_row)
+	var nl_lbl := _label("ВАШ НИК:", 20, dim_col, font_bold)
+	nl_lbl.custom_minimum_size = Vector2(126, 48)
+	name_row.add_child(nl_lbl)
+
+	ch_name_input = LineEdit.new()
+	ch_name_input.max_length = 12
+	ch_name_input.placeholder_text = "ГОНЩИК"
+	ch_name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ch_name_input.custom_minimum_size = Vector2(0, 50)
+	ch_name_input.add_theme_font_override("font", font_bold)
+	ch_name_input.add_theme_font_size_override("font_size", 22)
+	ch_name_input.add_theme_stylebox_override("normal", _line_edit_style())
+	ch_name_input.add_theme_stylebox_override("focus", _line_edit_style())
+	ch_name_input.text_changed.connect(_on_player_name_changed)
+	name_row.add_child(ch_name_input)
+
+	ch_code_input = LineEdit.new()
+	ch_code_input.placeholder_text = "Вставь код SLIP1-... или текст вызова"
+	ch_code_input.custom_minimum_size = Vector2(0, 56)
+	ch_code_input.add_theme_font_override("font", font_ui)
+	ch_code_input.add_theme_font_size_override("font_size", 20)
+	ch_code_input.add_theme_stylebox_override("normal", _line_edit_style())
+	ch_code_input.add_theme_stylebox_override("focus", _line_edit_style())
+	ch_code_input.text_changed.connect(_on_challenge_code_edited)
+	fvb.add_child(ch_code_input)
+
+	var paste_btn := _button("ВСТАВИТЬ ИЗ БУФЕРА", false)
+	paste_btn.custom_minimum_size = Vector2(0, 68)
+	paste_btn.add_theme_font_size_override("font_size", 24)
+	paste_btn.pressed.connect(_paste_challenge_from_clipboard)
+	fvb.add_child(paste_btn)
+
+	ch_duel_preview = _label("Код не загружен. Вставь код друга, чтобы увидеть соперника и цель.", 19, Color(0.68, 0.74, 0.78), font_ui)
+	ch_duel_preview.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	ch_duel_preview.custom_minimum_size = Vector2(0, 74)
+	fvb.add_child(ch_duel_preview)
+
+	ch_accept_btn = _button("ПРИНЯТЬ ВЫЗОВ (СТАРТ)", true)
+	ch_accept_btn.custom_minimum_size = Vector2(0, 82)
+	ch_accept_btn.add_theme_font_size_override("font_size", 28)
+	ch_accept_btn.disabled = true
+	ch_accept_btn.pressed.connect(_start_duel_challenge)
+	fvb.add_child(ch_accept_btn)
+
+	ch_copy_last_btn = _button("СКОПИРОВАТЬ МОЙ ПОСЛЕДНИЙ ВЫЗОВ", false)
+	ch_copy_last_btn.custom_minimum_size = Vector2(0, 68)
+	ch_copy_last_btn.add_theme_font_size_override("font_size", 22)
+	ch_copy_last_btn.add_theme_color_override("font_color", amber)
+	ch_copy_last_btn.pressed.connect(_copy_last_challenge_from_hub)
+	ch_copy_last_btn.visible = false
+	fvb.add_child(ch_copy_last_btn)
+
+
+func show_challenges() -> void:
+	_reset_driving_input()
+	tutorial_active = false
+	if tutorial_panel != null:
+		tutorial_panel.visible = false
+	Sfx.click()
+	in_game = false
+	paused = false
+	result_open = false
+	_hide_screens()
+	if challenges_panel != null:
+		challenges_panel.visible = true
+	_refresh_challenges_ui()
+
+
+func _refresh_challenges_ui() -> void:
+	_sync_daily_date()
+	var d := ChallengeCodec.daily_challenge()
+	var car := Cars.get_car(int(d.car_index))
+	if ch_daily_info != null:
+		ch_daily_info.text = "Дата: %s · Машина: %s (бесплатно)
+Погода: %s · %s
+Цели: %s (+100) / %s (+200) / %s (+350)" % [
+			str(d.date_key), str(car.name), str(d.time_label), str(d.weather_label),
+			_fmt(int(d.bronze)), _fmt(int(d.silver)), _fmt(int(d.gold))
+		]
+	if ch_daily_status != null:
+		var tier_lbls := ["НЕ ПРОЙДЕН", "БРОНЗА ВЗЯТА", "СЕРЕБРО ВЗЯТО", "ЗОЛОТО ВЗЯТО!"]
+		ch_daily_status.text = "Твой рекорд дня: %s · Статус: %s" % [_fmt(daily_best), tier_lbls[clampi(daily_tier, 0, 3)]]
+	if ch_name_input != null and ch_name_input.text != player_name:
+		ch_name_input.text = player_name
+	if ch_copy_last_btn != null:
+		ch_copy_last_btn.visible = last_challenge_code != ""
+
+
+func _on_player_name_changed(new_txt: String) -> void:
+	player_name = ChallengeCodec.sanitize_name(new_txt)
+	_save()
+
+
+func _paste_challenge_from_clipboard() -> void:
+	var clip := DisplayServer.clipboard_get()
+	if ch_code_input != null:
+		ch_code_input.text = clip
+	_on_challenge_code_edited(clip)
+
+
+func _on_challenge_code_edited(txt: String) -> void:
+	if txt.strip_edges().is_empty():
+		loaded_duel = {}
+		if ch_duel_preview != null:
+			ch_duel_preview.text = "Код не загружен. Вставь код друга, чтобы увидеть соперника и цель."
+			ch_duel_preview.add_theme_color_override("font_color", Color(0.68, 0.74, 0.78))
+		if ch_accept_btn != null:
+			ch_accept_btn.disabled = true
+		return
+	var parsed := ChallengeCodec.decode(txt)
+	if not bool(parsed.get("ok", false)):
+		loaded_duel = {}
+		if ch_duel_preview != null:
+			ch_duel_preview.text = "Ошибка: %s" % str(parsed.get("error", "неверный код"))
+			ch_duel_preview.add_theme_color_override("font_color", Color("#ff6b6b"))
+		if ch_accept_btn != null:
+			ch_accept_btn.disabled = true
+		return
+	loaded_duel = parsed
+	var rcar := Cars.get_car(int(parsed.car_index))
+	var cid := str(parsed.get("id", ""))
+	var beaten := cid != "" and beaten_duels.has(cid)
+	var reward_note := "Уже побеждён (доступен реванш)" if beaten else "Награда за победу: +150 монет!"
+	if ch_duel_preview != null:
+		ch_duel_preview.text = "Соперник: %s · Машина: %s (выдаётся бесплатно)
+Цель: %s очк. (%d м) · %s, %s
+%s" % [
+			str(parsed.name), str(rcar.name), _fmt(int(parsed.score)), int(parsed.distance),
+			ChallengeCodec.time_label(float(parsed.tod)), ChallengeCodec.weather_label(int(parsed.weather)),
+			reward_note
+		]
+		ch_duel_preview.add_theme_color_override("font_color", Color("#7fe9ff"))
+	if ch_accept_btn != null:
+		ch_accept_btn.disabled = false
+	Sfx.record()
+
+
+func _start_daily_challenge() -> void:
+	active_challenge = ChallengeCodec.daily_challenge()
+	start_game(false)
+
+
+func _start_duel_challenge() -> void:
+	if loaded_duel.is_empty():
+		return
+	active_challenge = loaded_duel.duplicate(true)
+	start_game(false)
+
+
+func _copy_last_challenge() -> void:
+	if last_share_message == "":
+		return
+	DisplayServer.clipboard_set(last_share_message)
+	Sfx.record()
+	if result_share_btn != null:
+		result_share_btn.text = "СКОПИРОВАНО! ОТПРАВЬ ДРУГУ"
+		result_share_btn.add_theme_color_override("font_color", Color("#5ddb75"))
+
+
+func _copy_last_challenge_from_hub() -> void:
+	if last_share_message == "":
+		return
+	DisplayServer.clipboard_set(last_share_message)
+	Sfx.record()
+	if ch_copy_last_btn != null:
+		ch_copy_last_btn.text = "СКОПИРОВАНО В БУФЕР!"
 
 
 # --- reset confirmation -----------------------------------------------------
@@ -1923,10 +2536,10 @@ func _build_confirm() -> void:
 	card.add_child(vb)
 
 	vb.add_child(_label("СБРОСИТЬ ПРОГРЕСС?", 34, ink, font_num, HORIZONTAL_ALIGNMENT_CENTER))
-	var body := _label("Монеты, купленные машины и рекорд будут удалены. Настройки останутся.", 21, Color(0.70, 0.74, 0.76), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.custom_minimum_size = Vector2(0, 64)
-	vb.add_child(body)
+	confirm_text = _label("", 21, Color(0.70, 0.74, 0.76), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	confirm_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	confirm_text.custom_minimum_size = Vector2(0, 64)
+	vb.add_child(confirm_text)
 
 	var yes := _button("СБРОСИТЬ", true)
 	yes.pressed.connect(_do_reset)
@@ -1940,6 +2553,9 @@ func _build_confirm() -> void:
 
 func _show_confirm() -> void:
 	Sfx.click()
+	confirm_text.text = "Монеты, купленные машины и рекорд будут удалены. Настройки останутся."
+	if in_game:
+		confirm_text.text += " Текущий заезд завершится, и игра вернётся в меню."
 	confirm_panel.visible = true
 
 
@@ -1955,9 +2571,19 @@ func _do_reset() -> void:
 	best = 0
 	garage_index = 0
 	tutorial_done = false
+	daily_best = 0
+	daily_tier = 0
+	beaten_duels.clear()
+	active_challenge = {}
 	_save()
 	confirm_panel.visible = false
 	Sfx.click()
+	game.car_index = selected
+	if in_game:
+		settings_from_pause = false
+		show_menu()
+		return
+	game.start_demo()
 	_update_all_labels()
 
 
