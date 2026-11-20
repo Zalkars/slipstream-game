@@ -125,11 +125,6 @@ var particles: Array = []
 var _fx_emission_t := 0.0
 var decor: Array = []
 var roadside_art: Node
-var road_scars: Array = []
-var skid_marks: Array = []
-var _has_prev_skid := false
-var _prev_skid_l := Vector2.ZERO
-var _prev_skid_r := Vector2.ZERO
 var _nitro_cooldown := 0.0
 
 # Brake temperature, slipstream, weather, day/night and tutorial rewind.
@@ -267,6 +262,14 @@ const QA_FIELD := false
 var px_per_unit := 1.0
 var rain_lens: Array = []
 
+# 0.8.0 render pipeline: every visual system lives under render_stack and only
+# reads this node's state. gfx_level is a GfxPresets level (LOW..ULTRA).
+var render_stack: RenderStack
+var lighting_fx: Lighting
+var contact_fx: ContactFx
+var gfx_level := GfxPresets.MEDIUM
+var gfx_target_fps := 60
+
 
 static func top_kmh(px_speed: float) -> int:
 	return int(round(px_speed * TOP_KMH_SCALE))
@@ -310,9 +313,9 @@ func _ready() -> void:
 	race_art.set_enabled(use_3d_cars)
 	_layout()
 	_gen_decor()
-	_gen_road_scars()
 	_gen_puddles()
 	_gen_rain()
+	_setup_render()
 	get_viewport().size_changed.connect(_layout)
 	start_demo()
 
@@ -354,6 +357,31 @@ func _gen_rain() -> void:
 			"width": width,
 			"layer": layer,
 		})
+
+
+func _setup_render() -> void:
+	# Cars, scenery and items in this node's own _draw are lit objects.
+	light_mask = RenderStack.MASK_OBJECTS
+	render_stack = RenderStack.new()
+	add_child(render_stack)
+	render_stack.setup(self)
+	lighting_fx = Lighting.new()
+	render_stack.add_child(lighting_fx)
+	lighting_fx.setup(self, render_stack)
+	render_stack.add_system(lighting_fx)
+	contact_fx = ContactFx.new()
+	contact_fx.setup(self, render_stack)
+	render_stack.add_system(contact_fx)
+	render_stack.finish_setup()
+	render_stack.apply_preset(gfx_level, gfx_target_fps)
+
+
+# Applied from the settings screen; takes effect on the next frame.
+func set_graphics(level: int, target_fps := 60) -> void:
+	gfx_level = clampi(level, GfxPresets.LOW, GfxPresets.ULTRA)
+	gfx_target_fps = target_fps
+	if render_stack != null:
+		render_stack.apply_preset(gfx_level, gfx_target_fps)
 
 
 # --- setup ------------------------------------------------------------------
@@ -480,64 +508,6 @@ func _gen_puddles() -> void:
 			"rot": rng.randf_range(-0.16, 0.16),
 			"phase": rng.randf_range(0.0, TAU),
 		})
-
-
-func _gen_road_scars() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 71305
-	road_scars.clear()
-	for i in range(6):
-		var kind := 0 if (i % 2 == 0) else 1
-		var r := rng.randf_range(16.0, 30.0)
-		var rot := rng.randf_range(0.0, TAU)
-		var stretch := rng.randf_range(0.8, 1.4)
-		var alpha := rng.randf_range(0.18, 0.28)
-		var geom: Dictionary = {}
-
-		if kind == 0:
-			var main_pts := PackedVector2Array([Vector2.ZERO])
-			var pos := Vector2.ZERO
-			var ang := rot
-			var segments := rng.randi_range(4, 6)
-			for s in range(segments):
-				ang += rng.randf_range(-0.45, 0.45)
-				pos += Vector2(cos(ang), sin(ang)) * (r * rng.randf_range(0.35, 0.50))
-				main_pts.append(pos)
-			var branches: Array = []
-			if rng.randf() < 0.65 and main_pts.size() >= 3:
-				var b_start: Vector2 = main_pts[1]
-				var b_ang := ang + rng.randf_range(0.6, 1.0)
-				var b_pts := PackedVector2Array([b_start])
-				var b_pos := b_start
-				for bs in range(2):
-					b_ang += rng.randf_range(-0.3, 0.3)
-					b_pos += Vector2(cos(b_ang), sin(b_ang)) * (r * 0.30)
-					b_pts.append(b_pos)
-				branches.append(b_pts)
-			geom["main"] = main_pts
-			geom["branches"] = branches
-		else:
-			var tar_pts := PackedVector2Array()
-			var t_pos := Vector2.ZERO
-			var t_ang := rot
-			tar_pts.append(t_pos)
-			for t_step in range(rng.randi_range(5, 7)):
-				t_ang += sin(float(t_step) * 1.6) * 0.5
-				t_pos += Vector2(cos(t_ang), sin(t_ang)) * (r * 0.38)
-				tar_pts.append(t_pos)
-			geom["tar"] = tar_pts
-
-		road_scars.append({
-			"kind": kind,
-			"x": rng.randf_range(0.12, 0.88),
-			"y": rng.randf() * ROAD_CYCLE,
-			"r": r,
-			"rot": rot,
-			"stretch": stretch,
-			"alpha": alpha,
-			"geom": geom,
-		})
-
 
 func _gen_decor() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -771,8 +741,6 @@ func start_run() -> void:
 	cars.clear()
 	items.clear()
 	particles.clear()
-	skid_marks.clear()
-	_has_prev_skid = false
 	spawn_t = 1.0
 	item_t = 1.2
 	pickup_coins = 0
@@ -832,8 +800,6 @@ func start_demo() -> void:
 	cars.clear()
 	items.clear()
 	particles.clear()
-	skid_marks.clear()
-	_has_prev_skid = false
 	_nitro_cooldown = 0.0
 	lane = 1
 	player_x = _lane_x(lane)
@@ -1039,6 +1005,13 @@ func _process(delta: float) -> void:
 			_tick_rewind(raw)
 	elif not paused:
 		_tick(raw * time_scale)
+	_sx = 0.0
+	_sy = 0.0
+	if shake > 0.2:
+		_sx = randf_range(-shake, shake)
+		_sy = randf_range(-shake, shake)
+	if render_stack != null:
+		render_stack.frame(delta)
 	queue_redraw()
 
 
@@ -1386,8 +1359,6 @@ func _finish_rewind() -> void:
 	slip = 0.0
 	_rewind_invuln = 1.60 if not tutorial_mode else 1.35
 	particles.clear()
-	skid_marks.clear()
-	_has_prev_skid = false
 	spawn_t = maxf(spawn_t, 0.8)
 	if closed_lane >= 0 and lane == closed_lane:
 		lane = 1 if closed_lane == 0 else LANES - 2
@@ -1650,43 +1621,6 @@ func _tick(dt: float) -> void:
 	scroll += travel
 	var dist_delta := travel / 12.0
 	distance += dist_delta
-
-	# Update existing skid marks with road travel
-	for i in range(skid_marks.size() - 1, -1, -1):
-		var sk: Dictionary = skid_marks[i]
-		sk.p1.y += travel
-		sk.p2.y += travel
-		sk.life -= dt
-		if sk.life <= 0.0 or (sk.p1.y > H + 80.0 and sk.p2.y > H + 80.0):
-			skid_marks.remove_at(i)
-
-	var is_skidding := braking and not overheated and running and not crashed and speed > 130.0
-	if is_skidding:
-		var wheel_y := player_y + car_h * 0.34
-		var curr_l := Vector2(player_x - car_w * 0.31, wheel_y)
-		var curr_r := Vector2(player_x + car_w * 0.31, wheel_y)
-		if _has_prev_skid:
-			var max_life := 3.2
-			skid_marks.append({
-				"p1": _prev_skid_l + Vector2(0.0, travel),
-				"p2": curr_l,
-				"life": max_life,
-				"max": max_life,
-			})
-			skid_marks.append({
-				"p1": _prev_skid_r + Vector2(0.0, travel),
-				"p2": curr_r,
-				"life": max_life,
-				"max": max_life,
-			})
-			if skid_marks.size() > 160:
-				skid_marks.remove_at(0)
-				skid_marks.remove_at(0)
-		_prev_skid_l = curr_l
-		_prev_skid_r = curr_r
-		_has_prev_skid = true
-	else:
-		_has_prev_skid = false
 
 	var target_x := _lane_x(lane)
 	var handle_k := handling if time_scale >= 0.9 else handling * (1.0 / maxf(0.12, time_scale))
@@ -2541,21 +2475,9 @@ func build_challenge_payload(player_name: String) -> Dictionary:
 # --- drawing ----------------------------------------------------------------
 
 func _draw() -> void:
-	var sx := 0.0
-	var sy := 0.0
-	if shake > 0.2:
-		sx = randf_range(-shake, shake)
-		sy = randf_range(-shake, shake)
-	_sx = sx
-	_sy = sy
 	px_per_unit = get_global_transform_with_canvas().get_scale().y
-	draw_set_transform(Vector2(sx, sy))
+	draw_set_transform(Vector2(_sx, _sy))
 
-	_draw_grass()
-	_draw_road()
-	_draw_shoulders()
-	_draw_markings()
-	_draw_skid_marks()
 	_draw_rails()
 	_draw_road_beams()
 	_draw_puddles()
@@ -2568,7 +2490,6 @@ func _draw() -> void:
 	_draw_air_beams()
 	_draw_items()
 	_draw_speed_streaks()
-	_draw_car_light_glows()
 	_draw_wet_reflections()
 	_draw_rain_splashes()
 	_draw_road_mist()
@@ -2659,129 +2580,6 @@ func get_clock_text() -> String:
 func weather_status_text() -> String:
 	return "%s · %s" % [get_weather_name(), get_clock_text()]
 
-
-func _draw_skid_marks() -> void:
-	if skid_marks.is_empty():
-		return
-	var base_col := Color(0.04, 0.05, 0.06)
-	var w := car_w * 0.16
-	for sk in skid_marks:
-		var a: float = clampf(float(sk.life) / float(sk.max), 0.0, 1.0) * 0.44
-		draw_line(sk.p1, sk.p2, Color(base_col.r, base_col.g, base_col.b, a), w)
-
-
-func _draw_grass() -> void:
-	var amb := get_sky_ambient()
-	draw_rect(Rect2(0.0, 0.0, W, H), Color(0.40, 0.50, 0.30) * amb)
-	if grass_tex:
-		var off := fposmod(scroll, 128.0)
-		draw_texture_rect(grass_tex, Rect2(0.0, off - 128.0, W, H + 128.0), true, Color(amb.r, amb.g, amb.b, 0.62))
-	var period := 380.0
-	var off2 := fposmod(scroll, period)
-	var count := int(H / period) + 3
-	for i in range(count):
-		var y := off2 + i * period - period
-		draw_circle(Vector2(W * 0.06, y + 40.0), 34.0, Color(0.26, 0.35, 0.19, 0.18) * amb)
-		draw_circle(Vector2(W * 0.94, y + 170.0), 42.0, Color(0.26, 0.35, 0.19, 0.16) * amb)
-
-
-func _draw_road() -> void:
-	var amb := get_sky_ambient()
-	if rain_amount > 0.01:
-		amb = amb.lerp(amb * Color(0.78, 0.78, 0.82), rain_amount * 0.42)
-
-	draw_rect(Rect2(road_x, 0.0, road_w, H), Color(0.355, 0.365, 0.385) * amb)
-	if asphalt_tex:
-		# Downward road texture scrolling
-		var tile := 256.0
-		var off := fposmod(scroll, tile)
-		draw_texture_rect(asphalt_tex, Rect2(road_x, off - tile, road_w, H + tile * 2.0), true, amb)
-
-	# Broad tyre-polished tracks in every lane.
-	for l in range(LANES):
-		var cx := _lane_x(l)
-		var sw := lane_w * 0.19
-		draw_rect(Rect2(cx - lane_w * 0.35 - sw * 0.5, 0.0, sw, H), Color(0.06, 0.06, 0.07, 0.060))
-		draw_rect(Rect2(cx + lane_w * 0.35 - sw * 0.5, 0.0, sw, H), Color(0.06, 0.06, 0.07, 0.060))
-		draw_rect(Rect2(cx - lane_w * 0.35 - sw * 1.15, 0.0, sw * 2.3, H), Color(0.07, 0.07, 0.08, 0.026))
-		draw_rect(Rect2(cx + lane_w * 0.35 - sw * 1.15, 0.0, sw * 2.3, H), Color(0.07, 0.07, 0.08, 0.026))
-		draw_rect(Rect2(cx - lane_w * 0.09, 0.0, lane_w * 0.18, H), Color(1, 1, 1, 0.012) * amb)
-
-	var ew := 34.0
-	_grad_h(Rect2(road_x, 0.0, ew, H), Color(0, 0, 0, 0.22), Color(0, 0, 0, 0.0))
-	_grad_h(Rect2(road_x + road_w - ew, 0.0, ew, H), Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.22))
-
-	for l in range(1, LANES):
-		var x := road_x + lane_w * l
-		draw_rect(Rect2(x - lane_w * 0.02, 0.0, lane_w * 0.04, H), Color(0.07, 0.07, 0.08, 0.055))
-
-	# Transverse tar seams repair the tiled texture and add motion cues.
-	var seam_period := 760.0
-	var seam_y := fposmod(scroll, seam_period) - seam_period
-	while seam_y < H + seam_period:
-		draw_rect(Rect2(road_x + 5.0, seam_y, road_w - 10.0, 2.0), Color(0.05, 0.05, 0.06, 0.11))
-		draw_rect(Rect2(road_x + 5.0, seam_y + 2.0, road_w - 10.0, 1.0), Color(0.55, 0.56, 0.55, 0.035) * amb)
-		seam_y += seam_period
-
-	# Seamless multi-period wrap: defects appear uniformly across entire screen
-	for scar in road_scars:
-		var base_y := fposmod(float(scar.y) + scroll, ROAD_CYCLE)
-		for k in [-1, 0, 1]:
-			var sy: float = base_y + float(k) * ROAD_CYCLE
-			if sy < -160.0 or sy > H + 160.0:
-				continue
-			var sx: float = road_x + road_w * float(scar.x)
-			_draw_road_scar(scar, Vector2(sx, sy), amb)
-
-	# Wet asphalt: darker base, cool sky sheen and long specular bands.
-	if wetness > 0.03:
-		draw_rect(Rect2(road_x, 0.0, road_w, H), Color(0.08, 0.10, 0.14, wetness * 0.15))
-		draw_rect(Rect2(road_x, 0.0, road_w, H), Color(0.62, 0.74, 0.90, wetness * 0.07))
-		for l in range(LANES):
-			var cx := _lane_x(l)
-			draw_rect(Rect2(cx - lane_w * 0.44, 0.0, lane_w * 0.10, H), Color(0.74, 0.84, 0.97, wetness * 0.028))
-			draw_rect(Rect2(cx + lane_w * 0.34, 0.0, lane_w * 0.08, H), Color(0.74, 0.84, 0.97, wetness * 0.020))
-
-
-func _ellipse_points(center: Vector2, rx: float, ry: float, rot: float, segments := 18) -> PackedVector2Array:
-	var pts := PackedVector2Array()
-	for i in range(segments):
-		var a := TAU * float(i) / float(segments)
-		var p := Vector2(cos(a) * rx, sin(a) * ry)
-		pts.append(center + p.rotated(rot))
-	return pts
-
-
-func _draw_road_scar(scar: Dictionary, p: Vector2, amb := Color.WHITE) -> void:
-	var kind := int(scar.kind)
-	var a := float(scar.alpha)
-	var geom: Dictionary = scar.get("geom", {})
-
-	if kind == 0:
-		var main_pts: PackedVector2Array = geom.get("main", PackedVector2Array())
-		if main_pts.size() >= 2:
-			var shifted_main := PackedVector2Array()
-			var lip_main := PackedVector2Array()
-			for pt in main_pts:
-				shifted_main.append(p + pt)
-				lip_main.append(p + pt + Vector2(1.0, 1.0))
-			draw_polyline(lip_main, Color(0.65, 0.66, 0.67, a * 0.22) * amb, 1.0, true)
-			draw_polyline(shifted_main, Color(0.08, 0.08, 0.09, a * 0.75), 1.2, true)
-		for branch in geom.get("branches", []):
-			if branch.size() >= 2:
-				var shifted_b := PackedVector2Array()
-				for pt in branch:
-					shifted_b.append(p + pt)
-				draw_polyline(shifted_b, Color(0.08, 0.08, 0.09, a * 0.60), 1.0, true)
-	else:
-		var tar_pts: PackedVector2Array = geom.get("tar", PackedVector2Array())
-		if tar_pts.size() >= 2:
-			var shifted_tar := PackedVector2Array()
-			for pt in tar_pts:
-				shifted_tar.append(p + pt)
-			draw_polyline(shifted_tar, Color(0.06, 0.06, 0.07, a * 0.70), 1.8, true)
-
-
 func _draw_puddles() -> void:
 	# Surface water first: the wet sheen belongs to the asphalt itself.
 	_draw_wet_sheen()
@@ -2855,55 +2653,6 @@ func _glow(center: Vector2, radius: float, col: Color, stretch := Vector2.ONE) -
 		return
 	var r := Vector2(radius * stretch.x, radius * stretch.y)
 	draw_texture_rect(glow_tex, Rect2(center - r, r * 2.0), false, col)
-
-
-func _draw_shoulders() -> void:
-	var sh := 27.0
-	var col := Color(0.62, 0.62, 0.58)
-	draw_rect(Rect2(road_x - sh, 0.0, sh, H), col)
-	draw_rect(Rect2(road_x + road_w, 0.0, sh, H), col)
-	draw_rect(Rect2(road_x - sh, 0.0, sh, H), Color(0.35, 0.36, 0.33, 0.10))
-	draw_rect(Rect2(road_x + road_w, 0.0, sh, H), Color(0.35, 0.36, 0.33, 0.10))
-	draw_rect(Rect2(road_x - sh - 2.0, 0.0, 2.0, H), Color(0.15, 0.16, 0.14, 0.55))
-	draw_rect(Rect2(road_x + road_w, 0.0, 2.0, H), Color(0.15, 0.16, 0.14, 0.55))
-	draw_rect(Rect2(road_x - sh, 0.0, 2.0, H), Color(0.16, 0.17, 0.16, 0.35))
-	draw_rect(Rect2(road_x + road_w + sh - 2.0, 0.0, 2.0, H), Color(0.16, 0.17, 0.16, 0.35))
-	var period := 170.0
-	var off := fposmod(scroll, period)
-	var y := off - period
-	while y < H + period:
-		draw_rect(Rect2(road_x - sh, y, sh, 1.5), Color(0.18, 0.18, 0.17, 0.35))
-		draw_rect(Rect2(road_x + road_w, y, sh, 1.5), Color(0.18, 0.18, 0.17, 0.35))
-		y += period
-
-
-func _draw_markings() -> void:
-	var paint := Color(0.95, 0.94, 0.89, 0.93)
-	draw_rect(Rect2(road_x + 12.0, 0.0, 7.0, H), paint)
-	draw_rect(Rect2(road_x + road_w - 19.0, 0.0, 7.0, H), paint)
-	# Worn edge along the solid lines.
-	draw_rect(Rect2(road_x + 17.5, 0.0, 1.5, H), Color(0.36, 0.38, 0.39, 0.22))
-	draw_rect(Rect2(road_x + road_w - 14.0, 0.0, 1.5, H), Color(0.36, 0.38, 0.39, 0.22))
-	var period := 250.0
-	var dash := 96.0
-	var off := fposmod(scroll, period)
-	for l in range(1, LANES):
-		var x := road_x + lane_w * l - 3.5
-		var y := off - period
-		while y < H + period:
-			draw_rect(Rect2(x + 1.0, y + 2.0, 7.0, dash), Color(0.05, 0.05, 0.06, 0.12))
-			draw_rect(Rect2(x, y, 7.0, dash), paint)
-			draw_rect(Rect2(x + 5.0, y + 4.0, 2.0, dash - 8.0), Color(0.80, 0.80, 0.76, 0.28))
-			y += period
-	# Reflective studs on the edge lines.
-	var stud_period := 190.0
-	var stud_y := fposmod(scroll, stud_period) - stud_period
-	while stud_y < H + stud_period:
-		for side in [15.5, road_w - 15.5]:
-			draw_circle(Vector2(road_x + side, stud_y), 2.4, Color(0.82, 0.84, 0.80, 0.55))
-			draw_circle(Vector2(road_x + side, stud_y), 1.3, Color(1.0, 0.96, 0.78, 0.85))
-		stud_y += stud_period
-
 
 func _draw_rails() -> void:
 	var sh := 27.0
@@ -3337,47 +3086,6 @@ func _draw_air_beams() -> void:
 	draw_set_transform(Vector2(_sx, _sy))
 	for b in brows:
 		draw_texture_rect(glow_tex, b.rect, false, Color(1.0, 0.91, 0.74, b.a))
-
-
-func _draw_car_light_glows() -> void:
-	var light := get_light_factor()
-	if light <= 0.035:
-		return
-
-	for c in cars:
-		var cy := float(c.y)
-		var cx := float(c.x)
-		var cw := float(c.w)
-		var ch := float(c.h)
-		if cy < -200.0 or cy > H + 200.0:
-			continue
-		var braking := bool(c.get("braking", false))
-		var head_a := 0.30 * light
-		for side in [-1, 1]:
-			var hp := Vector2(cx + float(side) * cw * 0.28, cy - ch * 0.452)
-			_glow(hp, 54.0, Color(1.0, 0.90, 0.64, head_a * 0.30))
-			_glow(hp, 20.0, Color(1.0, 0.95, 0.80, head_a))
-			_glow(hp, 7.0, Color(1.0, 0.99, 0.94, 0.80 * light))
-
-		var tail_a := (0.62 if braking else 0.30) * light
-		for side in [-1, 1]:
-			var tp := Vector2(cx + float(side) * cw * 0.285, cy + ch * 0.462)
-			_glow(tp, 46.0, Color(1.0, 0.16, 0.10, tail_a * 0.32))
-			_glow(tp, 18.0, Color(1.0, 0.22, 0.14, tail_a))
-			_glow(tp, 7.0, Color(1.0, 0.46, 0.32, tail_a * 1.10))
-		if braking:
-			_glow(Vector2(cx, cy + ch * 0.475), 64.0, Color(1.0, 0.10, 0.06, 0.22 * light), Vector2(2.2, 0.8))
-
-	if running and not demo:
-		for side in [-1, 1]:
-			var hp := Vector2(player_x + float(side) * car_w * 0.28, player_y - car_h * 0.452)
-			_glow(hp, 62.0, Color(1.0, 0.90, 0.62, 0.22 * light))
-			_glow(hp, 23.0, Color(1.0, 0.96, 0.82, 0.38 * light))
-			_glow(hp, 8.0, Color(1.0, 1.0, 0.96, 0.82 * light))
-			var tp := Vector2(player_x + float(side) * car_w * 0.285, player_y + car_h * 0.462)
-			_glow(tp, 24.0, Color(1.0, 0.16, 0.10, 0.35 * light))
-			_glow(tp, 8.0, Color(1.0, 0.34, 0.22, 0.60 * light))
-
 
 # Reflections on a wet road. A wet surface is a poor mirror but a very long
 # one: every bright lamp smears into a vertical streak towards the viewer. The
