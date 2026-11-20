@@ -6,6 +6,7 @@ From the repository root with Godot 4 on PATH:
 godot --headless --path godot --editor --import
 godot --headless --path godot res://tests/RaceRegression.tscn
 godot --headless --path godot res://tests/RewardsRegression.tscn
+godot --headless --path godot res://tests/AudioRegression.tscn
 ```
 
 `RaceRegression` covers touch ownership and cancellation, pause/resume, focus
@@ -18,6 +19,12 @@ menu version matching project settings. Brake, overheat, slipstream and rain
 particles are tested separately with a fixed random seed. The navigation fixture
 intercepts persistence so a failed test cannot mark the user's tutorial complete.
 Neither suite writes the player's save file.
+
+`AudioRegression` checks the bus layout and routing (every game bus follows
+the SFX volume/mute), that all baked OGG assets load with loops flagged, engine
+data for all nine cars, the rpm/gear model, a driven race through rain, storm,
+nitro, braking and a crash with traffic voices assigned, and the volume
+settings. It cannot judge how anything sounds.
 
 For a graphical frame-time sample on the current computer:
 

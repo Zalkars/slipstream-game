@@ -198,9 +198,14 @@ func check_menu_controls() -> void:
 
 
 func check_pass_audio_routing() -> void:
-	for bus_name in ["PassL", "PassR"]:
+	# Traffic pass-bys (World), the own car (Engine), weather (Ambient) and UI
+	# must all follow the player's SFX volume and mute.
+	for bus_name in ["Engine", "World", "Ambient", "UI"]:
 		var bus := AudioServer.get_bus_index(bus_name)
-		check(AudioServer.get_bus_send(bus) == &"SFX", "Side pass audio must use the SFX volume and mute: " + bus_name)
+		check(bus >= 0, "Audio bus must exist: " + bus_name)
+		check(AudioServer.get_bus_send(bus) == &"SFX", "Game audio must use the SFX volume and mute: " + bus_name)
+	check(AudioServer.get_bus_send(AudioServer.get_bus_index("SFX")) == &"Master", "SFX must feed Master")
+	check(AudioServer.get_bus_send(AudioServer.get_bus_index("Music")) == &"Master", "Music must feed Master")
 
 
 func swipe_touch(game: Game, id: int, down: bool, pos: Vector2, canceled := false) -> void:

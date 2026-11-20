@@ -314,6 +314,9 @@ func _ready() -> void:
 	_gen_puddles()
 	_gen_rain()
 	get_viewport().size_changed.connect(_layout)
+	# Audio reads speed, traffic, weather and road state from here (0.8.0).
+	if Sfx.has_method("bind_game"):
+		Sfx.bind_game(self)
 	start_demo()
 
 
