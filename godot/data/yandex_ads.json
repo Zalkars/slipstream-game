@@ -1,0 +1,11 @@
+{
+  "application_id": "20265899",
+  "ad_units": {
+    "revive_rewarded": "R-M-20265899-2",
+    "menu_banner": "R-M-20265899-3"
+  },
+  "demo_units": {
+    "revive_rewarded": "demo-rewarded-yandex",
+    "menu_banner": "demo-banner-yandex"
+  }
+}

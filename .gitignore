@@ -29,3 +29,7 @@ Desktop.ini
 tools/templates/
 tools/godot/
 .work/
+
+# Gradle output of the SlipstreamAds plugin (the AAR itself is committed)
+tools/android-ads/build/
+tools/android-ads/.gradle/

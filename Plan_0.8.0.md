@@ -26,8 +26,8 @@
 **Задача:** зафиксировать 0.7.0 и вернуть рекламу, которая была в соседнем проекте.
 
 - [ ] Закоммитить незакоммиченную работу 0.7.0 отдельным релиз-коммитом. Убрать из релиза или пометить временные `qa_*`-скрипты и `car_model_prof.gd`.
-- [ ] Выровнять версию движка: `config/features` под фактическую версию 4.7.2. Проверить, что 0.7.0 собирается и тесты зелёные.
-- [ ] **Реклама Яндекса (Yandex Mobile Ads).** В Slipstream её никогда не было в git. Рабочая интеграция есть в проекте Last Hook (`game/addons/last_hook_ads`, `scripts/ads_service.gd`, `data/yandex_ads.json`), её и переносим:
+- [x] Выровнять версию движка: `config/features` под фактическую версию 4.7.2. Проверить, что 0.7.0 собирается и тесты зелёные.
+- [x] **Реклама Яндекса (Yandex Mobile Ads).** В Slipstream её никогда не было в git. Рабочая интеграция есть в проекте Last Hook (`game/addons/last_hook_ads`, `scripts/ads_service.gd`, `data/yandex_ads.json`), её и переносим:
   - Плагин → `addons/slipstream_ads`, синглтон `SlipstreamAds`, `AdsService` как autoload.
   - Включить `gradle_build/use_gradle_build=true` и установить Android build template (обновить `build_apk.bat`).
   - Блоки: **баннер** `R-M-20265899-3`, **реклама с вознаграждением** `R-M-20265899-2`. В debug-сборках — тестовые блоки Яндекса.

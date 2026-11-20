@@ -52,7 +52,7 @@ func check_crash_frame_stops_scoring(game: Game) -> void:
 	game.items = [{"lane": game.lane, "x": game.player_x, "y": game.player_y - 30.0, "kind": 0, "phase": 0.0}]
 	var sent := [-1, -1, -1, -1]
 	var cb := func(score: int, dist: int, near: int, coins: int):
-		sent = [score, dist, near, coins]
+		sent.assign([score, dist, near, coins])
 	game.run_ended.connect(cb)
 	game._tick(1.0 / 60.0)
 	game.run_ended.disconnect(cb)

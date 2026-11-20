@@ -151,6 +151,17 @@ var ch_duel_preview: Label
 var ch_accept_btn: Button
 var ch_copy_last_btn: Button
 
+# Yandex Ads: top banner (menu, garage, finish) and the rewarded revive.
+const REVIVE_SECONDS := 5.0
+var revive_panel: Control
+var revive_count_label: Label
+var revive_btn: Button
+var revive_open := false
+var _revive_watching := false
+var _revive_t := 0.0
+var _revive_result: Array = []
+var _banner_shown := false
+
 
 func _ready() -> void:
 	_load()
@@ -194,6 +205,12 @@ func _ready() -> void:
 	_build_confirm()
 	_build_exit_panel()
 	_build_tutorial()
+	_build_revive()
+
+	AdsService.banner_layout_changed.connect(_apply_banner_layout)
+	AdsService.availability_changed.connect(_on_ads_availability)
+	AdsService.rewarded_finished.connect(_on_revive_ad_finished)
+	get_viewport().size_changed.connect(_apply_banner_layout)
 
 	show_menu()
 	Sfx.set_sfx_volume(sfx_volume)
@@ -217,6 +234,14 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	_sync_ads_banner()
+	if revive_open and not _revive_watching and not AdsService.fullscreen:
+		_revive_t = maxf(0.0, _revive_t - delta)
+		if revive_count_label != null:
+			revive_count_label.text = str(int(ceil(_revive_t)))
+		if _revive_t <= 0.0:
+			_decline_revive()
+
 	if _event_banner_t > 0.0 and in_game and not paused:
 		_event_banner_t = maxf(0.0, _event_banner_t - delta)
 		if event_banner != null:
@@ -394,6 +419,7 @@ func _hide_screens() -> void:
 
 func show_menu() -> void:
 	_reset_driving_input()
+	_close_revive()
 	tutorial_active = false
 	if tutorial_panel != null:
 		tutorial_panel.visible = false
@@ -419,6 +445,7 @@ func show_menu() -> void:
 
 func show_garage() -> void:
 	_reset_driving_input()
+	_close_revive()
 	tutorial_active = false
 	if tutorial_panel != null:
 		tutorial_panel.visible = false
@@ -488,6 +515,7 @@ func _start_solo_game() -> void:
 
 func start_game(force_tutorial := false) -> void:
 	_run_id += 1
+	_close_revive()
 	Sfx.click()
 	_hide_screens()
 	pause_panel.visible = false
@@ -730,6 +758,9 @@ func _on_rewind_finished() -> void:
 	Sfx.rewind_stop()
 	if tutorial_panel != null and tutorial_active:
 		_refresh_tutorial_prompt()
+	elif tutorial_panel != null:
+		# Chrono-Shield / ad revive in a normal run: drop the rewind notice.
+		tutorial_panel.visible = false
 
 
 func _refresh_tutorial_prompt() -> void:
@@ -875,6 +906,14 @@ func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
 		Sfx.rewind_stop()
 	Sfx.crash()
 	Sfx.stop_engine()
+	if not was_tutorial and _revive_offerable():
+		_offer_revive([score, dist, near, run_coins])
+		return
+	_settle_run(score, dist, near, run_coins, was_tutorial)
+
+
+# Scores, pays and saves a finished run, then shows the finish screen.
+func _settle_run(score: int, dist: int, near: int, run_coins: int, was_tutorial := false, delay := 1.05) -> void:
 	var finished_run := _run_id
 	var is_record := score > best
 	if is_record:
@@ -937,7 +976,8 @@ func _on_crashed(score: int, dist: int, near: int, run_coins: int) -> void:
 	var earned := run_coins + (25 if is_record else 0) + mode_bonus
 	coins += earned
 	_save()
-	await get_tree().create_timer(1.05).timeout
+	if delay > 0.0:
+		await get_tree().create_timer(delay).timeout
 	if not in_game or finished_run != _run_id or not game.crashed:
 		return
 	in_game = false
@@ -979,6 +1019,10 @@ func _show_result(score: int, dist: int, near: int, earned: int, is_record: bool
 
 
 func _on_back() -> void:
+	if revive_open:
+		if not _revive_watching:
+			_decline_revive()
+		return
 	if exit_panel != null and exit_panel.visible:
 		_hide_exit_panel()
 		return
@@ -1017,7 +1061,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_on_back()
 	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		if in_game and not paused and not result_open and not _shots:
+		if in_game and not paused and not result_open and not revive_open and not _shots:
 			_toggle_pause()
 
 
@@ -1046,6 +1090,131 @@ func _input(event: InputEvent) -> void:
 	else:
 		if event.keycode in [KEY_DOWN, KEY_S] and in_game:
 			game.set_braking(false)
+
+
+# --- ads: top banner and rewarded revive -------------------------------------
+
+# The banner shows on the main menu, garage and finish screen only (never
+# during a race: it would cover the road). Change-detected every frame.
+func _sync_ads_banner() -> void:
+	var want := not in_game and not revive_open and (
+		(menu != null and menu.visible) or (garage != null and garage.visible)
+		or (result_panel != null and result_panel.visible))
+	if want == _banner_shown:
+		return
+	_banner_shown = want
+	AdsService.set_banner_visible(want)
+	_apply_banner_layout()
+
+
+# Screens that share the banner start below its real, measured height.
+func _apply_banner_layout() -> void:
+	var top := AdsService.banner_height_in(get_viewport()) if _banner_shown else 0.0
+	for c in [menu, garage, result_panel]:
+		if c != null:
+			c.offset_top = top
+
+
+func _revive_offerable() -> bool:
+	if _shots or not active_challenge.is_empty() or game == null:
+		return false
+	return game.can_revive() and AdsService.can_show_rewarded()
+
+
+func _offer_revive(result: Array) -> void:
+	_revive_result = result
+	revive_open = true
+	_revive_watching = false
+	_revive_t = REVIVE_SECONDS
+	revive_count_label.text = str(int(ceil(_revive_t)))
+	revive_btn.disabled = false
+	pause_panel.visible = false
+	revive_panel.visible = true
+
+
+func _accept_revive() -> void:
+	if not revive_open or _revive_watching:
+		return
+	# Set first: showing the ad emits availability_changed synchronously.
+	_revive_watching = true
+	revive_btn.disabled = true
+	if not AdsService.request_rewarded():
+		_revive_watching = false
+		_decline_revive()
+
+
+func _on_revive_ad_finished(earned: bool) -> void:
+	if not revive_open or not _revive_watching:
+		return
+	if earned and game.revive():
+		_close_revive()
+		Sfx.play_engine()
+		return
+	_decline_revive()
+
+
+# An offer is withdrawn as soon as the ad stops being available.
+func _on_ads_availability() -> void:
+	if revive_open and not _revive_watching and not AdsService.can_show_rewarded():
+		_decline_revive()
+
+
+func _decline_revive() -> void:
+	if not revive_open:
+		return
+	var r := _revive_result
+	_close_revive()
+	if r.size() == 4:
+		_settle_run(int(r[0]), int(r[1]), int(r[2]), int(r[3]), false, 0.0)
+
+
+func _close_revive() -> void:
+	revive_open = false
+	_revive_watching = false
+	_revive_result = []
+	if revive_panel != null:
+		revive_panel.visible = false
+
+
+func _build_revive() -> void:
+	revive_panel = Control.new()
+	_full(revive_panel)
+	revive_panel.visible = false
+	revive_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui.add_child(revive_panel)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.01, 0.015, 0.02, 0.66)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(dim)
+	revive_panel.add_child(dim)
+
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(center)
+	revive_panel.add_child(center)
+
+	var card := _card(580)
+	center.add_child(card)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 14)
+	card.add_child(vb)
+
+	vb.add_child(_label("АВАРИЯ!", 26, accent, font_bold, HORIZONTAL_ALIGNMENT_CENTER))
+	var sub := _label("Отмотать пару секунд назад и ехать дальше?", 24, dim_col, font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(sub)
+	revive_count_label = _label("5", 96, amber, font_num, HORIZONTAL_ALIGNMENT_CENTER)
+	vb.add_child(revive_count_label)
+
+	revive_btn = _button("ПРОДОЛЖИТЬ ЗА РЕКЛАМУ", true)
+	revive_btn.add_theme_font_size_override("font_size", 30)
+	revive_btn.pressed.connect(_accept_revive)
+	vb.add_child(revive_btn)
+
+	var skip := _text_button("НЕТ, ЗАВЕРШИТЬ ЗАЕЗД")
+	skip.pressed.connect(_decline_revive)
+	vb.add_child(skip)
 
 
 # --- widgets ----------------------------------------------------------------

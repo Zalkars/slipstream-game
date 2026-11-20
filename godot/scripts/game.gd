@@ -201,6 +201,9 @@ var slingshot_grace := 0.0
 var _slingshot_notified := false
 var _shield_post_nitro := -1.0
 var _shield_active := false
+# Rewarded-ad revive: once per run, only after a fatal collision.
+var _revive_used := false
+var _revive_eligible := false
 
 var _traffic_lc_t := 2.4
 var road_event_type := EVENT_NONE
@@ -747,6 +750,8 @@ func start_run() -> void:
 	_slingshot_notified = false
 	_shield_post_nitro = -1.0
 	_shield_active = false
+	_revive_used = false
+	_revive_eligible = false
 	rear_hazards.clear()
 	rewinding = false
 	rewind_frames.clear()
@@ -2103,6 +2108,7 @@ func _crash(allow_shield := true) -> void:
 		_begin_rewind()
 		return
 	_record_ghost_sample(true)
+	_revive_eligible = allow_shield
 	crashed = true
 	running = false
 	boosting = false
@@ -2187,6 +2193,26 @@ func _emit_driving_particles() -> void:
 				"col": Color(0.82, 0.88, 0.94, 0.25 * rain_amount),
 				"size": randf_range(2.5, 6.0),
 			})
+
+
+# A revive (rewarded ad) is possible after a fatal collision in a solo run:
+# not in the tutorial, demo, duels or the Daily Challenge, and once per run.
+func can_revive() -> bool:
+	if not crashed or running or rewinding or demo or tutorial_mode:
+		return false
+	return _revive_eligible and not _revive_used and challenge_config.is_empty() and not rewind_frames.is_empty()
+
+
+# Same rewind and invulnerability as the Chrono-Shield, from the crash state.
+func revive() -> bool:
+	if not can_revive():
+		return false
+	_revive_used = true
+	_revive_eligible = false
+	rewinding = true
+	_rewind_step_t = 0.0
+	rewind_started.emit()
+	return true
 
 
 func finish_run() -> void:
