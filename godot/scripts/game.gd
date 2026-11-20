@@ -250,6 +250,7 @@ var render_stack: RenderStack
 var lighting_fx: Lighting
 var contact_fx: ContactFx
 var weather_fx: WeatherFx
+var fog_fx: FogFx
 var gfx_level := GfxPresets.MEDIUM
 var gfx_target_fps := 60
 
@@ -306,6 +307,9 @@ func _setup_render() -> void:
 	render_stack.add_child(lighting_fx)
 	lighting_fx.setup(self, render_stack)
 	render_stack.add_system(lighting_fx)
+	fog_fx = FogFx.new()
+	fog_fx.setup(self, render_stack)
+	render_stack.add_system(fog_fx)
 	weather_fx = WeatherFx.new()
 	render_stack.add_child(weather_fx)
 	weather_fx.setup(self, render_stack)
@@ -2372,7 +2376,6 @@ func _draw() -> void:
 	_draw_items()
 	_draw_speed_streaks()
 	_draw_road_event_over()
-	_draw_fog()
 	_draw_rear_hazards()
 
 	draw_set_transform(Vector2.ZERO)
@@ -2656,8 +2659,9 @@ func _draw_haze() -> void:
 	var night := get_night_factor()
 	var amb := get_sky_ambient()
 	var light := get_light_factor()
-	var top := Color(0.78, 0.80, 0.80, 0.12 + fog_amount * 0.20)
-	top = top.lerp(Color(0.10, 0.13, 0.21, 0.22 + fog_amount * 0.14), night)
+	# Fog itself is render/fog_fx.gd; this is only the distance haze.
+	var top := Color(0.78, 0.80, 0.80, 0.12)
+	top = top.lerp(Color(0.10, 0.13, 0.21, 0.22), night)
 	_grad_v(Rect2(0.0, 0.0, W, 230.0), top, Color(top.r, top.g, top.b, 0.0))
 	_grad_v(Rect2(0.0, H - 170.0, W, 170.0), Color(0.10, 0.11, 0.12, 0.0), Color(0.10, 0.11, 0.12, 0.10 + night * 0.10))
 
@@ -2684,24 +2688,6 @@ func _grad_v(rect: Rect2, top: Color, bottom: Color) -> void:
 		PackedVector2Array([rect.position, Vector2(rect.end.x, rect.position.y), rect.end, Vector2(rect.position.x, rect.end.y)]),
 		PackedColorArray([top, top, bottom, bottom])
 	)
-
-func _draw_fog() -> void:
-	if fog_amount <= 0.02:
-		return
-	var night := get_night_factor()
-	var pale := Color(0.70, 0.75, 0.80).lerp(Color(0.19, 0.23, 0.30), night * 0.70)
-	var f_a := fog_amount
-	_grad_v(Rect2(0.0, 0.0, W, 780.0), Color(pale.r, pale.g, pale.b, f_a * 0.78), Color(pale.r, pale.g, pale.b, 0.0))
-	_grad_v(Rect2(0.0, H - 560.0, W, 560.0), Color(pale.r, pale.g, pale.b, 0.0), Color(pale.r, pale.g, pale.b, f_a * 0.46))
-	draw_rect(Rect2(0.0, 0.0, W, H), Color(pale.r, pale.g, pale.b, f_a * 0.16))
-	for i in range(9):
-		var x := fposmod(float(i) * 239.0 + t * (4.0 + float(i) * 1.7) + scroll * 0.045, W + 820.0) - 410.0
-		var y := fposmod(scroll * (0.16 + float(i) * 0.055) + float(i) * 277.0 + t * 3.0, H + 680.0) - 340.0
-		var rx := 270.0 + float(i) * 42.0
-		var ry := 132.0 + float(i) * 23.0
-		var a := f_a * (0.125 + 0.042 * sin(t * 0.55 + float(i) * 1.73))
-		draw_texture_rect(glow_tex, Rect2(x - rx, y - ry, rx * 2.0, ry * 2.0), false, Color(pale.r, pale.g, pale.b, a))
-
 
 func _draw_rear_hazards() -> void:
 	if not running or crashed:
