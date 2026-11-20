@@ -5,7 +5,7 @@ title SLIPSTREAM - Android release build
 
 set "ROOT_DIR=%~dp0"
 set "PROJECT_DIR=%ROOT_DIR%godot"
-set "OUTPUT_APK=%ROOT_DIR%Slipstream-0.6.0.apk"
+set "OUTPUT_APK=%ROOT_DIR%Slipstream-0.7.0.apk"
 set "GODOT_EXE="
 
 echo ===================================================
