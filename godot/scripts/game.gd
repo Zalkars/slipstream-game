@@ -35,6 +35,18 @@ const EVENT_RADAR := 1
 const EVENT_ROADWORKS := 2
 const EVENT_BLACKOUT := 3
 const BRAKE_MULT := 0.42
+# 0.8.0 weather braking physics. Version 1 = 0.7.0 behaviour (dry grip
+# everywhere); SLIP1 challenge codes replay with it, SLIP2 and new runs use 2.
+const PHYSICS_VERSION := 2
+const MU_DRY := 1.0
+const MU_WET := 0.70
+const MU_PUDDLE := 0.50
+const MU_AQUAPLANE := 0.35
+# How much of the grip loss reaches the brakes and the steering: the goal is
+# a sense of weight, not a harder game.
+const BRAKE_GRIP_WEIGHT := 0.75
+const STEER_GRIP_WEIGHT := 0.40
+const AQUAPLANE_TIME := 0.45
 const CRUISE_KMH := 100.0
 const TOP_KMH_SCALE := 0.3
 const BOOST_KMH_SCALE := 1.2
@@ -129,6 +141,10 @@ var _nitro_cooldown := 0.0
 
 # Brake temperature, slipstream, weather, day/night and tutorial rewind.
 var brake_heat := 0.0
+var physics_version := PHYSICS_VERSION
+var grip_mu := 1.0          # tyre grip under the player this tick
+var puddle_depth := 0.0     # 0..1 water depth under the player
+var aquaplane_t := 0.0      # seconds of aquaplaning left
 var overheated := false
 var slip := 0.0
 var time_of_day := 0.15
@@ -656,6 +672,10 @@ func start_run() -> void:
 	brake_heat = 0.0
 	overheated = false
 	slip = 0.0
+	physics_version = clampi(int(challenge_config.get("physics", PHYSICS_VERSION)), 1, PHYSICS_VERSION)
+	grip_mu = 1.0
+	puddle_depth = 0.0
+	aquaplane_t = 0.0
 	slingshot_charge = 0.0
 	slingshot_t = 0.0
 	slingshot_grace = 0.0
@@ -979,6 +999,8 @@ func _update_brake_heat(dt: float) -> void:
 			Sfx.brake_overheat()
 	else:
 		var cool := (BRAKE_COOL_RATE + (0.12 if speed < 260.0 else 0.0)) * brake_cool_mult
+		if physics_version >= 2:
+			cool *= 1.0 + wetness * 0.35  # spray cools the discs
 		brake_heat = maxf(0.0, brake_heat - dt * cool)
 		if overheated and brake_heat <= BRAKE_RESTART_HEAT:
 			overheated = false
@@ -1190,6 +1212,7 @@ func _snapshot_state() -> Dictionary:
 		"brake_heat": brake_heat,
 		"overheated": overheated,
 		"slip": slip,
+		"aquaplane_t": aquaplane_t,
 	}
 
 
@@ -1232,6 +1255,7 @@ func _apply_snapshot(s: Dictionary) -> void:
 	brake_heat = float(s.brake_heat)
 	overheated = bool(s.overheated)
 	slip = float(s.slip)
+	aquaplane_t = float(s.get("aquaplane_t", 0.0))
 
 
 func _begin_rewind() -> void:
@@ -1503,7 +1527,14 @@ func _tick(dt: float) -> void:
 		k = 5.5
 	elif boosting or slingshot_t > 0.0:
 		k = 5.2
-	speed = lerpf(speed, want, minf(1.0, dt * k))
+	if physics_version >= 2:
+		_update_grip(dt)
+		if braking and not overheated:
+			k *= lerpf(1.0, grip_mu, BRAKE_GRIP_WEIGHT)
+		# Exact exponential approach: the same speed curve at any frame rate.
+		speed = lerpf(speed, want, 1.0 - exp(-dt * k))
+	else:
+		speed = lerpf(speed, want, minf(1.0, dt * k))
 
 	var cur_kmh := gauge_kmh(speed, base_speed, top_speed)
 	hyperdrive_active = (car_perk == "hyperdrive") and (cur_kmh >= 310) and not braking and not crashed and not tutorial_mode
@@ -1515,8 +1546,19 @@ func _tick(dt: float) -> void:
 
 	var target_x := _lane_x(lane)
 	var handle_k := handling if time_scale >= 0.9 else handling * (1.0 / maxf(0.12, time_scale))
-	player_x = lerpf(player_x, target_x, minf(1.0, dt * handle_k))
-	player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * 0.0022, -0.10, 0.10), minf(1.0, dt * 9.0 * (2.5 if time_scale < 0.5 else 1.0)))
+	if physics_version >= 2:
+		# Lane changes on a wet road are a touch slower, and the tail steps out
+		# (a larger body yaw); aquaplaning briefly takes most of the steering.
+		handle_k *= lerpf(1.0, grip_mu, STEER_GRIP_WEIGHT)
+		if aquaplane_t > 0.0:
+			handle_k *= 0.5
+		player_x = lerpf(player_x, target_x, 1.0 - exp(-dt * handle_k))
+		var yaw := 0.0022 * (1.0 + (1.0 - grip_mu) * 1.6)
+		var yaw_max := 0.10 + (1.0 - grip_mu) * 0.08
+		player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * yaw, -yaw_max, yaw_max), 1.0 - exp(-dt * 9.0 * (2.5 if time_scale < 0.5 else 1.0)))
+	else:
+		player_x = lerpf(player_x, target_x, minf(1.0, dt * handle_k))
+		player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * 0.0022, -0.10, 0.10), minf(1.0, dt * 9.0 * (2.5 if time_scale < 0.5 else 1.0)))
 
 	if combo_t > 0.0:
 		combo_t -= dt
@@ -1567,6 +1609,49 @@ func _tick(dt: float) -> void:
 	hud_changed.emit(int(score), gauge_kmh(speed, base_speed, top_speed), nitro, combo, _coins_total(), boosting)
 	status_changed.emit(slip, brake_heat, overheated)
 	_emit_challenge_hud()
+
+
+# --- tyre grip (physics version 2) ---------------------------------------------
+
+# Grip coefficient for a surface state. Pure function: depends only on the
+# weather state (driven by run_rng) and on where the car is on the road.
+static func surface_mu(wet: float, depth: float, aquaplaning: bool) -> float:
+	var mu := lerpf(MU_DRY, MU_WET, clampf(wet, 0.0, 1.0))
+	if depth > 0.0:
+		mu = minf(mu, lerpf(MU_WET, MU_PUDDLE, clampf(depth, 0.0, 1.0)))
+	if aquaplaning:
+		mu = minf(mu, MU_AQUAPLANE)
+	return mu
+
+
+# Water depth (0..1) at a screen point: puddles are fixed on the road, so the
+# answer only depends on the scroll, the position and how much it has rained.
+func puddle_depth_at(x: float, y: float) -> float:
+	var fill := clampf((wetness - 0.25) / 0.5, 0.0, 1.0)
+	if fill <= 0.0:
+		return 0.0
+	var best := 0.0
+	for p in puddles:
+		var base_y := fposmod(float(p.y) + scroll, ROAD_CYCLE)
+		for k in [-1.0, 0.0, 1.0]:
+			var dy: float = (base_y + k * ROAD_CYCLE - y) / maxf(1.0, float(p.ry) * 0.85)
+			if absf(dy) >= 1.0:
+				continue
+			var dx := (road_x + road_w * float(p.x) - x) / maxf(1.0, float(p.rx) * 0.9 + car_w * 0.25)
+			var q := dx * dx + dy * dy
+			if q < 1.0:
+				best = maxf(best, (1.0 - q) * fill)
+	return best
+
+
+func _update_grip(dt: float) -> void:
+	puddle_depth = puddle_depth_at(player_x, player_y)
+	if aquaplane_t > 0.0:
+		aquaplane_t = maxf(0.0, aquaplane_t - dt)
+	# Deep water at speed lifts the tyres for a moment.
+	if puddle_depth > 0.45 and speed > top_speed * 0.8 and aquaplane_t <= 0.0:
+		aquaplane_t = AQUAPLANE_TIME
+	grip_mu = surface_mu(wetness, puddle_depth, aquaplane_t > 0.0)
 
 
 func _rotate_free_lane() -> void:
@@ -1689,6 +1774,8 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 				shake = maxf(shake, 16.0)
 				flash = maxf(flash, 0.25)
 				Sfx.ram_hit()
+				if contact_fx != null:
+					contact_fx.spark_burst(Vector2((player_x + float(c.x)) * 0.5, (py + float(c.y)) * 0.5), Vector2(side_dir, -0.4), 1.1)
 				for k in range(22):
 					particles.append({
 						"p": Vector2((player_x + float(c.x)) * 0.5, (py + float(c.y)) * 0.5),
@@ -1704,6 +1791,8 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 				# Bumper bump: arcade knock from trailing car without instant death
 				Sfx.bump()
 				shake = maxf(shake, 7.5)
+				if contact_fx != null:
+					contact_fx.spark_burst(Vector2(player_x, py + car_h * 0.46), Vector2(0.0, 1.0), 0.45)
 				speed = maxf(speed, player_speed + 75.0)
 				c.y = py + (ph + ch) * 0.5 + 4.0
 				c["braking"] = true
@@ -2213,6 +2302,8 @@ func _update_road_events(dt: float, travel: float) -> void:
 					shake = maxf(shake, 8.5)
 					speed *= 0.88
 					Sfx.bump()
+					if contact_fx != null:
+						contact_fx.spark_burst(Vector2(cone_x, player_y - car_h * 0.35), Vector2(0.0, 1.0), 0.35)
 					for k in range(10):
 						particles.append({
 							"p": Vector2(cone_x, player_y - car_h * 0.35),
@@ -2350,6 +2441,7 @@ func _emit_challenge_hud() -> void:
 func build_challenge_payload(player_name: String) -> Dictionary:
 	return {
 		"seed": active_run_seed,
+		"physics": physics_version,
 		"car_index": car_index,
 		"score": int(score),
 		"distance": int(distance),

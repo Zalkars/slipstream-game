@@ -6,8 +6,13 @@ extends RefCounted
 
 const MAGIC_0 := 0x53  # 'S'
 const MAGIC_1 := 0x4C  # 'L'
-const VERSION := 1
-const PREFIX := "SLIP1-"
+# The format version doubles as the physics version the run was recorded
+# with: SLIP1 codes come from 0.7.0 (dry grip only) and are still accepted -
+# the challenger then races with the 0.7.0 physics; 0.8.0 writes SLIP2.
+const VERSION := 2
+const LEGACY_VERSION := 1
+const PREFIX := "SLIP2-"
+const PREFIXES := ["SLIP2-", "SLIP1-"]
 const BASE_STEP_MS := 200
 const MAX_SAMPLES := 900
 const MAX_DECOMPRESSED := 65536
@@ -94,7 +99,8 @@ static func encode(data: Dictionary) -> String:
 
 	raw[0] = MAGIC_0
 	raw[1] = MAGIC_1
-	raw[2] = VERSION
+	var ver := clampi(int(data.get("physics", VERSION)), LEGACY_VERSION, VERSION)
+	raw[2] = ver
 	_encode_u32(raw, 3, int(data.get("seed", 1)) & 0x7FFFFFFF)
 	raw[7] = clampi(int(data.get("car_index", 0)), 0, 255)
 	_encode_u32(raw, 8, maxi(0, int(data.get("score", 0))))
@@ -125,15 +131,21 @@ static func encode(data: Dictionary) -> String:
 	_encode_u16(raw, total_len - 2, crc)
 
 	var compressed := raw.compress(FileAccess.COMPRESSION_DEFLATE)
-	return PREFIX + _b64url_encode(compressed)
+	return PREFIXES[VERSION - ver] + _b64url_encode(compressed)
 
 
 static func extract_code(text: String) -> String:
-	var idx := text.find(PREFIX)
+	var idx := -1
+	var prefix := ""
+	for pf: String in PREFIXES:
+		idx = text.find(pf)
+		if idx >= 0:
+			prefix = pf
+			break
 	if idx < 0:
 		return ""
-	var out := PREFIX
-	for i in range(idx + PREFIX.length(), text.length()):
+	var out := prefix
+	for i in range(idx + prefix.length(), text.length()):
 		var ch := text[i]
 		var code_pt := ch.unicode_at(0)
 		var ok := (
@@ -145,13 +157,13 @@ static func extract_code(text: String) -> String:
 		if not ok:
 			break
 		out += ch
-	return out if out.length() > PREFIX.length() + 8 else ""
+	return out if out.length() > prefix.length() + 8 else ""
 
 
 static func decode(raw_text: String) -> Dictionary:
 	var code := extract_code(raw_text)
 	if code.is_empty():
-		return {"ok": false, "error": "Код вызова SLIP1-... не найден"}
+		return {"ok": false, "error": "Код вызова SLIP2-... не найден"}
 	var payload := code.substr(PREFIX.length())
 	var compressed := _b64url_decode(payload)
 	if compressed.is_empty():
@@ -159,7 +171,8 @@ static func decode(raw_text: String) -> Dictionary:
 	var raw := compressed.decompress_dynamic(MAX_DECOMPRESSED, FileAccess.COMPRESSION_DEFLATE)
 	if raw.size() < 27:
 		return {"ok": false, "error": "Неверный формат кода"}
-	if raw[0] != MAGIC_0 or raw[1] != MAGIC_1 or raw[2] != VERSION:
+	var ver := int(raw[2])
+	if raw[0] != MAGIC_0 or raw[1] != MAGIC_1 or ver < LEGACY_VERSION or ver > VERSION or code.substr(0, 6) != PREFIXES[VERSION - ver]:
 		return {"ok": false, "error": "Неподдерживаемая версия кода"}
 	var body_len := raw.size() - 2
 	var expected_crc := _decode_u16(raw, body_len)
@@ -202,6 +215,7 @@ static func decode(raw_text: String) -> Dictionary:
 		"code": code,
 		"id": code_id(code),
 		"seed": _decode_u32(raw, 3),
+		"physics": ver,
 		"car_index": clampi(int(raw[7]), 0, Cars.LIST.size() - 1),
 		"score": _decode_u32(raw, 8),
 		"distance": _decode_u32(raw, 12),
