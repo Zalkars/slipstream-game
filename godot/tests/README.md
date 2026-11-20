@@ -6,6 +6,9 @@ From the repository root with Godot 4 on PATH:
 godot --headless --path godot --editor --import
 godot --headless --path godot res://tests/RaceRegression.tscn
 godot --headless --path godot res://tests/RewardsRegression.tscn
+godot --headless --path godot res://tests/FeaturesRegression.tscn
+godot --headless --path godot res://tests/FixesRegression.tscn
+godot --headless --path godot res://tests/AdsRegression.tscn
 ```
 
 `RaceRegression` covers touch ownership and cancellation, pause/resume, focus
@@ -18,6 +21,15 @@ menu version matching project settings. Brake, overheat, slipstream and rain
 particles are tested separately with a fixed random seed. The navigation fixture
 intercepts persistence so a failed test cannot mark the user's tutorial complete.
 Neither suite writes the player's save file.
+
+`AdsRegression` drives `AdsService` with a fake Yandex plugin: demo units in
+debug builds, rewarded preload and retry, the top banner on the menu, garage
+and finish screen only (UI moved down by its measured height, never during a
+race), and the revive offer: 5 s countdown, accept/decline/Back, once per run,
+none in duels or the Daily Challenge, none without a loaded ad. The Android
+SDK itself is not exercised on desktop.
+
+Use Godot 4.7.2 (the version `build_apk.bat` builds with).
 
 For a graphical frame-time sample on the current computer:
 

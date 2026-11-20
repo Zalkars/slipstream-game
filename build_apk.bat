@@ -50,6 +50,16 @@ if not exist "%TEMP%" (
     goto :fail
 )
 
+rem Gradle build: Godot's Android build template plus the SlipstreamAds
+rem (Yandex Mobile Ads) plugin. Installs/refreshes them when needed.
+echo Preparing Android build template and ads plugin...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%tools\prepare_android_build.ps1" -GodotExe "%GODOT_EXE%"
+if errorlevel 1 (
+    set "FAIL_MESSAGE=Android build template or ads plugin preparation failed."
+    goto :fail
+)
+
+echo.
 echo Importing project resources...
 "%GODOT_EXE%" --headless --path "%PROJECT_DIR%" --import
 if errorlevel 1 (
