@@ -61,10 +61,10 @@ func setup(p_game) -> void:
 	ground_painter = GroundPainter.new(game)
 	ground_painter.grass_tex = game.grass_tex
 	asphalt = Asphalt.new(game)
-	asphalt.asphalt_tex = game.asphalt_tex
 
 	ground_layer = _layer("Ground", -30, ground_painter.paint, MASK_ROAD)
 	road_layer = _layer("Road", -20, _paint_road, MASK_ROAD)
+	road_layer.material = asphalt.material
 	decal_layer = _layer("Decals", -15, _paint_decals, MASK_ROAD)
 	# The buffer holds premultiplied colour (marks drawn over transparent black).
 	var premul := CanvasItemMaterial.new()

@@ -235,7 +235,6 @@ var swipe_used := true
 var _swipe_touch_id := -1
 var _swipe_mouse_down := false
 
-var asphalt_tex: ImageTexture
 var grass_tex: ImageTexture
 var glow_tex: ImageTexture
 var rain_tex: ImageTexture
@@ -296,7 +295,6 @@ func _ready() -> void:
 	var rf := load("res://fonts/Rajdhani-Bold.ttf") as Font
 	_hud_font = rf if rf != null else ThemeDB.fallback_font
 	run_rng.seed = 1729
-	asphalt_tex = _noise_tex(256, Color(0.365, 0.375, 0.395), 0.034, 11)
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
 	glow_tex = Fx.glow_tex()
 	rain_tex = Fx.rain_tex()
