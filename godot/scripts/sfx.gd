@@ -1,44 +1,39 @@
 extends Node
 
-# All audio is synthesised at runtime into 16-bit PCM (no audio assets).
-# Separate SFX / Music buses let the player mute them independently.
+# Audio director (autoload "Sfx").
 #
-# The mix is built from a few continuous layers (engine, tyre roar, wind,
-# nitro, brake squeal, overheated brakes) plus one-shot impacts and UI sounds.
-# Everything is procedural, so it stays tiny in the export and can be tuned
-# from code without hunting for samples.
+# 0.8.0 rework: sound effects are baked OGG Vorbis assets (godot/audio/, built
+# by tools/audio/build_audio.py from synthesis plus CC0 recordings listed in
+# docs/credits.md). Music is still synthesised here on a worker thread.
+#
+# Buses (see audio/audio_buses.gd): Master (compressor + limiter) <- Music, SFX;
+# SFX <- Engine, World, Ambient, UI. The player's sound switch/slider drives SFX.
+#
+# Subsystems:
+#   engine_audio   own car: per-class engine loops, gears, nitro, tyres, brakes
+#   traffic_audio  continuous voices for nearby traffic + pass-bys
+#   ambience_audio rain, thunder, wind, birds, city, fog muffling, echo
+# plus pooled one-shots for impacts, road features and UI.
+#
+# The game binds itself with bind_game(); everything else is read from its
+# public state, so game.gd only needs that one call. Every public function that
+# existed before 0.8.0 is kept with the same signature.
 
 const RATE := 22050
 const TBL := 2048
-const GEAR_SPEEDS := [0.0, 250.0, 445.0, 650.0, 875.0, 1110.0, 1460.0]
 
-var engine: AudioStreamPlayer
-var road: AudioStreamPlayer
-var wind: AudioStreamPlayer
-var nitro_snd: AudioStreamPlayer
-var crash_snd: AudioStreamPlayer
-var bump_snd: AudioStreamPlayer
-var thunder_snd: AudioStreamPlayer
-var whoosh_snd: AudioStreamPlayer
-var pass_snd: AudioStreamPlayer
-var click_snd: AudioStreamPlayer
-var chime_snd: AudioStreamPlayer
-var coin_snd: AudioStreamPlayer
-var pickup_snd: AudioStreamPlayer
-var boost_snd: AudioStreamPlayer
-var brake_snd: AudioStreamPlayer
-var overheat_snd: AudioStreamPlayer
-var cutin_snd: AudioStreamPlayer
-var rewind_snd: AudioStreamPlayer
-var slip_snd: AudioStreamPlayer
-var rain_snd: AudioStreamPlayer
-var wet_snd: AudioStreamPlayer
-var storm_snd: AudioStreamPlayer
-var slingshot_ready_snd: AudioStreamPlayer
-var slingshot_snap_snd: AudioStreamPlayer
-var ram_snd: AudioStreamPlayer
-var radar_snd: AudioStreamPlayer
-var shield_snd: AudioStreamPlayer
+const BANK := preload("res://scripts/audio/audio_bank.gd")
+const BUSES := preload("res://scripts/audio/audio_buses.gd")
+const POOL := preload("res://scripts/audio/audio_pool.gd")
+const PAN := preload("res://scripts/audio/audio_pan.gd")
+const ENGINE := preload("res://scripts/audio/engine_audio.gd")
+const TRAFFIC := preload("res://scripts/audio/traffic_audio.gd")
+const AMBIENCE := preload("res://scripts/audio/ambience_audio.gd")
+
+const BUS_BASE_DB := {"World": -1.5, "Ambient": -3.0}
+const JOINT_PERIOD := 760.0     # game.gd road seam spacing (px)
+const RAIL_PERIOD := 190.0      # guard-rail post spacing (px)
+
 var music_player: AudioStreamPlayer
 
 var sfx_bus := 0
@@ -49,20 +44,45 @@ var muted := false
 var sfx_volume := 0.9
 var music_volume := 0.75
 
+var engine_audio: Node
+var traffic_audio: Node
+var ambience: Node
+var world_pool: Node
+var ui_pool: Node
+var listener: AudioListener2D
+var scrape_player: AudioStreamPlayer2D
+
+var _game_ref: WeakRef = null
 var _engine_on := false
+var _paused := false
+var _rewinding := false
 var _boost := false
 var _braking := false
 var _overheated := false
-var _rewinding := false
-var _paused := false
 var _slip := 0.0
 var _last_speed := 0.0
-var _gear := 0
-var _shift_t := 0.0
-var _shift_dir := 0.0
 var _wetness := 0.0
-var _wind_amt := 0.0
+var _wind_amt := 0.15
 var _storm_amt := 0.0
+var _rain := 0.0
+var _overhead_api := 0.0
+var _scrape_amt := 0.0
+var _scrape_pan := 0.0
+var _scrape_hold := 0.0
+var _duck := 0.0
+var _duck_hold := 0.0
+var _crash_cd := 0.0
+var _prev_px := -1.0
+var _lateral := 0.0
+var _flash_t := -100.0
+var _prev_lightning := 0.0
+var _prev_puddle := 0.0
+var _joint_ph := PackedFloat32Array([-1.0, -1.0])
+var _rail_ph := -1.0
+var _clock := 0.0
+var _state := {"speed": 0.0, "top": 1100.0, "boost": false, "brake": false, "overheated": false,
+	"draft": 0.0, "wet": 0.0, "lateral": 0.0}
+var _rng := RandomNumberGenerator.new()
 
 var _music_buf := PackedFloat32Array()
 var _music_task := -1
@@ -70,84 +90,64 @@ var _music_busy := false
 
 
 func _ready() -> void:
-	_setup_buses()
+	_rng.seed = 2600
+	BUSES.setup()
+	sfx_bus = AudioServer.get_bus_index("SFX")
+	music_bus = AudioServer.get_bus_index("Music")
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_process(true)
-	engine = _player(_make_engine(), -18.0)
-	road = _player(_make_road(), -60.0)
-	wind = _player(_make_wind(), -28.0)
-	nitro_snd = _player(_make_nitro(), -60.0)
-	brake_snd = _player(_make_brake(), -60.0)
-	overheat_snd = _player(_make_overheat(), -60.0)
-	crash_snd = _player(_make_crash(), -4.0)
-	bump_snd = _player(_make_bump(), -8.0)
-	thunder_snd = _player(_make_thunder(), -8.0)
-	whoosh_snd = _player(_make_whoosh(), -11.0)
-	pass_snd = _player(_make_pass_by(), -10.0)
-	click_snd = _player(_make_click(), -18.0)
-	chime_snd = _player(_make_chime(), -10.0)
-	coin_snd = _player(_make_coin(), -13.0)
-	pickup_snd = _player(_make_pickup(), -12.0)
-	boost_snd = _player(_make_boost(), -9.0)
-	cutin_snd = _player(_make_cutin(), -10.0)
-	rewind_snd = _player(_make_rewind(), -9.0)
-	slip_snd = _player(_make_slipstream(), -60.0)
-	rain_snd = _player(_make_rain(), -60.0)
-	wet_snd = _player(_make_wet_road(), -60.0)
-	storm_snd = _player(_make_storm(), -60.0)
-	slingshot_ready_snd = _player(_make_slingshot_ready(), -11.0)
-	slingshot_snap_snd = _player(_make_slingshot_snap(), -8.0)
-	ram_snd = _player(_make_ram_hit(), -6.0)
-	radar_snd = _player(_make_radar_ok(), -10.0)
-	shield_snd = _player(_make_shield_trigger(), -8.0)
+
+	listener = AudioListener2D.new()
+	listener.name = "Listener"
+	add_child(listener)
+	listener.make_current()
+
+	engine_audio = ENGINE.new()
+	engine_audio.name = "EngineAudio"
+	add_child(engine_audio)
+	traffic_audio = TRAFFIC.new()
+	traffic_audio.name = "TrafficAudio"
+	add_child(traffic_audio)
+	ambience = AMBIENCE.new()
+	ambience.name = "Ambience"
+	add_child(ambience)
+	world_pool = POOL.new()
+	world_pool.name = "WorldPool"
+	add_child(world_pool)
+	world_pool.setup(10, "World", true)
+	ui_pool = POOL.new()
+	ui_pool.name = "UIPool"
+	add_child(ui_pool)
+	ui_pool.setup(4, "UI", false)
+	scrape_player = PAN.make_player("World")
+	scrape_player.stream = BANK.stream("impact/scrape", true)
+	scrape_player.volume_db = -80.0
+	add_child(scrape_player)
 
 	music_player = AudioStreamPlayer.new()
 	music_player.bus = "Music"
 	music_player.volume_db = -19.0
 	add_child(music_player)
+	ambience.start()
 
 
-func _setup_buses() -> void:
-	for bus_name in ["SFX", "Music", "PassL", "PassR"]:
-		if AudioServer.get_bus_index(bus_name) == -1:
-			AudioServer.add_bus()
-			var idx := AudioServer.bus_count - 1
-			AudioServer.set_bus_name(idx, bus_name)
-			AudioServer.set_bus_send(idx, "Master")
-	sfx_bus = AudioServer.get_bus_index("SFX")
-	music_bus = AudioServer.get_bus_index("Music")
-	# Two mono side buses let a one-shot sit on the left or the right without
-	# needing per-player panning (AudioStreamPlayer has no pan property; the
-	# panning lives on the bus, which is also much cheaper on mobile).
-	_bus_setup_pan("PassL", -1.0, 0.34)
-	_bus_setup_pan("PassR", 1.0, 0.34)
+# --- binding ----------------------------------------------------------------
+
+func bind_game(g: Node) -> void:
+	_game_ref = weakref(g) if g != null else null
+	_prev_px = -1.0
+	_joint_ph[0] = -1.0
+	_joint_ph[1] = -1.0
+	_rail_ph = -1.0
 
 
-func _bus_setup_pan(bus_name: String, pan: float, gain_db: float) -> void:
-	var idx := AudioServer.get_bus_index(bus_name)
-	if idx < 0:
-		return
-	AudioServer.set_bus_volume_db(idx, gain_db)
-	AudioServer.set_bus_send(idx, "SFX")
-	var effect_count := AudioServer.get_bus_effect_count(idx)
-	var found := false
-	for e in range(effect_count):
-		var eff := AudioServer.get_bus_effect(idx, e)
-		if eff is AudioEffectPanner:
-			eff.pan = pan
-			found = true
-	if not found:
-		var panner := AudioEffectPanner.new()
-		panner.pan = pan
-		AudioServer.add_bus_effect(idx, panner)
-
-
-func _player(stream: AudioStream, vol: float, bus := "SFX") -> AudioStreamPlayer:
-	var p := AudioStreamPlayer.new()
-	p.stream = stream
-	p.volume_db = vol
-	p.bus = bus
-	add_child(p)
-	return p
+func _game() -> Node:
+	if _game_ref == null:
+		return null
+	var g = _game_ref.get_ref()
+	if g == null or not is_instance_valid(g) or not g.is_inside_tree():
+		return null
+	return g
 
 
 # --- settings ---------------------------------------------------------------
@@ -204,8 +204,15 @@ func play_music() -> void:
 		_start_music_build()
 		return
 	if not music_player.playing:
-		music_player.volume_db = -30.0 if _paused else -19.0
+		music_player.volume_db = _music_db()
 		music_player.play()
+
+
+func _music_db() -> float:
+	# Music sits a little lower while racing so engine and traffic read clearly.
+	if _paused:
+		return -30.0
+	return -21.0 if _engine_on else -19.0
 
 
 func _start_music_build() -> void:
@@ -224,9 +231,65 @@ func _exit_tree() -> void:
 		WorkerThreadPool.wait_for_task_completion(_music_task)
 		_music_task = -1
 		_music_busy = false
+	# Release every playback before the engine shuts down, so the streams are
+	# not reported as leaked at exit.
+	engine_audio.stop()
+	traffic_audio.stop()
+	ambience.stop()
+	world_pool.stop_all()
+	ui_pool.stop_all()
+	engine_audio.pool.stop_all()
+	traffic_audio.pool.stop_all()
+	scrape_player.stop()
+	BANK.clear()
 
 
-func _process(_delta: float) -> void:
+func stop_music() -> void:
+	if music_player != null:
+		music_player.stop()
+
+
+# --- frame update -----------------------------------------------------------
+
+func _process(delta: float) -> void:
+	_poll_music()
+	var dt := minf(delta, 0.05)
+	_clock += dt
+	if _crash_cd > 0.0:
+		_crash_cd -= dt
+	var g := _game()
+	var running := false
+	if g != null:
+		running = bool(g.running) and not bool(g.demo)
+		_read_world(g, dt)
+	ambience.rain = lerpf(ambience.rain, _rain, minf(1.0, dt * 2.0))
+	ambience.storm = _storm_amt
+	ambience.wind = _wind_amt
+	ambience.set_level(-26.0 if _paused else (0.0 if _engine_on else -12.0))
+	ambience.update(dt)
+
+	_state.speed = _last_speed
+	_state.boost = _boost
+	_state.brake = _braking
+	_state.overheated = _overheated
+	_state.draft = _slip
+	_state.wet = _wetness
+	_state.lateral = _lateral
+	if g != null:
+		_state.top = float(g.top_speed)
+	engine_audio.paused = _paused
+	engine_audio.rewinding = _rewinding
+	engine_audio.update(dt, _state)
+
+	traffic_audio.active = _engine_on and running and not _paused and not _rewinding
+	traffic_audio.update(dt, g, _last_speed, _wetness)
+	if g != null and _engine_on and running and not _paused and not _rewinding:
+		_road_features(g)
+	_update_scrape(dt)
+	_update_duck(dt)
+
+
+func _poll_music() -> void:
 	if not _music_busy or _music_task < 0:
 		return
 	if not WorkerThreadPool.is_task_completed(_music_task):
@@ -237,20 +300,105 @@ func _process(_delta: float) -> void:
 	music_player.stream = _wav(_music_buf, true)
 	_music_buf = PackedFloat32Array()
 	if music_on and not music_player.playing:
-		music_player.volume_db = -30.0 if _paused else -19.0
+		music_player.volume_db = _music_db()
 		music_player.play()
 
 
-func stop_music() -> void:
-	if music_player != null:
-		music_player.stop()
+func _read_world(g: Node, dt: float) -> void:
+	ambience.fog = float(g.fog_amount)
+	ambience.tod = float(g.time_of_day)
+	if g.has_method("get_night_factor"):
+		ambience.night = float(g.get_night_factor())
+	# Optional state other systems may add (bridges, overpasses, tunnels).
+	var oh = g.get("overhead_amount")
+	ambience.overhead = clampf(float(oh) if oh != null else _overhead_api, 0.0, 1.0)
+	_overhead_api = maxf(0.0, _overhead_api - dt * 0.5)
+	# Lightning flash: remember when it struck to tell near from far thunder.
+	var lt := float(g.lightning)
+	if lt > _prev_lightning + 0.3:
+		_flash_t = _clock
+	_prev_lightning = lt
+	var px := float(g.player_x)
+	if _prev_px >= 0.0 and dt > 0.0:
+		_lateral = lerpf(_lateral, (px - _prev_px) / dt, minf(1.0, dt * 12.0))
+	_prev_px = px
+	var sil = g.get("player_silhouette")
+	if sil != null and _engine_on:
+		engine_audio.set_car(str(sil))
+	# Puddle splash (all-weather perk drives through standing water).
+	var pc = g.get("_puddle_cd")
+	if pc != null:
+		if float(pc) > _prev_puddle + 0.5 and _engine_on:
+			world_pool.play(BANK.stream("road/splash"), -5.0, _rng.randf_range(0.9, 1.1), 0.0)
+		_prev_puddle = float(pc)
+
+
+func _road_features(g: Node) -> void:
+	var scroll := float(g.scroll)
+	var py := float(g.player_y)
+	var ch := float(g.car_h)
+	var speed := _last_speed
+	if speed < 120.0:
+		return
+	var sp = g.get("seam_period")
+	var period := float(sp) if sp != null else JOINT_PERIOD
+	# Concrete/tar joints under the front then the rear axle: "ta-dum".
+	var axle := [py - ch * 0.30, py + ch * 0.30]
+	var vol := -17.0 + clampf(speed / 1400.0, 0.0, 1.0) * 6.0 - _wetness * 3.0
+	for i in range(2):
+		var ph := fposmod(scroll - float(axle[i]), period)
+		if _joint_ph[i] >= 0.0 and ph < _joint_ph[i] - period * 0.5:
+			world_pool.play(BANK.stream("road/joint_%d" % i), vol, _rng.randf_range(0.92, 1.06), 0.0)
+		_joint_ph[i] = ph
+	# Guard-rail posts whoosh past when we drive in an edge lane.
+	var lanes := int(g.get("LANES")) if g.get("LANES") != null else 4
+	var lane := int(g.lane)
+	var rph := fposmod(scroll - py, RAIL_PERIOD)
+	if lane == 0 or lane == lanes - 1:
+		if _rail_ph >= 0.0 and rph < _rail_ph - RAIL_PERIOD * 0.5:
+			var side := -0.85 if lane == 0 else 0.85
+			world_pool.play(BANK.stream("road/rail_puff"), -21.0 + clampf(speed / 1500.0, 0.0, 1.0) * 6.0,
+				_rng.randf_range(0.85, 1.15) * (0.8 + speed / 3000.0), side)
+	_rail_ph = rph
+
+
+func _update_scrape(dt: float) -> void:
+	if _scrape_hold > 0.0:
+		_scrape_hold -= dt
+	else:
+		_scrape_amt = maxf(0.0, _scrape_amt - dt * 3.0)
+	var on := _scrape_amt > 0.01 and not _paused
+	if on and not scrape_player.playing and scrape_player.stream != null:
+		scrape_player.play(_rng.randf() * 1.5)
+	if scrape_player.playing:
+		PAN.place(scrape_player, _scrape_pan, -10.0 + 20.0 * log(maxf(_scrape_amt, 0.0001)) / log(10.0))
+		scrape_player.pitch_scale = 0.85 + _scrape_amt * 0.25 + clampf(_last_speed / 3000.0, 0.0, 0.3)
+		if not on:
+			scrape_player.stop()
+
+
+func _duck_to(db: float, hold := 0.0) -> void:
+	_duck = minf(_duck, db)
+	_duck_hold = maxf(_duck_hold, hold)
+
+
+func _update_duck(dt: float) -> void:
+	if _duck_hold > 0.0:
+		_duck_hold -= dt
+	else:
+		_duck = lerpf(_duck, 0.0, minf(1.0, dt * 1.8))
+	var hold_nitro := -3.5 if _boost and _engine_on else 0.0
+	var d := minf(_duck, hold_nitro)
+	for bus in BUS_BASE_DB:
+		var idx := AudioServer.get_bus_index(bus)
+		if idx >= 0:
+			var k := 1.0 if bus == "Ambient" else 0.5
+			AudioServer.set_bus_volume_db(idx, float(BUS_BASE_DB[bus]) + d * k)
 
 
 # --- engine loop ------------------------------------------------------------
 
 func play_engine() -> void:
-	if _engine_on:
-		return
 	_engine_on = true
 	_boost = false
 	_braking = false
@@ -258,29 +406,14 @@ func play_engine() -> void:
 	_rewinding = false
 	_paused = false
 	_slip = 0.0
-	_gear = 0
-	_shift_t = 0.0
-	engine.volume_db = -18.0
-	engine.pitch_scale = 0.86
-	road.volume_db = -60.0
-	wind.volume_db = -30.0
-	nitro_snd.volume_db = -60.0
-	brake_snd.volume_db = -60.0
-	overheat_snd.volume_db = -60.0
-	slip_snd.volume_db = -60.0
-	rain_snd.volume_db = -60.0
-	wet_snd.volume_db = -60.0
-	storm_snd.volume_db = -60.0
-	engine.play()
-	road.play()
-	wind.play()
-	nitro_snd.play()
-	brake_snd.play()
-	overheat_snd.play()
-	slip_snd.play()
-	rain_snd.play()
-	wet_snd.play()
-	storm_snd.play()
+	var g := _game()
+	if g != null and g.get("player_silhouette") != null:
+		engine_audio.set_car(str(g.player_silhouette))
+	elif engine_audio.spec.is_empty():
+		engine_audio.set_car("sedan")
+	engine_audio.start()
+	if music_player != null and music_player.playing:
+		music_player.volume_db = _music_db()
 
 
 func stop_engine() -> void:
@@ -288,225 +421,149 @@ func stop_engine() -> void:
 	_braking = false
 	_overheated = false
 	_rewinding = false
-	engine.stop()
-	road.stop()
-	wind.stop()
-	nitro_snd.stop()
-	brake_snd.stop()
-	overheat_snd.stop()
-	slip_snd.stop()
-	rain_snd.stop()
-	wet_snd.stop()
-	storm_snd.stop()
+	_boost = false
+	engine_audio.stop()
+	traffic_audio.stop()
+	if music_player != null and music_player.playing:
+		music_player.volume_db = _music_db()
 
 
 func set_paused(p: bool) -> void:
 	_paused = p
 	if music_player != null and music_player.playing:
-		music_player.volume_db = -30.0 if p else -19.0
-	if not _engine_on:
-		return
-	if p:
-		engine.volume_db = -42.0
-		road.volume_db = -60.0
-		wind.volume_db = -46.0
-		nitro_snd.volume_db = -60.0
-		brake_snd.volume_db = -60.0
-		overheat_snd.volume_db = -60.0
-	else:
-		update_engine(_last_speed, _boost, _braking, _overheated, _slip)
-
-
-func _speed_ratio(px_speed: float) -> float:
-	return clampf((px_speed - 380.0) / 900.0, 0.0, 1.0)
-
-
-func _gear_rpm(px_speed: float) -> Array:
-	var g := 0
-	for i in range(GEAR_SPEEDS.size() - 1):
-		if px_speed >= float(GEAR_SPEEDS[i + 1]):
-			g = i + 1
-	var lo := float(GEAR_SPEEDS[clampi(g, 0, GEAR_SPEEDS.size() - 1)])
-	var hi := float(GEAR_SPEEDS[clampi(g + 1, 0, GEAR_SPEEDS.size() - 1)])
-	var rpm := clampf((px_speed - lo) / maxf(1.0, hi - lo), 0.0, 1.0)
-	return [g, rpm]
+		music_player.volume_db = _music_db()
 
 
 func update_engine(px_speed: float, boost: bool, is_braking := false, overheated := false, slip := 0.0) -> void:
-	if not _engine_on:
-		return
 	_last_speed = px_speed
 	_boost = boost
 	_braking = is_braking
 	_overheated = overheated
 	_slip = clampf(slip, 0.0, 1.0)
-	if _paused:
-		return
-	if _rewinding:
-		engine.volume_db = lerpf(engine.volume_db, -28.0, 0.20)
-		road.volume_db = lerpf(road.volume_db, -38.0, 0.20)
-		wind.volume_db = lerpf(wind.volume_db, -40.0, 0.20)
-		nitro_snd.volume_db = lerpf(nitro_snd.volume_db, -60.0, 0.20)
-		brake_snd.volume_db = lerpf(brake_snd.volume_db, -60.0, 0.20)
-		overheat_snd.volume_db = lerpf(overheat_snd.volume_db, -60.0, 0.20)
-		wet_snd.volume_db = lerpf(wet_snd.volume_db, -60.0, 0.20)
-		return
-
-	var ratio := _speed_ratio(px_speed)
-	var gear_data := _gear_rpm(px_speed)
-	var gear := int(gear_data[0])
-	var rpm := float(gear_data[1])
-	if gear != _gear:
-		_shift_dir = 1.0 if gear > _gear else -1.0
-		_shift_t = 0.13
-		_gear = gear
-	if _shift_t > 0.0:
-		_shift_t = maxf(0.0, _shift_t - get_process_delta_time())
-
-	# Engine note follows rpm inside the gear, not just absolute speed.
-	var pitch := 0.70 + rpm * 0.72 + ratio * 0.08
-	if boost:
-		pitch += 0.10
-	if _shift_t > 0.0:
-		pitch -= _shift_dir * 0.07 * (_shift_t / 0.13)
-	engine.pitch_scale = clampf(pitch, 0.58, 1.92)
-	var shift_dip := (0.30 * (_shift_t / 0.13)) if _shift_t > 0.0 else 0.0
-	engine.volume_db = -17.0 + ratio * 5.0 + (2.0 if boost else 0.0) - shift_dip
-
-	# Tyre roar and wind grow with speed cleanly; weather adds gust and drag.
-	road.volume_db = -34.0 + ratio * 16.0 + (1.5 if boost else 0.0)
-	road.pitch_scale = 0.92 + ratio * 0.30
-	wind.volume_db = -29.0 + ratio * 11.0 + (2.0 if boost else 0.0) + _wind_amt * 2.8 + _storm_amt * 3.5
-	wind.pitch_scale = 0.88 + ratio * 0.20 + _storm_amt * 0.07
-
-	# Wet-road hiss and tyre spray, driven by speed and surface water.
-	var wet_target := -60.0
-	if _wetness > 0.03 and px_speed > 70.0:
-		wet_target = -58.0 + _wetness * (9.0 + ratio * 19.0)
-	wet_snd.volume_db = lerpf(wet_snd.volume_db, clampf(wet_target, -60.0, -26.0), 0.16)
-	wet_snd.pitch_scale = 0.82 + ratio * 0.24 + _wetness * 0.04
-
-	nitro_snd.volume_db = lerpf(nitro_snd.volume_db, -12.0 if boost else -60.0, 0.30)
-	nitro_snd.pitch_scale = 0.96 + ratio * 0.16
-	overheat_snd.volume_db = lerpf(overheat_snd.volume_db, -17.0 if _overheated else -60.0, 0.20)
-	var slip_target := -60.0
-	if _slip > 0.25 and not _braking and not _boost:
-		slip_target = -36.0 + (_slip - 0.25) * 18.0
-	slip_snd.volume_db = lerpf(slip_snd.volume_db, clampf(slip_target, -60.0, -21.0), 0.18)
-	slip_snd.pitch_scale = 0.90 + _slip * 0.28
-
-	if is_braking and px_speed > 100.0 and not _overheated:
-		var k := clampf(px_speed / 1000.0, 0.30, 1.05)
-		brake_snd.volume_db = lerpf(brake_snd.volume_db, -12.0 - (1.0 - k) * 3.0, 0.32)
-		brake_snd.pitch_scale = 0.88 + k * 0.30
-	else:
-		brake_snd.volume_db = lerpf(brake_snd.volume_db, -60.0, 0.24)
 
 
 func set_rain_intensity(amt: float) -> void:
-	if rain_snd == null:
-		return
-	var a := clampf(amt, 0.0, 1.0)
-	# Smooth the volume: weather transitions and menu/run changes are gradual.
-	var target := -60.0
-	if a > 0.01:
-		target = -33.0 + a * 14.0
-	rain_snd.volume_db = lerpf(rain_snd.volume_db, target, 0.12)
-	rain_snd.pitch_scale = lerpf(rain_snd.pitch_scale, 0.94 + a * 0.16, 0.10)
+	_rain = clampf(amt, 0.0, 1.0)
 
 
 func set_weather(wetness: float, wind_amt: float, storm_amt: float) -> void:
 	_wetness = clampf(wetness, 0.0, 1.0)
 	_wind_amt = clampf(wind_amt, 0.0, 1.2)
 	_storm_amt = clampf(storm_amt, 0.0, 1.0)
-	if storm_snd != null:
-		var target := -60.0 + _storm_amt * 20.0
-		storm_snd.volume_db = lerpf(storm_snd.volume_db, target, 0.08)
-		storm_snd.pitch_scale = 0.82 + _storm_amt * 0.12
+
+
+# --- optional hooks for other systems (all safe to never call) ---------------
+
+# Generic impact. force 0..1 picks the layers, side -1..1 pans.
+func impact(force: float, side := 0.0) -> void:
+	var f := clampf(force, 0.0, 1.0)
+	var vol := -8.0 + f * 7.0
+	if f < 0.35:
+		world_pool.play(BANK.stream("impact/knock"), vol, _rng.randf_range(0.9, 1.1), side)
+		world_pool.play(BANK.stream("impact/clank"), vol - 6.0, _rng.randf_range(0.9, 1.15), side)
+		_duck_to(-3.0)
+	elif f < 0.7:
+		world_pool.play(BANK.stream("impact/door_hit"), vol, _rng.randf_range(0.9, 1.05), side)
+		world_pool.play(BANK.stream("impact/metal_hit"), vol - 3.0, _rng.randf_range(0.9, 1.1), side)
+		world_pool.play(BANK.stream("impact/sub"), vol - 4.0, 1.0, 0.0)
+		_duck_to(-6.0)
+	else:
+		_crash_layers(side, f)
+
+
+# Side contact (rail or another car), call every frame while it lasts.
+func scrape(amount: float, side := 0.0) -> void:
+	_scrape_amt = maxf(_scrape_amt, clampf(amount, 0.0, 1.0))
+	_scrape_pan = clampf(side, -1.0, 1.0)
+	_scrape_hold = 0.08
+
+
+# Bridge / overpass / tunnel overhead, 0..1; call every frame while under it.
+func set_overhead(amount: float) -> void:
+	_overhead_api = clampf(amount, 0.0, 1.0)
 
 
 # --- one-shots --------------------------------------------------------------
 
+func _crash_layers(side: float, force := 1.0) -> void:
+	var v := -1.0 - (1.0 - force) * 6.0
+	world_pool.play(BANK.stream("impact/crash_heavy"), v, _rng.randf_range(0.94, 1.04), side)
+	world_pool.play(BANK.stream("impact/crash_metal"), v - 5.0, _rng.randf_range(0.9, 1.05), side * 0.6)
+	world_pool.play(BANK.stream("impact/glass_%d" % _rng.randi_range(0, 1)), v - 7.0, _rng.randf_range(0.95, 1.1), -side * 0.4)
+	world_pool.play(BANK.stream("impact/sub"), v - 1.0, 1.0, 0.0)
+	_scrape_amt = 0.8
+	_scrape_pan = side
+	_scrape_hold = 0.5
+	_duck_to(-10.0, 0.4)
+
+
 func crash() -> void:
-	crash_snd.play()
+	if _crash_cd > 0.0:
+		return
+	_crash_cd = 0.3
+	_crash_layers(_rng.randf_range(-0.3, 0.3))
 
 
 func thunder() -> void:
-	if thunder_snd != null:
-		thunder_snd.pitch_scale = randf_range(0.82, 1.05)
-		thunder_snd.volume_db = -8.0 + randf_range(-2.0, 1.5)
-		thunder_snd.play()
+	ambience.thunder(_clock - _flash_t if _clock - _flash_t < 5.0 else 1.2)
 
 
 func bump() -> void:
-	if bump_snd != null:
-		bump_snd.play()
+	impact(0.25, 0.0)
 
 
 func whoosh(pan_side := 0.0) -> void:
-	whoosh_snd.volume_db = -11.0 - absf(pan_side) * 3.0
-	whoosh_snd.play()
+	world_pool.play(BANK.stream("traffic/pass_dry"), -12.0 - absf(pan_side) * 3.0, _rng.randf_range(1.0, 1.15), pan_side, 0.45)
 
 
-# A car passing on the left or right: a short doppler-ish swish that pans to the
-# side it went by. This is the single biggest cue for "there is traffic around
-# me" in a top-down racer, so it gets its own louder, pitched voice.
 func pass_by(side: float, closeness := 1.0) -> void:
-	if pass_snd == null:
+	# With a bound game, traffic_audio already tracks and voices every pass.
+	if _game() != null and _engine_on:
 		return
-	var k := clampf(closeness, 0.0, 1.0)
-	# Pick the side bus; a near-frontal pass stays in the centre mix.
-	var bus_name := "SFX"
-	if side < -0.22:
-		bus_name = "PassL"
-	elif side > 0.22:
-		bus_name = "PassR"
-	pass_snd.stop()
-	pass_snd.bus = bus_name
-	pass_snd.volume_db = -8.0 - (1.0 - k) * 14.0
-	pass_snd.pitch_scale = clampf(randf_range(0.94, 1.14) - absf(side) * 0.05, 0.8, 1.3)
-	pass_snd.play()
+	traffic_audio.fallback_pass(side, clampf(closeness, 0.0, 1.0), _wetness)
 
 
 func click() -> void:
-	click_snd.play()
+	ui_pool.play(BANK.stream("ui/click"), -6.0, _rng.randf_range(0.97, 1.03))
 
 
 func record() -> void:
-	chime_snd.play()
+	ui_pool.play(BANK.stream("ui/record"), -5.0)
 
 
 func pickup_coin() -> void:
-	coin_snd.play()
+	ui_pool.play(BANK.stream("ui/coin"), -8.0, _rng.randf_range(0.98, 1.03))
 
 
 func pickup_nitro() -> void:
-	pickup_snd.play()
+	ui_pool.play(BANK.stream("ui/pickup"), -7.0)
 
 
 func pickup() -> void:
-	pickup_snd.play()
+	ui_pool.play(BANK.stream("ui/pickup"), -7.0)
 
 
 func boost_burst() -> void:
-	boost_snd.play()
+	# The ignition itself plays from engine_audio on the boost edge; this adds
+	# the ducking so the world steps back as the nitro lights.
+	_duck_to(-5.0, 0.3)
+	if not _engine_on:
+		ui_pool.play(BANK.stream("nitro/ignite"), -6.0)
 
 
 func cut_in() -> void:
-	whoosh_snd.play()
-	cutin_snd.play()
+	ui_pool.play(BANK.stream("ui/cutin"), -6.0)
+	world_pool.play(BANK.stream("traffic/pass_dry"), -13.0, 1.12, 0.0, 0.5)
 
 
 func brake_overheat() -> void:
-	overheat_snd.play()
-	crash_snd.volume_db = -9.0
-	crash_snd.play()
-	crash_snd.volume_db = -4.0
+	engine_audio.one_shot("nitro/blowoff", -6.0, 0.62)
+	world_pool.play(BANK.stream("impact/metal_hit"), -10.0, 0.8, 0.0)
 
 
 func rewind_start() -> void:
 	_rewinding = true
-	rewind_snd.play()
+	ui_pool.play(BANK.stream("ui/rewind"), -5.0)
 
 
 func rewind_stop() -> void:
@@ -514,38 +571,33 @@ func rewind_stop() -> void:
 
 
 func slingshot_ready() -> void:
-	if slingshot_ready_snd != null:
-		slingshot_ready_snd.play()
+	engine_audio.one_shot("nitro/sling_ready", -7.0)
 
 
 func slingshot_snap() -> void:
-	if slingshot_snap_snd != null:
-		slingshot_snap_snd.play()
+	engine_audio.one_shot("nitro/sling_snap", -3.0)
+	_duck_to(-4.0)
 
 
 func ram_hit() -> void:
-	if ram_snd != null:
-		ram_snd.play()
+	impact(0.6, 0.0)
+	world_pool.play(BANK.stream("impact/crash_metal"), -9.0, 1.1, 0.0)
 
 
 func radar_ok() -> void:
-	if radar_snd != null:
-		radar_snd.play()
+	ui_pool.play(BANK.stream("ui/radar"), -7.0)
 
 
 func shield_trigger() -> void:
-	if shield_snd != null:
-		shield_snd.play()
+	engine_audio.one_shot("nitro/shield", -3.0)
+	_duck_to(-6.0, 0.3)
 
 
 func duel_win() -> void:
-	if chime_snd != null:
-		chime_snd.pitch_scale = 1.08
-		chime_snd.play()
-		chime_snd.pitch_scale = 1.0
+	ui_pool.play(BANK.stream("ui/record"), -4.0, 1.12)
 
 
-# --- synthesis helpers ------------------------------------------------------
+# --- music helpers ----------------------------------------------------------
 
 func _wav(f: PackedFloat32Array, looped: bool) -> AudioStreamWAV:
 	var data := PackedByteArray()
@@ -564,10 +616,6 @@ func _wav(f: PackedFloat32Array, looped: bool) -> AudioStreamWAV:
 	return w
 
 
-func _loop_wav(f: PackedFloat32Array, loop_len: int, fade: int) -> AudioStreamWAV:
-	return _wav(_loop_samples(f, loop_len, fade), true)
-
-
 static func _loop_samples(f: PackedFloat32Array, loop_len: int, fade: int) -> PackedFloat32Array:
 	for i in range(fade):
 		var a := float(i) / float(fade)
@@ -577,692 +625,6 @@ static func _loop_samples(f: PackedFloat32Array, loop_len: int, fade: int) -> Pa
 	for i in range(loop_len):
 		out[i] = f[i]
 	return out
-
-
-static func _soft(v: float) -> float:
-	return tanh(v * 1.45) * 0.82
-
-
-func _make_engine() -> AudioStreamWAV:
-	var loop_len := RATE
-	var fade := 3000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 4242
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var p := TAU * tt
-		# Rich combustion cylinder firing pulses (42 Hz base + strong harmonics)
-		var v := 0.0
-		v += sin(p * 42.0) * 0.44
-		v += sin(p * 84.0 + 0.3) * 0.34
-		v += sin(p * 126.0) * 0.22
-		v += sin(p * 168.0 + 0.5) * 0.16
-		v += sin(p * 252.0) * 0.09
-		v += sin(p * 336.0) * 0.05
-		# Sub-bass exhaust thud
-		v += sin(p * 21.0) * 0.22
-		# Subtle non-linear cylinder pressure wave shaping
-		v += v * v * 0.14
-		# Intake manifold acoustic rumble
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.090)
-		lp2 = lerpf(lp2, raw, 0.015)
-		v += (lp - lp2 * 0.55) * 0.28
-		# Turbocharger compressor spool whistle
-		var turbo := sin(TAU * (1480.0 + 120.0 * sin(p * 7.0)) * tt) * 0.038
-		v += turbo
-		var throb := 0.80 + 0.20 * (0.5 + 0.5 * sin(p * 21.0))
-		f[i] = _soft(v * throb * 1.35)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_road() -> AudioStreamWAV:
-	var loop_len := int(RATE * 1.5)
-	var fade := 4000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var lp3 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 2024
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.14)
-		lp2 = lerpf(lp2, raw, 0.020)
-		lp3 = lerpf(lp3, raw, 0.045)
-		var pavement := (lp - lp2 * 0.65) * 0.90 + lp3 * 0.35
-		# Highway expansion joint cadence ("ba-dum ... ba-dum")
-		var seam := 0.0
-		var phase := fposmod(tt * 6.5, 1.0)
-		if phase < 0.06:
-			seam = sin(TAU * 52.0 * tt) * exp(-28.0 * phase) * 0.22
-		var rumble := sin(TAU * 34.0 * tt) * 0.08
-		f[i] = _soft(pavement * 1.10 + rumble + seam)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_wind() -> AudioStreamWAV:
-	var loop_len := RATE * 2
-	var fade := 5000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 777
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.065)
-		lp2 = lerpf(lp2, lp, 0.012)
-		var air := lp - lp2 * 0.75
-		var gust := 0.82 + 0.18 * sin(TAU * 0.35 * tt) + 0.08 * sin(TAU * 2.1 * tt)
-		f[i] = _soft(air * 2.4 * gust)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_nitro() -> AudioStreamWAV:
-	var loop_len := RATE
-	var fade := 3500
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var lp3 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 9191
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.32)
-		lp2 = lerpf(lp2, lp, 0.035)
-		lp3 = lerpf(lp3, raw, 0.070)
-		var plasma := lp - lp2 * 0.60
-		var fiery_roar := sin(TAU * 54.0 * tt) * 0.18 + sin(TAU * 27.0 * tt) * 0.12
-		var turbine := sin(TAU * (1950.0 + 80.0 * sin(TAU * 8.0 * tt)) * tt) * 0.065
-		var flutter := 0.84 + 0.16 * sin(TAU * 36.0 * tt)
-		f[i] = _soft(((plasma + lp3 * 0.28) * 1.30 + fiery_roar + turbine) * flutter)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_brake() -> AudioStreamWAV:
-	var loop_len := int(RATE * 1.2)
-	var fade := 3000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var low2 := 0.0
-	var band2 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 8841
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		# ABS pulsating cadence (13.5 Hz)
-		var abs_mod := 0.76 + 0.24 * sin(TAU * 13.5 * tt)
-		# Tire scrub friction band (520 Hz)
-		var fc := 520.0 + sin(TAU * 11.0 * tt) * 80.0
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 1.1 * band
-		band += fcoef * high
-		# Brake pad friction bite (1450 Hz) - pleasant mechanical friction, not piercing squeak
-		var fc2 := 1450.0 + sin(TAU * 17.0 * tt) * 140.0
-		var fcoef2 := 2.0 * sin(PI * fc2 / float(RATE))
-		low2 += fcoef2 * band2
-		var high2 := raw - low2 - 1.4 * band2
-		band2 += fcoef2 * high2
-		# Low frequency tire tearing on tarmac (95 Hz)
-		var tear := sin(TAU * 95.0 * tt) * 0.14 + sin(TAU * 48.0 * tt) * 0.08
-		var scrub := (band * 0.52 + band2 * 0.26 + tear) * abs_mod
-		f[i] = _soft(scrub * 1.25)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_overheat() -> AudioStreamWAV:
-	var loop_len := int(RATE * 1.1)
-	var fade := 3000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 613
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.45)
-		lp2 = lerpf(lp2, raw, 0.08)
-		var steam := lp - lp2 * 0.85
-		# Metal stress clicks
-		var ping := 0.0
-		var ph := fposmod(tt * 5.0, 1.0)
-		if ph < 0.08:
-			ping = sin(TAU * 2400.0 * tt) * exp(-30.0 * ph) * 0.15
-		# Subtle heat alarm warning beep
-		var beep := 0.0
-		var b_ph := fposmod(tt * 3.5, 1.0)
-		if b_ph < 0.35:
-			beep = sin(TAU * 880.0 * tt) * 0.06
-		f[i] = _soft(steam * 0.85 + ping + beep)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_crash() -> AudioStreamWAV:
-	var n := int(RATE * 1.30)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var hp := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 33
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var env := exp(-4.2 * tt)
-		var noise := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, noise, 0.28)
-		hp = noise - lp
-		# Heavy sub-bass impact thud (40 Hz shockwave)
-		var thump := sin(TAU * 40.0 * tt) * exp(-4.8 * tt) * 0.75
-		var sub := sin(TAU * 24.0 * tt) * exp(-3.8 * tt) * 0.40
-		# Buckling sheet metal & frame crunch
-		var crunch := sin(TAU * 165.0 * tt + sin(TAU * 35.0 * tt) * 2.0) * exp(-9.0 * tt) * 0.42
-		var metal := sin(TAU * 840.0 * tt) * exp(-13.0 * tt) * 0.16
-		# Tempered safety glass shattering
-		var glass := hp * exp(-8.0 * tt) * 0.36
-		# Cascading secondary debris
-		var debris := 0.0
-		if tt > 0.12:
-			var t2 := tt - 0.12
-			debris = hp * exp(-4.5 * t2) * 0.18 * (0.5 + 0.5 * sin(TAU * 26.0 * t2))
-		f[i] = _soft(thump + sub + crunch + metal + glass + debris + lp * 0.90 * env)
-	return _wav(f, false)
-
-
-func _make_thunder() -> AudioStreamWAV:
-	var n := int(RATE * 3.8)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var lp3 := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 7719
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.030)
-		lp2 = lerpf(lp2, raw, 0.0035)
-		lp3 = lerpf(lp3, raw, 0.16)
-		var env := exp(-tt * 1.05) * (1.0 - exp(-tt * 26.0))
-		var roll := 0.62 + 0.38 * (0.5 + 0.5 * sin(TAU * 1.35 * tt + sin(TAU * 0.47 * tt) * 2.4))
-		var rumble := (lp - lp2 * 0.62) * 1.05 + lp3 * 0.12
-		var crack := 0.0
-		if tt < 0.14:
-			crack = sin(TAU * (110.0 + 70.0 * tt) * tt) * exp(-tt * 19.0) * 0.42
-		f[i] = _soft((rumble * roll + crack) * env * 2.05)
-	return _wav(f, false)
-
-
-func _make_bump() -> AudioStreamWAV:
-	var n := int(RATE * 0.24)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 412
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var noise := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, noise, 0.35)
-		# Low punchy bumper thud (pitch drops from 72Hz to 38Hz)
-		var freq := lerpf(72.0, 38.0, minf(tt * 15.0, 1.0))
-		var thud := sin(TAU * freq * tt) * exp(-12.0 * tt) * 0.85
-		# Snappy plastic bumper contact slap
-		var slap := lp * exp(-28.0 * tt) * 0.45
-		# Frame vibration
-		var vibe := sin(TAU * 190.0 * tt) * exp(-22.0 * tt) * 0.20
-		f[i] = _soft(thud + slap + vibe)
-	return _wav(f, false)
-
-
-func _make_whoosh() -> AudioStreamWAV:
-	var n := int(RATE * 0.52)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 808
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.52, 0.0, 1.0)
-		var env := sin(PI * k)
-		env = env * env * env
-		var raw := rng.randf_range(-1.0, 1.0)
-		# Doppler pitch sweep
-		var fc := lerpf(240.0, 2900.0, sin(k * PI * 0.85))
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 0.85 * band
-		band += fcoef * high
-		f[i] = _soft((band * 3.2 + high * 0.25) * env)
-	return _wav(f, false)
-
-
-func _make_pass_by() -> AudioStreamWAV:
-	# A car overtaking: tyre hiss plus a short engine snarl whose pitch drops as
-	# it goes away, wrapped in a narrow band that sweeps down. Together with the
-	# pan it reads as "something just went past me on that side".
-	var n := int(RATE * 0.60)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var low2 := 0.0
-	var band2 := 0.0
-	var phase := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 4242
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.60, 0.0, 1.0)
-		# Two-sided envelope: quieter at the start, peak as it draws level.
-		var env := sin(PI * pow(k, 0.72))
-		env = env * env
-		var raw := rng.randf_range(-1.0, 1.0)
-		# Band-pass sweeps down: approaching roar turns into receding hiss.
-		var fc := lerpf(2600.0, 620.0, pow(k, 0.85))
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 1.05 * band
-		band += fcoef * high
-		# A second, lower formant gives the body of the engine note.
-		var fc2 := lerpf(430.0, 190.0, k)
-		var fcoef2 := 2.0 * sin(PI * fc2 / float(RATE))
-		low2 += fcoef2 * band2
-		var high2 := raw - low2 - 1.20 * band2
-		band2 += fcoef2 * high2
-		# A faint tonal core so it is not pure noise.
-		var freq := lerpf(150.0, 92.0, k)
-		phase += TAU * freq / float(RATE)
-		var tone := sin(phase) * 0.16 + sin(phase * 2.0) * 0.05
-		f[i] = _soft((band * 2.6 + band2 * 2.2 + high * 0.12 + tone) * env * 0.85)
-	return _wav(f, false)
-
-
-func _make_click() -> AudioStreamWAV:
-	var n := int(RATE * 0.06)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		# Tactile mechanical click: soft wooden transient + gentle snap
-		var env := exp(-65.0 * tt)
-		var body := sin(TAU * 120.0 * tt) * 0.35
-		var snap := sin(TAU * 1420.0 * tt) * 0.25 + sin(TAU * 2240.0 * tt) * 0.10
-		f[i] = (body + snap) * env
-	return _wav(f, false)
-
-
-func _make_chime() -> AudioStreamWAV:
-	var n := int(RATE * 1.25)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var notes := [1046.50, 1318.51, 1567.98, 2093.00]
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var a := 0.0
-		for j in range(notes.size()):
-			var start := float(j) * 0.09
-			if tt < start:
-				continue
-			var t2 := tt - start
-			var fr: float = notes[j]
-			a += sin(TAU * fr * t2) * exp(-4.2 * t2) * 0.28
-			a += sin(TAU * fr * 2.0 * t2) * exp(-6.5 * t2) * 0.10
-			a += sin(TAU * fr * 3.0 * t2) * exp(-9.5 * t2) * 0.04
-		f[i] = _soft(a * 1.20)
-	return _wav(f, false)
-
-
-func _make_coin() -> AudioStreamWAV:
-	var n := int(RATE * 0.28)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		# Classic arcade crystalline double-ping (A6 1760 Hz -> E7 2637 Hz)
-		var a := sin(TAU * 1760.0 * tt) * exp(-15.0 * tt) * 0.40
-		a += sin(TAU * 3520.0 * tt) * exp(-24.0 * tt) * 0.12
-		if tt > 0.045:
-			var t2 := tt - 0.045
-			a += sin(TAU * 2637.0 * t2) * exp(-12.0 * t2) * 0.48
-			a += sin(TAU * 5274.0 * t2) * exp(-20.0 * t2) * 0.14
-		f[i] = _soft(a * 1.15)
-	return _wav(f, false)
-
-
-func _make_pickup() -> AudioStreamWAV:
-	var n := int(RATE * 0.45)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var ph := 0.0
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.45, 0.0, 1.0)
-		var fr := lerpf(380.0, 1480.0, k * k)
-		ph += TAU * fr / float(RATE)
-		var env := sin(PI * k)
-		env = env * env
-		var trem := 0.85 + 0.15 * sin(TAU * 28.0 * tt)
-		var harm := sin(ph) * 0.48 + sin(ph * 2.0) * 0.18 + sin(ph * 4.0) * 0.06
-		f[i] = _soft(harm * env * trem * 1.25)
-	return _wav(f, false)
-
-
-func _make_boost() -> AudioStreamWAV:
-	var n := int(RATE * 0.90)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var ph := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 5150
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.90, 0.0, 1.0)
-		var env := sin(PI * k)
-		env = env * env
-		# Concussive explosive sub-bass slam
-		var sub := sin(TAU * lerpf(68.0, 32.0, k) * tt) * exp(-4.5 * tt) * 0.65
-		# Ignition crackle & jet rush
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, lerpf(0.12, 0.52, k))
-		lp2 = lerpf(lp2, lp, 0.040)
-		var hiss := (lp - lp2) * 2.6
-		ph += TAU * lerpf(650.0, 2100.0, k * k) / float(RATE)
-		var turbine := sin(ph) * 0.14
-		f[i] = _soft((sub + (hiss + turbine) * env) * 1.30)
-	return _wav(f, false)
-
-
-func _make_cutin() -> AudioStreamWAV:
-	var n := int(RATE * 0.38)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 9091
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.38, 0.0, 1.0)
-		var env := sin(PI * k) * (1.0 - k * 0.25)
-		var raw := rng.randf_range(-1.0, 1.0)
-		# Crisp metallic blade slice ("SHING!")
-		var fc := lerpf(3400.0, 950.0, k)
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 0.75 * band
-		band += fcoef * high
-		# Harmonic reward ping
-		var ping := sin(TAU * 1318.5 * tt) * exp(-12.0 * tt) * 0.26 + sin(TAU * 2637.0 * tt) * exp(-18.0 * tt) * 0.14
-		f[i] = _soft((band * 2.8 + high * 0.30) * env + ping)
-	return _wav(f, false)
-
-
-func _make_rewind() -> AudioStreamWAV:
-	var n := int(RATE * 1.5)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var ph := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 1717
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 1.5, 0.0, 1.0)
-		var env := sin(PI * k)
-		env = env * env * 0.90
-		var raw := rng.randf_range(-1.0, 1.0)
-		var fc := lerpf(380.0, 3200.0, k * k)
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 0.95 * band
-		band += fcoef * high
-		ph += TAU * lerpf(160.0, 740.0, k) / float(RATE)
-		var warble := sin(ph + sin(TAU * 8.0 * tt) * 0.9) * 0.16
-		f[i] = _soft(band * 2.4 * env + high * 0.24 * env + warble * env)
-	return _wav(f, false)
-
-
-func _make_slipstream() -> AudioStreamWAV:
-	var loop_len := RATE
-	var fade := 3000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 505
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		# Suction vacuum & vortex air sweep
-		var fc := 680.0 + sin(TAU * 5.0 * tt) * 180.0
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 0.85 * band
-		band += fcoef * high
-		var suction := sin(TAU * 58.0 * tt) * 0.14 + sin(TAU * 116.0 * tt) * 0.08
-		var whistle := sin(TAU * (920.0 + 80.0 * sin(TAU * 4.0 * tt)) * tt) * 0.035
-		f[i] = _soft((band * 2.2 + suction + whistle) * 0.90)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_rain() -> AudioStreamWAV:
-	var loop_len := int(RATE * 2.0)
-	var fade := 5000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var body_lp := 0.0
-	var body_lp2 := 0.0
-	var drop_env := 0.0
-	var drop_phase := 0.0
-	var drop_freq := 2200.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 31415
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.35)
-		lp2 = lerpf(lp2, lp, 0.030)
-		body_lp = lerpf(body_lp, raw, 0.020)
-		body_lp2 = lerpf(body_lp2, body_lp, 0.004)
-		var rain_hiss := (lp - lp2 * 0.80) * 0.66
-		var rain_body := (body_lp - body_lp2 * 0.84) * 0.46
-		# Individually decaying droplets on glass and metal.
-		if rng.randf() < 0.0014:
-			drop_env = rng.randf_range(0.10, 0.30)
-			drop_phase = 0.0
-			drop_freq = rng.randf_range(1500.0, 3400.0)
-		var drop := 0.0
-		if drop_env > 0.0001:
-			drop_phase += TAU * drop_freq / float(RATE)
-			drop = sin(drop_phase) * drop_env
-			drop_env *= 0.9905
-		var swell := 0.93 + 0.05 * sin(TAU * 0.31 * tt) + 0.02 * sin(TAU * 1.7 * tt)
-		f[i] = _soft((rain_hiss + rain_body) * swell + drop * 0.42)
-	return _loop_wav(f, loop_len, fade)
-
-
-# Wet asphalt hiss and tyre spray. Layered under the road loop when the
-# surface is wet, and scaled by speed in update_engine().
-func _make_wet_road() -> AudioStreamWAV:
-	var loop_len := int(RATE * 2.0)
-	var fade := 5000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var lp2 := 0.0
-	var drop_env := 0.0
-	var drop_phase := 0.0
-	var drop_freq := 2400.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 60607
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.085)
-		lp2 = lerpf(lp2, lp, 0.007)
-		var spray_body := lp - lp2 * 0.72
-		var spray_hiss := (raw - lp) * 0.085
-		if rng.randf() < 0.0010:
-			drop_env = rng.randf_range(0.10, 0.28)
-			drop_phase = 0.0
-			drop_freq = rng.randf_range(1300.0, 3200.0)
-		var drop := 0.0
-		if drop_env > 0.0001:
-			drop_phase += TAU * drop_freq / float(RATE)
-			drop = sin(drop_phase) * drop_env
-			drop_env *= 0.990
-		var surge := 0.72 + 0.24 * sin(TAU * 1.45 * tt + 0.4) + 0.10 * sin(TAU * 4.6 * tt)
-		f[i] = _soft((spray_body * 1.15 + spray_hiss) * surge + drop * 0.46)
-	return _loop_wav(f, loop_len, fade)
-
-
-# Low storm rumble bed: brown-ish noise plus slow gusts. It sits far under the
-# rain layer and rises with the storm intensity.
-func _make_storm() -> AudioStreamWAV:
-	var loop_len := int(RATE * 3.0)
-	var fade := 6000
-	var n := loop_len + fade
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var low2 := 0.0
-	var mid := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 80808
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		low = lerpf(low, raw, 0.018)
-		low2 = lerpf(low2, low, 0.004)
-		mid = lerpf(mid, raw, 0.055)
-		var rumble := (low - low2 * 0.72) * 1.8
-		var gust := 0.70 + 0.18 * sin(TAU * 0.21 * tt) + 0.08 * sin(TAU * 0.63 * tt + 1.2)
-		var distant := 0.5 + 0.5 * sin(TAU * 0.11 * tt)
-		f[i] = _soft(rumble * gust + mid * 0.11 + sin(TAU * 38.0 * tt) * 0.022 * distant)
-	return _loop_wav(f, loop_len, fade)
-
-
-func _make_slingshot_ready() -> AudioStreamWAV:
-	var n := int(RATE * 0.24)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var ph := 0.0
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var fr := 880.0 if tt < 0.07 else 1318.5
-		ph += TAU * fr / float(RATE)
-		var env := exp(-12.0 * (tt if tt < 0.07 else tt - 0.07))
-		f[i] = _soft((sin(ph) * 0.42 + sin(ph * 2.0) * 0.16) * env)
-	return _wav(f, false)
-
-
-func _make_slingshot_snap() -> AudioStreamWAV:
-	var n := int(RATE * 0.56)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var low := 0.0
-	var band := 0.0
-	var ph := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 6161
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.56, 0.0, 1.0)
-		var env := sin(PI * pow(k, 0.45)) * (1.0 - k * 0.25)
-		var raw := rng.randf_range(-1.0, 1.0)
-		var fc := lerpf(420.0, 3200.0, pow(k, 0.55))
-		var fcoef := 2.0 * sin(PI * fc / float(RATE))
-		low += fcoef * band
-		var high := raw - low - 0.80 * band
-		band += fcoef * high
-		ph += TAU * lerpf(240.0, 960.0, k) / float(RATE)
-		var punch := sin(TAU * lerpf(110.0, 46.0, minf(1.0, tt * 8.0)) * tt) * exp(-10.0 * tt) * 0.65
-		f[i] = _soft(punch + (band * 2.8 + sin(ph) * 0.22) * env)
-	return _wav(f, false)
-
-
-func _make_ram_hit() -> AudioStreamWAV:
-	var n := int(RATE * 0.45)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var lp := 0.0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 7373
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var raw := rng.randf_range(-1.0, 1.0)
-		lp = lerpf(lp, raw, 0.24)
-		var thud := sin(TAU * lerpf(92.0, 32.0, minf(1.0, tt * 10.0)) * tt) * exp(-7.5 * tt) * 0.95
-		var clang := (sin(TAU * 430.0 * tt) + sin(TAU * 685.0 * tt) * 0.6) * exp(-14.0 * tt) * 0.34
-		var crunch := lp * exp(-12.0 * tt) * 0.60
-		f[i] = _soft((thud + clang + crunch) * 1.15)
-	return _wav(f, false)
-
-
-func _make_radar_ok() -> AudioStreamWAV:
-	var n := int(RATE * 0.32)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var a := sin(TAU * 1568.0 * tt) * exp(-14.0 * tt) * 0.42
-		if tt > 0.08:
-			var t2 := tt - 0.08
-			a += sin(TAU * 2093.0 * t2) * exp(-11.0 * t2) * 0.48
-		f[i] = _soft(a)
-	return _wav(f, false)
-
-
-func _make_shield_trigger() -> AudioStreamWAV:
-	var n := int(RATE * 0.68)
-	var f := PackedFloat32Array()
-	f.resize(n)
-	var ph := 0.0
-	for i in range(n):
-		var tt := float(i) / float(RATE)
-		var k := clampf(tt / 0.68, 0.0, 1.0)
-		var env := sin(PI * pow(k, 0.35))
-		ph += TAU * lerpf(780.0, 290.0, k * k) / float(RATE)
-		var sub := sin(TAU * 72.0 * tt) * exp(-5.0 * tt) * 0.50
-		var bell := sin(ph) * 0.38 + sin(ph * 1.5) * 0.22
-		f[i] = _soft((sub + bell) * env * 1.15)
-	return _wav(f, false)
 
 
 # --- music ------------------------------------------------------------------

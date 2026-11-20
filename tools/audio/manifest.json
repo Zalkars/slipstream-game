@@ -1,0 +1,972 @@
+{
+ "_sources": {
+  "149932": {
+   "author": "bryceisbell",
+   "license": "CC0 1.0",
+   "title": "Birds From A Balcony At Sunrise In Denton Texas [032912].WAV",
+   "url": "https://freesound.org/s/149932/",
+   "used_for": [
+    "amb/birds (28.8s loop)"
+   ]
+  },
+  "151624": {
+   "author": "qubodup",
+   "license": "CC0 1.0",
+   "title": "Clank Car Crash Collision",
+   "url": "https://freesound.org/s/151624/",
+   "used_for": [
+    "impact/clank (0.00-0.54s)"
+   ]
+  },
+  "167034": {
+   "author": "soundrecorder7",
+   "license": "CC0 1.0",
+   "title": "Light Rain",
+   "url": "https://freesound.org/s/167034/",
+   "used_for": [
+    "amb/rain_light (12.6s loop)"
+   ]
+  },
+  "199525": {
+   "author": "Ermens",
+   "license": "CC0 1.0",
+   "title": "abrupt stopping car on wet ground.aif",
+   "url": "https://freesound.org/s/199525/",
+   "used_for": [
+    "brake/skid_wet (1.9s loop)"
+   ]
+  },
+  "278132": {
+   "author": "warrenXG",
+   "license": "CC0 1.0",
+   "title": "MetalScrape4.wav",
+   "url": "https://freesound.org/s/278132/",
+   "used_for": [
+    "impact/scrape (6.9s loop)"
+   ]
+  },
+  "321482": {
+   "author": "dslrguide",
+   "license": "CC0 1.0",
+   "title": "Metal Hit 2",
+   "url": "https://freesound.org/s/321482/",
+   "used_for": [
+    "impact/metal_hit (0.05-1.40s)"
+   ]
+  },
+  "340539": {
+   "author": "mickyman5000",
+   "license": "CC0 1.0",
+   "title": "Car_Door_Hit.wav",
+   "url": "https://freesound.org/s/340539/",
+   "used_for": [
+    "impact/door_hit (0.00-0.44s)"
+   ]
+  },
+  "385104": {
+   "author": "softwalls",
+   "license": "CC0 1.0",
+   "title": "XY_City hum_Night_River_ambience.wav",
+   "url": "https://freesound.org/s/385104/",
+   "used_for": [
+    "amb/city_hum (129.4s loop)"
+   ]
+  },
+  "405422": {
+   "author": "logancircle2",
+   "license": "CC0 1.0",
+   "title": "Beltway Underpass.mp3",
+   "url": "https://freesound.org/s/405422/",
+   "used_for": [
+    "amb/underpass (137.2s loop)"
+   ]
+  },
+  "465397": {
+   "author": "JPBILLINGSLEYJR",
+   "license": "CC0 1.0",
+   "title": "One car passing by",
+   "url": "https://freesound.org/s/465397/",
+   "used_for": [
+    "traffic/pass_dry (4.4-6.7s)"
+   ]
+  },
+  "473864": {
+   "author": "Kragnour",
+   "license": "CC0 1.0",
+   "title": "DistantThunder.wav",
+   "url": "https://freesound.org/s/473864/",
+   "used_for": [
+    "amb/thunder_far_0 (13.4-26.0s)"
+   ]
+  },
+  "487143": {
+   "author": "craigsmith",
+   "license": "CC0 1.0",
+   "title": "R29-28-Large Metal Vehicle Crashes.wav",
+   "url": "https://freesound.org/s/487143/",
+   "used_for": [
+    "impact/crash_metal (7.60-11.30s)"
+   ]
+  },
+  "495866": {
+   "author": "Yakobb1",
+   "license": "CC0 1.0",
+   "title": "City Ambience Distant Stereo.wav",
+   "url": "https://freesound.org/s/495866/",
+   "used_for": [
+    "amb/city_night (143.9s loop)"
+   ]
+  },
+  "518090": {
+   "author": "Tim_Verberne",
+   "license": "CC0 1.0",
+   "title": "Strong Wind 03.wav",
+   "url": "https://freesound.org/s/518090/",
+   "used_for": [
+    "amb/wind (31.6s loop)"
+   ]
+  },
+  "540451": {
+   "author": "Za-Games",
+   "license": "CC0 1.0",
+   "title": "Breaking Glass 2",
+   "url": "https://freesound.org/s/540451/",
+   "used_for": [
+    "impact/glass_0 (0.00-1.16s)"
+   ]
+  },
+  "563021": {
+   "author": "cookies+policy",
+   "license": "CC0 1.0",
+   "title": "Water Puddle Splash",
+   "url": "https://freesound.org/s/563021/",
+   "used_for": [
+    "road/splash (0.30-3.80s)"
+   ]
+  },
+  "592388": {
+   "author": "magnuswaker",
+   "license": "CC0 1.0",
+   "title": "Car Crash (with Glass)",
+   "url": "https://freesound.org/s/592388/",
+   "used_for": [
+    "impact/crash_heavy (0.00-2.20s)"
+   ]
+  },
+  "613311": {
+   "author": "eZZin",
+   "license": "CC0 1.0",
+   "title": "Windowcrash.wav",
+   "url": "https://freesound.org/s/613311/",
+   "used_for": [
+    "impact/glass_1 (0.00-2.05s)"
+   ]
+  },
+  "614627": {
+   "author": "johnnydekk",
+   "license": "CC0 1.0",
+   "title": "screeching tyres / tires",
+   "url": "https://freesound.org/s/614627/",
+   "used_for": [
+    "brake/squeal_dry (27.2s loop)"
+   ]
+  },
+  "648786": {
+   "author": "klau78",
+   "license": "CC0 1.0",
+   "title": "Cars and trucks passing by on a wet road",
+   "url": "https://freesound.org/s/648786/",
+   "used_for": [
+    "traffic/pass_wet (27.03-29.43s)",
+    "traffic/pass_wet_heavy (83.2-87.2s)"
+   ]
+  },
+  "712914": {
+   "author": "greyfeather",
+   "license": "CC0 1.0",
+   "title": "distant rumbling thunderstorm, ambience",
+   "url": "https://freesound.org/s/712914/",
+   "used_for": [
+    "amb/thunder_far_1 (0-6.3s)"
+   ]
+  },
+  "768870": {
+   "author": "Gustavo_C",
+   "license": "CC0 1.0",
+   "title": "heavy_rain_outside",
+   "url": "https://freesound.org/s/768870/",
+   "used_for": [
+    "amb/rain_heavy (12.6s loop)"
+   ]
+  },
+  "797835": {
+   "author": "modusmogulus",
+   "license": "CC0 1.0",
+   "title": "Car Antilag (No cleanup, 32float)",
+   "url": "https://freesound.org/s/797835/",
+   "used_for": [
+    "engine/pop_0 (0.32s)",
+    "engine/pop_1 (1.57s)",
+    "engine/pop_2 (1.76s)",
+    "engine/pop_3 (2.17s)",
+    "engine/pop_4 (5.27s)"
+   ]
+  },
+  "801435": {
+   "author": "okpato123",
+   "license": "CC0 1.0",
+   "title": "air brake sound effect",
+   "url": "https://freesound.org/s/801435/",
+   "used_for": [
+    "traffic/air_brake (0.90-2.30s)"
+   ]
+  },
+  "812685": {
+   "author": "AudioPapkin",
+   "license": "CC0 1.0",
+   "title": "Sound Design Elements Whoosh SFX 048",
+   "url": "https://freesound.org/s/812685/",
+   "used_for": [
+    "nitro/ignite (layer)"
+   ]
+  },
+  "812689": {
+   "author": "AudioPapkin",
+   "license": "CC0 1.0",
+   "title": "Sound Design Elements Whoosh SFX 052",
+   "url": "https://freesound.org/s/812689/",
+   "used_for": [
+    "nitro/sling_snap (layer)"
+   ]
+  },
+  "840628": {
+   "author": "loganzsound",
+   "license": "CC0 1.0",
+   "title": "Closeup Thunder Strike 01",
+   "url": "https://freesound.org/s/840628/",
+   "used_for": [
+    "amb/thunder_close (0.45-10.5s)"
+   ]
+  },
+  "849916": {
+   "author": "leocb",
+   "license": "CC0 1.0",
+   "title": "Light Rain inside a car, driver seat",
+   "url": "https://freesound.org/s/849916/",
+   "used_for": [
+    "amb/rain_roof (31.3s loop)"
+   ]
+  },
+  "861757": {
+   "author": "bassimat",
+   "license": "CC0 1.0",
+   "title": "Wind - Low Frequency, Warm and Strong",
+   "url": "https://freesound.org/s/861757/",
+   "used_for": [
+    "amb/storm_low (5.0s loop)"
+   ]
+  }
+ },
+ "air/rush": {
+  "ch": 1,
+  "len": 2.0,
+  "rms_db": -18.0,
+  "sr": 32000
+ },
+ "amb/birds": {
+  "ch": 2,
+  "len": 20.0,
+  "rms_db": -23.4,
+  "sr": 44100
+ },
+ "amb/city_hum": {
+  "ch": 2,
+  "len": 16.0,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "amb/city_night": {
+  "ch": 2,
+  "len": 20.0,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "amb/rain_heavy": {
+  "ch": 2,
+  "len": 12.0,
+  "rms_db": -27.6,
+  "sr": 44100
+ },
+ "amb/rain_light": {
+  "ch": 2,
+  "len": 12.0,
+  "rms_db": -21.6,
+  "sr": 44100
+ },
+ "amb/rain_roof": {
+  "ch": 2,
+  "len": 10.0,
+  "rms_db": -23.8,
+  "sr": 44100
+ },
+ "amb/storm_low": {
+  "ch": 2,
+  "len": 14.0,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "amb/thunder_close": {
+  "ch": 2,
+  "len": 10.05,
+  "rms_db": -24.9,
+  "sr": 44100
+ },
+ "amb/thunder_far_0": {
+  "ch": 2,
+  "len": 12.6,
+  "rms_db": -19.3,
+  "sr": 44100
+ },
+ "amb/thunder_far_1": {
+  "ch": 2,
+  "len": 6.258,
+  "rms_db": -16.9,
+  "sr": 44100
+ },
+ "amb/underpass": {
+  "ch": 2,
+  "len": 12.0,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "amb/wind": {
+  "ch": 2,
+  "len": 16.0,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "brake/abs": {
+  "ch": 1,
+  "len": 1.0,
+  "rms_db": -18.0,
+  "sr": 32000
+ },
+ "brake/overheat": {
+  "ch": 1,
+  "len": 1.2,
+  "rms_db": -19.0,
+  "sr": 32000
+ },
+ "brake/scrub": {
+  "ch": 1,
+  "len": 2.0,
+  "rms_db": -18.0,
+  "sr": 32000
+ },
+ "brake/skid_wet": {
+  "ch": 1,
+  "len": 3.0,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "brake/squeal_dry": {
+  "ch": 1,
+  "len": 1.8,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "engine/ev_0_off": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/ev_0_on": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/ev_1_off": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/ev_1_on": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/ev_2_off": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/ev_2_on": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hatch_0_off": {
+  "ch": 1,
+  "len": 1.694,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hatch_0_on": {
+  "ch": 1,
+  "len": 1.694,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hatch_1_off": {
+  "ch": 1,
+  "len": 1.714,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hatch_1_on": {
+  "ch": 1,
+  "len": 1.714,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hatch_2_off": {
+  "ch": 1,
+  "len": 1.692,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hatch_2_on": {
+  "ch": 1,
+  "len": 1.692,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hyper_0_off": {
+  "ch": 1,
+  "len": 1.708,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hyper_0_on": {
+  "ch": 1,
+  "len": 1.708,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hyper_1_off": {
+  "ch": 1,
+  "len": 1.689,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hyper_1_on": {
+  "ch": 1,
+  "len": 1.689,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hyper_2_off": {
+  "ch": 1,
+  "len": 1.705,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/hyper_2_on": {
+  "ch": 1,
+  "len": 1.705,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/muscle_0_off": {
+  "ch": 1,
+  "len": 1.68,
+  "rms_db": -18.0,
+  "sr": 32000
+ },
+ "engine/muscle_0_on": {
+  "ch": 1,
+  "len": 1.68,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/muscle_1_off": {
+  "ch": 1,
+  "len": 1.688,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/muscle_1_on": {
+  "ch": 1,
+  "len": 1.688,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/muscle_2_off": {
+  "ch": 1,
+  "len": 1.697,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/muscle_2_on": {
+  "ch": 1,
+  "len": 1.697,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/offroad_0_off": {
+  "ch": 1,
+  "len": 1.725,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/offroad_0_on": {
+  "ch": 1,
+  "len": 1.725,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/offroad_1_off": {
+  "ch": 1,
+  "len": 1.688,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/offroad_1_on": {
+  "ch": 1,
+  "len": 1.688,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/offroad_2_off": {
+  "ch": 1,
+  "len": 1.702,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/offroad_2_on": {
+  "ch": 1,
+  "len": 1.702,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/pickup_0_off": {
+  "ch": 1,
+  "len": 1.714,
+  "rms_db": -19.0,
+  "sr": 32000
+ },
+ "engine/pickup_0_on": {
+  "ch": 1,
+  "len": 1.714,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/pickup_1_off": {
+  "ch": 1,
+  "len": 1.714,
+  "rms_db": -17.3,
+  "sr": 32000
+ },
+ "engine/pickup_1_on": {
+  "ch": 1,
+  "len": 1.714,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/pickup_2_off": {
+  "ch": 1,
+  "len": 1.69,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/pickup_2_on": {
+  "ch": 1,
+  "len": 1.69,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/pop_0": {
+  "ch": 1,
+  "len": 0.16,
+  "rms_db": -15.2,
+  "sr": 44100
+ },
+ "engine/pop_1": {
+  "ch": 1,
+  "len": 0.16,
+  "rms_db": -20.7,
+  "sr": 44100
+ },
+ "engine/pop_2": {
+  "ch": 1,
+  "len": 0.16,
+  "rms_db": -19.9,
+  "sr": 44100
+ },
+ "engine/pop_3": {
+  "ch": 1,
+  "len": 0.16,
+  "rms_db": -20.3,
+  "sr": 44100
+ },
+ "engine/pop_4": {
+  "ch": 1,
+  "len": 0.16,
+  "rms_db": -21.1,
+  "sr": 44100
+ },
+ "engine/sedan_0_off": {
+  "ch": 1,
+  "len": 1.733,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sedan_0_on": {
+  "ch": 1,
+  "len": 1.733,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sedan_1_off": {
+  "ch": 1,
+  "len": 1.705,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sedan_1_on": {
+  "ch": 1,
+  "len": 1.705,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sedan_2_off": {
+  "ch": 1,
+  "len": 1.695,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sedan_2_on": {
+  "ch": 1,
+  "len": 1.695,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sport_0_off": {
+  "ch": 1,
+  "len": 1.691,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sport_0_on": {
+  "ch": 1,
+  "len": 1.691,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sport_1_off": {
+  "ch": 1,
+  "len": 1.696,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sport_1_on": {
+  "ch": 1,
+  "len": 1.696,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sport_2_off": {
+  "ch": 1,
+  "len": 1.699,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/sport_2_on": {
+  "ch": 1,
+  "len": 1.699,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/van_0_off": {
+  "ch": 1,
+  "len": 1.662,
+  "rms_db": -18.9,
+  "sr": 32000
+ },
+ "engine/van_0_on": {
+  "ch": 1,
+  "len": 1.662,
+  "rms_db": -17.6,
+  "sr": 32000
+ },
+ "engine/van_1_off": {
+  "ch": 1,
+  "len": 1.68,
+  "rms_db": -17.3,
+  "sr": 32000
+ },
+ "engine/van_1_on": {
+  "ch": 1,
+  "len": 1.68,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "engine/van_2_off": {
+  "ch": 1,
+  "len": 1.698,
+  "rms_db": -17.2,
+  "sr": 32000
+ },
+ "engine/van_2_on": {
+  "ch": 1,
+  "len": 1.698,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "impact/clank": {
+  "ch": 1,
+  "len": 0.54,
+  "rms_db": -15.3,
+  "sr": 44100
+ },
+ "impact/crash_heavy": {
+  "ch": 1,
+  "len": 2.2,
+  "rms_db": -18.7,
+  "sr": 44100
+ },
+ "impact/crash_metal": {
+  "ch": 1,
+  "len": 3.7,
+  "rms_db": -10.4,
+  "sr": 44100
+ },
+ "impact/door_hit": {
+  "ch": 1,
+  "len": 0.44,
+  "rms_db": -15.0,
+  "sr": 44100
+ },
+ "impact/glass_0": {
+  "ch": 1,
+  "len": 1.16,
+  "rms_db": -21.2,
+  "sr": 44100
+ },
+ "impact/glass_1": {
+  "ch": 1,
+  "len": 2.05,
+  "rms_db": -21.9,
+  "sr": 44100
+ },
+ "impact/knock": {
+  "ch": 1,
+  "len": 0.3,
+  "rms_db": -14.4,
+  "sr": 32000
+ },
+ "impact/metal_hit": {
+  "ch": 1,
+  "len": 1.35,
+  "rms_db": -22.4,
+  "sr": 44100
+ },
+ "impact/scrape": {
+  "ch": 1,
+  "len": 2.4,
+  "rms_db": -20.0,
+  "sr": 44100
+ },
+ "impact/sub": {
+  "ch": 1,
+  "len": 0.7,
+  "rms_db": -13.7,
+  "sr": 32000
+ },
+ "nitro/blowoff": {
+  "ch": 1,
+  "len": 0.8,
+  "rms_db": -22.4,
+  "sr": 32000
+ },
+ "nitro/ignite": {
+  "ch": 1,
+  "len": 1.3,
+  "rms_db": -12.9,
+  "sr": 32000
+ },
+ "nitro/shield": {
+  "ch": 1,
+  "len": 1.25,
+  "rms_db": -20.1,
+  "sr": 32000
+ },
+ "nitro/sling_ready": {
+  "ch": 1,
+  "len": 0.42,
+  "rms_db": -19.2,
+  "sr": 32000
+ },
+ "nitro/sling_snap": {
+  "ch": 1,
+  "len": 0.95,
+  "rms_db": -12.8,
+  "sr": 32000
+ },
+ "nitro/sustain": {
+  "ch": 1,
+  "len": 2.0,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "road/joint_0": {
+  "ch": 1,
+  "len": 0.22,
+  "rms_db": -14.0,
+  "sr": 32000
+ },
+ "road/joint_1": {
+  "ch": 1,
+  "len": 0.22,
+  "rms_db": -13.6,
+  "sr": 32000
+ },
+ "road/rail_puff": {
+  "ch": 1,
+  "len": 0.12,
+  "rms_db": -15.0,
+  "sr": 32000
+ },
+ "road/splash": {
+  "ch": 1,
+  "len": 3.5,
+  "rms_db": -19.4,
+  "sr": 44100
+ },
+ "traffic/air_brake": {
+  "ch": 1,
+  "len": 1.4,
+  "rms_db": -17.8,
+  "sr": 44100
+ },
+ "traffic/buffet": {
+  "ch": 1,
+  "len": 0.9,
+  "rms_db": -14.7,
+  "sr": 32000
+ },
+ "traffic/eng_bus": {
+  "ch": 1,
+  "len": 1.371,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "traffic/eng_car": {
+  "ch": 1,
+  "len": 1.385,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "traffic/eng_sport": {
+  "ch": 1,
+  "len": 1.4,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "traffic/eng_suv": {
+  "ch": 1,
+  "len": 1.409,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "traffic/eng_truck": {
+  "ch": 1,
+  "len": 1.44,
+  "rms_db": -18.4,
+  "sr": 32000
+ },
+ "traffic/eng_van": {
+  "ch": 1,
+  "len": 1.371,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "traffic/pass_dry": {
+  "ch": 1,
+  "len": 2.3,
+  "rms_db": -20.4,
+  "sr": 44100
+ },
+ "traffic/pass_wet": {
+  "ch": 1,
+  "len": 2.4,
+  "rms_db": -15.2,
+  "sr": 44100
+ },
+ "traffic/pass_wet_heavy": {
+  "ch": 1,
+  "len": 4.0,
+  "rms_db": -17.2,
+  "sr": 44100
+ },
+ "tyre/roll_dry": {
+  "ch": 1,
+  "len": 2.0,
+  "rms_db": -18.0,
+  "sr": 32000
+ },
+ "tyre/roll_wet": {
+  "ch": 1,
+  "len": 2.0,
+  "rms_db": -18.0,
+  "sr": 32000
+ },
+ "ui/click": {
+  "ch": 1,
+  "len": 0.2,
+  "rms_db": -24.3,
+  "sr": 32000
+ },
+ "ui/coin": {
+  "ch": 1,
+  "len": 0.57,
+  "rms_db": -17.0,
+  "sr": 32000
+ },
+ "ui/cutin": {
+  "ch": 1,
+  "len": 0.42,
+  "rms_db": -14.0,
+  "sr": 32000
+ },
+ "ui/pickup": {
+  "ch": 1,
+  "len": 0.8,
+  "rms_db": -15.9,
+  "sr": 32000
+ },
+ "ui/radar": {
+  "ch": 1,
+  "len": 0.7,
+  "rms_db": -18.5,
+  "sr": 32000
+ },
+ "ui/record": {
+  "ch": 1,
+  "len": 1.6,
+  "rms_db": -17.2,
+  "sr": 32000
+ },
+ "ui/rewind": {
+  "ch": 1,
+  "len": 1.5,
+  "rms_db": -15.2,
+  "sr": 32000
+ }
+}

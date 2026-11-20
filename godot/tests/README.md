@@ -11,6 +11,7 @@ godot --headless --path godot res://tests/FixesRegression.tscn
 godot --headless --path godot res://tests/AdsRegression.tscn
 godot --headless --path godot res://tests/GfxRegression.tscn
 godot --headless --path godot res://tests/PhysicsRegression.tscn
+godot --headless --path godot res://tests/AudioRegression.tscn
 ```
 
 `GfxRegression` (0.8.0) covers the graphics preset table, the Auto benchmark
@@ -49,6 +50,11 @@ none in duels or the Daily Challenge, none without a loaded ad. The Android
 SDK itself is not exercised on desktop.
 
 Use Godot 4.7.2 (the version `build_apk.bat` builds with).
+`AudioRegression` checks the bus layout and routing (every game bus follows
+the SFX volume/mute), that all baked OGG assets load with loops flagged, engine
+data for all nine cars, the rpm/gear model, a driven race through rain, storm,
+nitro, braking and a crash with traffic voices assigned, and the volume
+settings. It cannot judge how anything sounds.
 
 For a graphical frame-time sample on the current computer:
 
