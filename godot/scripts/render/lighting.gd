@@ -366,14 +366,14 @@ func _assign_lights() -> void:
 			l.texture_scale = sc
 			l.offset = Vector2(0.0, -128.0 * sc)
 			l.rotation = float(r.rot)
-			l.height = 30.0
+			l.height = 240.0
 		else:
 			if l.texture != _point_tex:
 				l.texture = _point_tex
 			l.texture_scale = float(r.size) * 2.0 / 128.0
 			l.offset = Vector2.ZERO
 			l.rotation = 0.0
-			l.height = 60.0
+			l.height = 170.0
 		var sh := bool(r.shadow) and shadows_left > 0
 		if sh:
 			shadows_left -= 1

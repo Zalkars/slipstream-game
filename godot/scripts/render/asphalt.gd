@@ -87,7 +87,7 @@ void fragment() {
 	float centre = exp(-pow(lf / 0.12, 2.0));
 
 	// --- albedo ---
-	vec3 asphalt = mix(vec3(0.205, 0.21, 0.222), vec3(0.37, 0.372, 0.378), A.x);
+	vec3 asphalt = mix(vec3(0.245, 0.25, 0.262), vec3(0.39, 0.392, 0.398), A.x);
 	vec3 concrete = vec3(0.53, 0.53, 0.505);
 	vec3 col = mix(asphalt, concrete, A.w);
 	float grain = d.r;
@@ -165,7 +165,7 @@ void fragment() {
 	// Drying is uneven: wheel tracks clear first, ruts and low spots last.
 	float bias = track * 0.30 * (1.0 - A.z) - (big.a - 0.5) * 0.55 - track * A.z * 0.25 + paint * 0.1;
 	float wet = clamp(wetness * 1.35 - bias * (1.0 - wetness * 0.6), 0.0, 1.0) * step(0.001, wetness);
-	col *= 1.0 - wet * (0.40 - A.w * 0.12);
+	col *= 1.0 - wet * (0.28 - A.w * 0.08);
 	col = mix(col, col * vec3(0.92, 0.96, 1.05), wet);
 
 	COLOR = vec4(col, 1.0);
@@ -189,9 +189,11 @@ void fragment() {
 // highlight of every lamp gets tight and bright, which is what reads as
 // "wet" at night. Shadows are applied by the engine after this.
 void light() {
-	float nl = max(dot(NORMAL, LIGHT_DIRECTION), 0.0);
+	// Relief relative to a flat road, so a lamp far away still lights the
+	// asphalt fully and the normal map only adds texture.
+	float nl = clamp(max(dot(NORMAL, LIGHT_DIRECTION), 0.0) / max(LIGHT_DIRECTION.z, 0.08), 0.0, 1.8);
 	vec3 hv = normalize(LIGHT_DIRECTION + vec3(0.0, 0.0, 1.0));
-	float sp = pow(max(dot(NORMAL, hv), 0.0), mix(6.0, 120.0, v_shine)) * v_spec * (1.0 + v_shine * 3.0);
+	float sp = pow(max(dot(NORMAL, hv), 0.0), mix(6.0, 120.0, v_shine)) * v_spec * (1.0 + v_shine * 1.6);
 	LIGHT = vec4(LIGHT_COLOR.rgb * LIGHT_ENERGY * (COLOR.rgb * nl + vec3(sp)), LIGHT_COLOR.a);
 }
 """

@@ -145,8 +145,6 @@ var lightning_next := 9.0
 var thunder_delay := 0.0
 var lightning_bolt := PackedVector2Array()
 var lightning_branches: Array = []
-var rain_drops: Array = []
-var rain_splashes: Array = []
 var puddles: Array = []
 var rear_hazards: Array = []
 var tutorial_mode := false
@@ -237,9 +235,6 @@ var _swipe_mouse_down := false
 
 var grass_tex: ImageTexture
 var glow_tex: ImageTexture
-var rain_tex: ImageTexture
-var wet_tex: ImageTexture
-var streak_tex: ImageTexture
 var _sx := 0.0
 var _sy := 0.0
 
@@ -247,24 +242,14 @@ var _sy := 0.0
 # angle always matches the velocity that actually moved it.
 var rain_vx := -60.0
 var rain_vy := 900.0
-var rain_scale := 60.0  # screen px/s per 1000 px/s of simulated fall
 var rain_gust := 1.0
-var pending = null  # one-shot rendered probe used by the QA harness
-var pending_rect := false
-# QA harness switch: draw the rain field as flat colour-coded marks so the
-# calibration scripts can measure exact streak geometry.
-const QA_FIELD := false
-# Set once in _draw(): the canvas transform is letterboxed, so widget-space
-# pixels are not pixel-space pixels. Every measurement in the QA harness needs
-# this factor to talk about real screen pixels.
-var px_per_unit := 1.0
-var rain_lens: Array = []
 
 # 0.8.0 render pipeline: every visual system lives under render_stack and only
 # reads this node's state. gfx_level is a GfxPresets level (LOW..ULTRA).
 var render_stack: RenderStack
 var lighting_fx: Lighting
 var contact_fx: ContactFx
+var weather_fx: WeatherFx
 var gfx_level := GfxPresets.MEDIUM
 var gfx_target_fps := 60
 
@@ -297,9 +282,6 @@ func _ready() -> void:
 	run_rng.seed = 1729
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
 	glow_tex = Fx.glow_tex()
-	rain_tex = Fx.rain_tex()
-	wet_tex = Fx.wet_tex()
-	streak_tex = Fx.streak_tex()
 	roadside_art = ROADSIDE_ART.new()
 	roadside_art.name = "RoadsideArt"
 	add_child(roadside_art)
@@ -310,50 +292,9 @@ func _ready() -> void:
 	_layout()
 	_gen_decor()
 	_gen_puddles()
-	_gen_rain()
 	_setup_render()
 	get_viewport().size_changed.connect(_layout)
 	start_demo()
-
-
-# Three parallax layers. "fall" is the simulated downward speed of the drop in
-# front of the windscreen; the renderer converts it to screen px/s and the same
-# number drives the motion, so streaks never look like painted decals.
-func _gen_rain() -> void:
-	rain_drops.clear()
-	# Drops are distributed over the screen in proportion to how visible they
-	# are: the far layer is thin and dim, the near layer is thick and bright,
-	# but it is also sparser, so the sheet reads as depth instead of hatching.
-	for i in range(420):
-		var roll := randf()
-		var layer := 0
-		var fall := 900.0
-		var alpha := 0.20
-		var width := 1.6
-		if roll < 0.56:
-			layer = 0
-			fall = randf_range(700.0, 940.0)
-			alpha = randf_range(0.10, 0.17)
-			width = randf_range(0.9, 1.4)
-		elif roll < 0.86:
-			layer = 1
-			fall = randf_range(950.0, 1230.0)
-			alpha = randf_range(0.17, 0.27)
-			width = randf_range(1.4, 2.1)
-		else:
-			layer = 2
-			fall = randf_range(1230.0, 1620.0)
-			alpha = randf_range(0.26, 0.40)
-			width = randf_range(2.0, 3.0)
-		rain_drops.append({
-			"x": randf_range(-60.0, W + 60.0),
-			"y": randf_range(0.0, H),
-			"fall": fall,
-			"alpha": alpha,
-			"width": width,
-			"layer": layer,
-		})
-
 
 func _setup_render() -> void:
 	# Cars, scenery and items in this node's own _draw are lit objects.
@@ -365,6 +306,10 @@ func _setup_render() -> void:
 	render_stack.add_child(lighting_fx)
 	lighting_fx.setup(self, render_stack)
 	render_stack.add_system(lighting_fx)
+	weather_fx = WeatherFx.new()
+	render_stack.add_child(weather_fx)
+	weather_fx.setup(self, render_stack)
+	render_stack.add_system(weather_fx)
 	contact_fx = ContactFx.new()
 	contact_fx.setup(self, render_stack)
 	render_stack.add_system(contact_fx)
@@ -1397,70 +1342,16 @@ func _update_weather(dt: float) -> void:
 		Sfx.set_weather(wetness, wind, storm_amount)
 
 	# --- rain -------------------------------------------------------------
-	# The wind vector below is the single source of truth for the rain: the
-	# simulation moves every drop along it and the renderer derives the streak
-	# angle from the very same pair, so what you see is exactly what moved.
+	# The wind vector below is the single source of truth for the rain:
+	# render/weather_fx.gd moves every drop layer along it and derives the
+	# streak angle from the very same pair, so what you see is what moved.
 	# Gusts are a magnitude and never a sign, so the slant never "breathes"
 	# in and out while the drops keep travelling one way.
 	rain_gust = 0.80 + 0.14 * sin(t * 0.37) + 0.06 * sin(t * 1.31 + 1.7)
 	var sim_speed := speed if running else DEMO_SPEED
-	var fall_k := clampf(sim_speed / 900.0, 0.55, 1.45)
 	var wind_k := clampf(wind * 0.85, 0.0, 1.1)
 	rain_vx = -(150.0 + 320.0 * wind_k + storm_amount * 120.0) * rain_gust
 	rain_vy = (380.0 + sim_speed * 0.30) * (1.0 + wind * 0.06)
-	rain_scale = 34.0 + fall_k * 26.0
-	var wrap_pad := 60.0 + 150.0 * clampf(wind, 0.0, 1.2)
-	var fall_dt := dt
-	if not running:
-		fall_dt = dt * 0.82
-	var drift := Vector2(rain_vx, rain_vy)
-	for rd in rain_drops:
-		var k_layer := 1.0 + float(rd.layer) * 0.16
-		var kf: float = float(rd.fall) / 1000.0
-		rd.y += drift.y * kf * k_layer * fall_dt
-		rd.x += drift.x * kf * k_layer * fall_dt
-		if rd.y > H + 150.0:
-			rd.y = -150.0 - randf() * 60.0
-			rd.x = randf_range(-wrap_pad, W + wrap_pad)
-		elif rd.x < -wrap_pad:
-			rd.x += W + wrap_pad * 2.0
-		elif rd.x > W + wrap_pad:
-			rd.x -= W + wrap_pad * 2.0
-
-	# Rain splashes on the tarmac: small crowns that pop and fade fast.
-	for i in range(rain_splashes.size() - 1, -1, -1):
-		var sp: Dictionary = rain_splashes[i]
-		sp.life -= dt
-		if sp.life <= 0.0:
-			rain_splashes.remove_at(i)
-	if rain_amount > 0.04 and randf() < rain_amount * (170.0 + storm_amount * 90.0) * dt:
-		for n in range(2):
-			rain_splashes.append({
-				"x": randf_range(road_x - 22.0, road_x + road_w + 22.0),
-				"y": randf_range(-20.0, H),
-				"life": randf_range(0.15, 0.28),
-				"max": 0.28,
-				"size": randf_range(1.8, 5.0),
-			})
-	while rain_splashes.size() > 120:
-		rain_splashes.pop_front()
-
-	# Windscreen drops: big, close, short-lived streaks over the whole frame.
-	for i in range(rain_lens.size() - 1, -1, -1):
-		var d: Dictionary = rain_lens[i]
-		d.life -= dt
-		if d.life <= 0.0:
-			rain_lens.remove_at(i)
-	if rain_amount > 0.05 and rain_lens.size() < 22 and randf() < rain_amount * (60.0 + storm_amount * 40.0) * dt:
-		rain_lens.append({
-			"x": randf_range(-20.0, W + 20.0),
-			"y": randf_range(-40.0, H),
-			"len": randf_range(30.0, 90.0),
-			"w": randf_range(3.0, 6.5),
-			"life": randf_range(0.10, 0.22),
-			"max": 0.22,
-		})
-
 	if storm_amount > 0.28:
 		lightning_next -= dt * (0.5 + storm_amount)
 		if lightning_next <= 0.0:
@@ -2471,34 +2362,21 @@ func build_challenge_payload(player_name: String) -> Dictionary:
 # --- drawing ----------------------------------------------------------------
 
 func _draw() -> void:
-	px_per_unit = get_global_transform_with_canvas().get_scale().y
 	draw_set_transform(Vector2(_sx, _sy))
 
 	_draw_rails()
-	_draw_puddles()
 	_draw_cloud_shadows()
 	_draw_scenery()
 	_draw_road_event_under()
 	_draw_cars()
 	_draw_items()
 	_draw_speed_streaks()
-	_draw_wet_reflections()
-	_draw_rain_splashes()
-	_draw_road_mist()
 	_draw_road_event_over()
-	_draw_particles()
-	_draw_rain()
 	_draw_fog()
-	_draw_lightning()
 	_draw_rear_hazards()
-	_draw_rain_lens()
 
 	draw_set_transform(Vector2.ZERO)
 	_draw_haze()
-	if pending:
-		_draw_probe_streak()
-	if pending_rect:
-		draw_rect(Rect2(150.0, 150.0, 40.0, 40.0), Color(1.0, 1.0, 1.0, 1.0))
 	if flash > 0.01:
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(1.0, 1.0, 1.0, flash * 0.5))
 	if rewinding:
@@ -2571,62 +2449,6 @@ func get_clock_text() -> String:
 
 func weather_status_text() -> String:
 	return "%s · %s" % [get_weather_name(), get_clock_text()]
-
-func _draw_puddles() -> void:
-	# Surface water first: the wet sheen belongs to the asphalt itself.
-	_draw_wet_sheen()
-	if wetness <= 0.04:
-		return
-	var amb := get_sky_ambient()
-	var night := get_night_factor()
-	var light := get_light_factor()
-	var water := Color(
-		clampf(0.30 * amb.r + 0.16, 0.0, 1.0),
-		clampf(0.38 * amb.g + 0.19, 0.0, 1.0),
-		clampf(0.50 * amb.b + 0.25, 0.0, 1.0)
-	)
-	for p in puddles:
-		var base_y := fposmod(float(p.y) + scroll, ROAD_CYCLE)
-		for k in [-1, 0, 1]:
-			var y: float = base_y + float(k) * ROAD_CYCLE
-			if y < -260.0 or y > H + 260.0:
-				continue
-			var x := road_x + road_w * float(p.x)
-			var rx := float(p.rx)
-			var ry := float(p.ry)
-			var wob := 1.0 + 0.05 * sin(t * 0.9 + float(p.phase))
-			draw_set_transform(Vector2(x + _sx, y + _sy), float(p.rot), Vector2.ONE)
-			# Dark water body, then the sky reflection and a thin bright rim.
-			draw_texture_rect(glow_tex, Rect2(-rx, -ry * wob, rx * 2.0, ry * 2.0 * wob), false, Color(water.r, water.g, water.b, 0.36 * wetness))
-			draw_texture_rect(glow_tex, Rect2(-rx * 0.70, -ry * 0.76 * wob, rx * 1.40, ry * 1.52 * wob), false, Color(0.66, 0.78, 0.94, 0.10 * wetness))
-			draw_set_transform(Vector2(x + _sx, y + _sy), float(p.rot), Vector2(1.0, ry / maxf(1.0, rx)))
-			if wetness > 0.20:
-				draw_arc(Vector2.ZERO, rx * 0.92, 0.0, TAU, 26, Color(0.74, 0.84, 0.97, 0.070 * wetness), 1.2, true)
-			# Rain rings on the water surface.
-			if rain_amount > 0.08 and wetness > 0.14:
-				draw_set_transform(Vector2(x + _sx, y + _sy), 0.0, Vector2.ONE)
-				for r in range(2):
-					var kk := fposmod(t * (0.90 + float(r) * 0.22) + float(p.phase) * 0.31 + float(r) * 0.47, 1.0)
-					var rr := (0.08 + kk * 0.62) * rx
-					var ra := (1.0 - kk) * (1.0 - kk) * 0.13 * rain_amount * wetness
-					var ang_off := float(p.phase) + float(r) * 2.4
-					var off := Vector2(cos(ang_off) * rx * 0.30, sin(ang_off) * ry * 0.24)
-					draw_arc(off, rr, 0.0, TAU, 18, Color(0.80, 0.90, 1.0, ra), 1.0, true)
-			draw_set_transform(Vector2(_sx, _sy))
-	# Where a puddle sits in a beam the water throws the light back up: a soft
-	# vertical glare on the water that reads as a real reflection.
-	if light > 0.05 and wetness > 0.12:
-		var glare := light * wetness * (1.0 - night * 0.45)
-		for p in puddles:
-			var base_y := fposmod(float(p.y) + scroll, ROAD_CYCLE)
-			for k in [-1, 0, 1]:
-				var y: float = base_y + float(k) * ROAD_CYCLE
-				if y < -200.0 or y > H + 200.0:
-					continue
-				var flare := 0.55 + 0.45 * sin(t * 2.3 + float(p.phase))
-				Fx.pool(self, glow_tex, Vector2(road_x + road_w * float(p.x), y + float(p.ry) * 0.35), float(p.rx) * 0.8,
-					Color(1.0, 0.93, 0.78, 0.055 * glare * flare), Vector2(0.9, 2.2))
-
 
 func _draw_cloud_shadows() -> void:
 	if cloud_amount <= 0.05:
@@ -2724,72 +2546,6 @@ func _draw_rewind_fx() -> void:
 
 
 # --- atmospheric water ------------------------------------------------------
-
-# A thin veil of surface water on the asphalt. The texture tiles with the road,
-# so it slides exactly as fast as the markings and never "swims".
-func _draw_wet_sheen() -> void:
-	if wetness <= 0.02 or wet_tex == null:
-		return
-	var amb := get_sky_ambient()
-	var night := get_night_factor()
-	var light := get_light_factor()
-	var tile := 256.0
-	var off := fposmod(scroll, tile)
-	var tint := Color(
-		clampf(0.55 + amb.r * 0.45, 0.0, 1.0),
-		clampf(0.66 + amb.g * 0.40, 0.0, 1.0),
-		clampf(0.82 + amb.b * 0.30, 0.0, 1.0)
-	)
-	draw_texture_rect(wet_tex, Rect2(road_x, off - tile, road_w, H + tile * 2.0), true,
-		Color(tint.r, tint.g, tint.b, wetness * (0.30 + night * 0.10)))
-	# A cool long sheen along the lane centres: the specular smear that wet
-	# tarmac always shows when there is light above.
-	for l in range(LANES):
-		var cx := _lane_x(l)
-		Fx.vgrad(self, Rect2(cx - lane_w * 0.30, 0.0, lane_w * 0.60, H),
-			Color(0.70, 0.82, 0.98, wetness * (0.020 + light * 0.030)),
-			Color(0.70, 0.82, 0.98, wetness * (0.050 + light * 0.060)))
-	# Puddle glare near the camera, where the grazing angle is sharpest.
-	Fx.vgrad(self, Rect2(road_x, H * 0.62, road_w, H * 0.38),
-		Color(0.72, 0.84, 1.0, 0.0),
-		Color(0.72, 0.84, 1.0, wetness * (0.045 + light * 0.075)))
-
-
-# Water thrown off the road by every car. Distant cars lift a small plume; the
-# player lifts a real rooster tail that trails back and glows in the beams.
-func _draw_road_mist() -> void:
-	if wetness <= 0.08 or glow_tex == null:
-		return
-	var night := get_night_factor()
-	var light := get_light_factor()
-	var speed_k := clampf(speed / maxf(1.0, top_speed), 0.0, 1.0)
-	var base_a := wetness * (0.055 + 0.075 * speed_k) * (1.0 - night * 0.35)
-	for c in cars:
-		var cy := float(c.y)
-		if cy < -140.0 or cy > H + 120.0:
-			continue
-		var s := float(c.w) / car_w
-		var mist := 0.55 + 0.45 * clampf((cy - 120.0) / H, 0.0, 1.0)
-		for i in range(3):
-			var f := float(i) / 2.0
-			var p := Vector2(float(c.x) + sin(t * 2.1 + cy * 0.01 + f * 3.0) * 6.0 * s,
-				cy + float(c.h) * 0.50 + 18.0 + f * 26.0)
-			Fx.pool(self, glow_tex, p, (30.0 + f * 26.0) * s,
-				Color(0.80, 0.87, 0.96, base_a * mist * (1.0 - f * 0.30)), Vector2(1.9, 0.55))
-	if running and not demo:
-		var tail := clampf(speed / maxf(1.0, top_speed), 0.2, 1.2)
-		for i in range(5):
-			var f := float(i) / 4.0
-			var yy := player_y + car_h * 0.50 + f * 150.0 * (0.6 + tail)
-			var rr := (30.0 + f * 30.0) * (0.9 + tail * 0.25)
-			var px := player_x + sin(t * 3.3 + f * 2.0) * 5.0
-			Fx.pool(self, glow_tex, Vector2(px, yy), rr,
-				Color(0.84, 0.90, 0.99, base_a * 1.35 * (1.0 - f * 0.22)), Vector2(2.0, 0.55))
-			# The part of the spray the headlights pick up, so the tail glows.
-			if light > 0.1:
-				Fx.pool(self, glow_tex, Vector2(px, yy - 20.0), rr * 0.8,
-					Color(1.0, 0.94, 0.82, base_a * light * 0.55 * (1.0 - f * 0.3)), Vector2(1.6, 0.5))
-
 
 func _draw_cars() -> void:
 	if running and not demo and str(challenge_config.get("type", "")) == "duel" and not _ghost_state.is_empty():
@@ -2896,15 +2652,6 @@ func _draw_vehicle_shadow(center: Vector2, w: float, h: float) -> void:
 	_glow(center + Vector2(0.0, h * 0.02), w * 0.82,
 		Color(0.0, 0.0, 0.0, 0.30), Vector2(0.62, 1.02))
 
-
-func _draw_particles() -> void:
-	for p in particles:
-		var a: float = clampf(float(p.life) / float(p.max), 0.0, 1.0)
-		var col: Color = p.col
-		col.a = p.col.a * a
-		draw_circle(p.p, float(p.size) * (0.5 + a * 0.5), col)
-
-
 func _draw_haze() -> void:
 	var night := get_night_factor()
 	var amb := get_sky_ambient()
@@ -2937,226 +2684,6 @@ func _grad_v(rect: Rect2, top: Color, bottom: Color) -> void:
 		PackedVector2Array([rect.position, Vector2(rect.end.x, rect.position.y), rect.end, Vector2(rect.position.x, rect.end.y)]),
 		PackedColorArray([top, top, bottom, bottom])
 	)
-
-# Reflections on a wet road. A wet surface is a poor mirror but a very long
-# one: every bright lamp smears into a vertical streak towards the viewer. The
-# streaks use a dedicated texture (bright at the source, fading with distance)
-# and sit under the mist, so a car never looks pasted onto the tarmac.
-func _draw_wet_reflections() -> void:
-	if wetness <= 0.05 or streak_tex == null:
-		return
-	var light := get_light_factor()
-	var night := get_night_factor()
-	var wet := wetness * (0.30 + light * 0.70)
-	var sheen := Color(0.80, 0.88, 1.0)
-
-	if light > 0.03:
-		for c in cars:
-			var cy := float(c.y)
-			var cx := float(c.x)
-			var cw := float(c.w)
-			var ch := float(c.h)
-			if cy < -240.0 or cy > H + 60.0:
-				continue
-			var braking := bool(c.get("braking", false))
-			var tail_a := (0.55 if braking else 0.30) * wet
-			for side in [-1, 1]:
-				var tx := cx + float(side) * cw * 0.285
-				draw_texture_rect(streak_tex, Rect2(tx - 11.0, cy + ch * 0.47, 22.0, 190.0), false, Color(1.0, 0.20, 0.14, tail_a * 0.55))
-				if light > 0.3:
-					# Headlights of every car are mirrored far ahead of it.
-					var hx := cx + float(side) * cw * 0.26
-					draw_texture_rect(streak_tex, Rect2(hx - 16.0, cy - ch * 0.48 - 210.0, 32.0, 210.0), false, Color(1.0, 0.92, 0.74, 0.11 * wet * light))
-
-	if running and not demo:
-		for side in [-1, 1]:
-			var hx := player_x + float(side) * car_w * 0.28
-			# The player's beams reflect as two long warm streaks up the road.
-			draw_texture_rect(streak_tex, Rect2(hx - 26.0, player_y - car_h * 0.45 - 340.0, 52.0, 340.0), false, Color(1.0, 0.95, 0.80, 0.15 * wet))
-			# Tail lights bleed onto the tarmac right behind the car.
-			draw_texture_rect(streak_tex, Rect2(player_x - 82.0, player_y + car_h * 0.46, 164.0, 80.0), false, Color(1.0, 0.18, 0.12, 0.16 * wet))
-
-	# Sky-coloured smears along the edges: what tells the eye the road is
-	# SOAKED and not merely darker.
-	if wetness > 0.25:
-		draw_texture_rect(streak_tex, Rect2(road_x + 40.0, 0.0, 46.0, H), false, Color(sheen.r, sheen.g, sheen.b, 0.030 * wetness * (1.0 - night * 0.4)))
-		draw_texture_rect(streak_tex, Rect2(road_x + road_w - 86.0, 0.0, 46.0, H), false, Color(sheen.r, sheen.g, sheen.b, 0.030 * wetness * (1.0 - night * 0.4)))
-
-
-func _draw_rain_splashes() -> void:
-	if rain_splashes.is_empty():
-		return
-	var night := get_night_factor()
-	var light := get_light_factor()
-	var wash := Color(0.78, 0.87, 1.0).lerp(Color(1.0, 0.95, 0.86), light * 0.55 * (1.0 - night))
-	for sp in rain_splashes:
-		var k: float = clampf(1.0 - float(sp.life) / float(sp.max), 0.0, 1.0)
-		var r: float = float(sp.size) * (0.20 + k * 0.95)
-		var a: float = (1.0 - k) * (1.0 - k) * 0.46 * rain_amount
-		if a <= 0.008:
-			continue
-		var c := Vector2(float(sp.x) + _sx, float(sp.y) + _sy)
-		draw_set_transform(c, 0.0, Vector2(1.0, 0.42))
-		# A crown, not a cartoon ring: a thin bright crest plus a faint inner one.
-		draw_arc(Vector2.ZERO, r, 0.0, TAU, 14, Color(wash.r, wash.g, wash.b, a), 1.1, true)
-		draw_arc(Vector2.ZERO, r * 0.52, 0.0, TAU, 9, Color(wash.r, wash.g, wash.b, a * 0.45), 0.8, true)
-		draw_set_transform(Vector2(_sx, _sy))
-		if k < 0.35:
-			# Tiny sprite of water kicked straight up at the moment of impact.
-			draw_circle(c + Vector2(0.0, -float(sp.size) * 0.35 * (1.0 - k)), 0.9,
-				Color(wash.r, wash.g, wash.b, a * 0.9 * (1.0 - k / 0.35)))
-
-
-func _draw_lightning() -> void:
-	var flash_a := lightning * (0.72 + 0.28 * sin(t * 83.0))
-	if flash_a <= 0.02:
-		return
-	draw_rect(Rect2(0.0, 0.0, W, H), Color(0.72, 0.80, 1.0, 0.20 * flash_a))
-	for b in lightning_branches:
-		draw_polyline(b, Color(0.74, 0.84, 1.0, 0.30 * flash_a), 4.0, true)
-		draw_polyline(b, Color(0.96, 0.99, 1.0, 0.72 * flash_a), 1.4, true)
-	if lightning_bolt.size() >= 2:
-		draw_polyline(lightning_bolt, Color(0.60, 0.76, 1.0, 0.24 * flash_a), 12.0, true)
-		draw_polyline(lightning_bolt, Color(0.86, 0.93, 1.0, 0.66 * flash_a), 5.0, true)
-		draw_polyline(lightning_bolt, Color(1.0, 1.0, 1.0, 0.95 * flash_a), 1.8, true)
-
-
-# Rain. Every drop is drawn as a streak along the exact direction it travels:
-# the simulation moves it with (rain_vx, rain_vy), the renderer takes the same
-# vector, so the slant is always right and a gust bends the whole field at
-# once. Streaks are clipped to the screen and drops that leave an edge reappear
-# on the opposite one, so nothing flashes at the borders.
-#
-# Cost: one draw_set_transform + one textured quad per drop. The per-layer pass
-# keeps drops of similar width together, which lets the renderer batch them.
-func _draw_rain() -> void:
-	if rain_amount <= 0.02 or rain_tex == null:
-		return
-	var dir := Vector2(rain_vx, rain_vy)
-	if dir.length_squared() < 1.0:
-		dir = Vector2(0.0, 1.0)
-	dir = dir.normalized()
-	# draw_set_transform rotates CLOCKWISE for positive angles, so the angle is
-	# atan2(dx, -dy): a drop blown to the left (-dx) must lean to the left.
-	var ang := atan2(dir.x, -dir.y)
-	var night := get_night_factor()
-	var light := get_light_factor()
-	var tint := Color(0.70, 0.79, 0.93).lerp(Color(0.88, 0.93, 1.0), 1.0 - night)
-	var head_tint := Color(1.0, 0.95, 0.86)
-	var spd_k := clampf((rain_vy - 340.0) / 440.0, 0.0, 1.0)
-	var wind_k := clampf(-rain_vx / 480.0, -0.4, 1.2)
-	# One shutter time for the whole sheet: a streak is exactly as long as the
-	# path its own drop covers in that slice of time. Drops in the near layer
-	# sweep more pixels per second, so they smear longer - that is motion blur,
-	# and it is why the sheet reads as depth instead of as hatching.
-	var shutter := 0.0168
-	var show_head := light > 0.15 and running and not demo
-	var nose_y := player_y - car_h * 0.44
-	var travel_len := Vector2(rain_vx, rain_vy).length() * rain_scale
-	for layer_i in range(3):
-		var k_layer := 1.0 + float(layer_i) * 0.16
-		var layer_a := 0.85 + float(layer_i) * 0.18
-		var depth_a := lerpf(0.72, 1.0, float(layer_i) / 2.0)
-		for rd in rain_drops:
-			if int(rd.layer) != layer_i:
-				continue
-			var color := Color(0.0, 0.0, 0.0)
-			if QA_FIELD:
-				# Encode the drop index in the red channel and the layer in green.
-				var idx := rain_drops.find(rd)
-				color = Color(float(idx % 250 + 5) / 255.0, float(64 + layer_i * 60) / 255.0, 1.0)
-			var kf: float = float(rd.fall) / 1000.0
-			var length: float = clampf(travel_len * kf * shutter, 10.0, 64.0)
-			var width: float = maxf(float(rd.width) * (0.85 + spd_k * 0.35), 1.5)
-			var a: float = float(rd.alpha) * rain_amount * layer_a * depth_a
-			if a <= 0.008:
-				continue
-			var px: float = float(rd.x) + _sx
-			var py: float = float(rd.y) + _sy
-			if QA_FIELD:
-				# QA harness: paint drop ids into the frame instead of streaks, so
-				# blob-to-drop mapping is exact and the tilt is measurable.
-				draw_set_transform(Vector2(px, py), ang, Vector2.ONE)
-				draw_rect(Rect2(-width * 0.5, -length, maxf(width, 1.0), length),
-					Color(color.r, color.g, color.b, 1.0))
-				continue
-			# Cheap screen clip: skip drops whose whole streak is outside.
-			if py - length > H + 40.0 or py < -40.0 or px < -70.0 or px > W + 70.0:
-				continue
-			draw_set_transform(Vector2(px, py), ang, Vector2.ONE)
-			_rain_streak(width, length, Color(tint.r, tint.g, tint.b, a))
-			# Headlight catch: streaks inside the beams pick up a warm glint,
-			# which is what makes rain read as three-dimensional at night.
-			if show_head:
-				var d_nose := py - nose_y
-				if d_nose < 0.0 and d_nose > -640.0:
-					var spread_q := 64.0 + (-d_nose) * 0.62
-					var off_x := absf(px - player_x)
-					if off_x < spread_q:
-						var k2 := (1.0 + d_nose / 640.0) * (1.0 - off_x / spread_q)
-						_rain_streak(width, length, Color(head_tint.r, head_tint.g, head_tint.b, a * light * k2 * 0.9))
-	draw_set_transform(Vector2(_sx, _sy))
-	# The air itself gets heavier and cooler in a downpour.
-	draw_rect(Rect2(0.0, 0.0, W, H), Color(0.12, 0.18, 0.26, rain_amount * 0.075 + storm_amount * 0.06))
-	# Driving rain: the far edge of the screen gets a thin wind-driven sheet.
-	if wind_k > 0.12:
-		Fx.hgrad(self, Rect2(0.0, 0.0, W, H * 0.55),
-			Color(tint.r, tint.g, tint.b, rain_amount * 0.035 * wind_k),
-			Color(tint.r, tint.g, tint.b, 0.0))
-
-
-# One rain streak, drawn in a frame that is already rotated to the fall
-# direction (the caller sets the transform). Drawing through a single helper
-# keeps the physical model in one place, and it lets the QA harness render this
-# exact code path in isolation.
-func _rain_streak(width: float, length: float, col: Color) -> void:
-	if pending_rect:
-		draw_rect(Rect2(-width * 0.5, -length, maxf(width, 1.5), length), col)
-		return
-	if rain_tex == null:
-		return
-	draw_texture_rect(rain_tex, Rect2(-width * 0.5, -length, maxf(width, 1.5), length), false, col)
-
-
-# The QA harness asks for a single, isolated streak so it can measure the real
-# rasterised geometry instead of guessing it. Never used during normal play.
-func _draw_probe_streak() -> void:
-	if pending == null:
-		return
-	var d: Dictionary = pending
-	var ang := float(d.get("ang", 0.0))
-	var p := Vector2(float(d.x), float(d.y))
-	var w := float(d.w) * 0.5
-	var ln := minf(float(d.len), 12.0)
-	var c := cos(ang)
-	var s := sin(ang)
-	var corners := PackedVector2Array()
-	for off in [Vector2(-w, -ln), Vector2(w, -ln), Vector2(w, 0.0), Vector2(-w, 0.0)]:
-		corners.append(p + Vector2(off.x * c - off.y * s, off.x * s + off.y * c))
-	draw_colored_polygon(corners, Color(1.0, 1.0, 1.0, float(d.a)))
-	# A green tick above the origin: a fixed, unmoving marker the harness can
-	# always find, independent of how the coordinate frames are scaled.
-	draw_rect(Rect2(0.0, 0.0, 6.0, 3.0), Color(0.0, 1.0, 0.0))
-
-
-# Drops landing on the windscreen: big, short-lived motion streaks over the
-# whole frame. This is what sells speed in the rain.
-func _draw_rain_lens() -> void:
-	if rain_lens.is_empty() or rain_tex == null:
-		return
-	var dir := Vector2(rain_vx, rain_vy)
-	if dir.length_squared() < 1.0:
-		dir = Vector2(0.0, 1.0)
-	var ang := atan2(dir.x, dir.y)
-	draw_set_transform(Vector2(_sx, _sy), ang, Vector2.ONE)
-	for d in rain_lens:
-		var k: float = clampf(float(d.life) / float(d.max), 0.0, 1.0)
-		var stretch: float = 1.0 + (1.0 - k) * 1.5
-		var p := Vector2(float(d.x) + _sx, float(d.y) + _sy)
-		draw_texture_rect(rain_tex, Rect2(p.x - float(d.w) * 0.5, p.y - float(d.len) * stretch,
-			float(d.w), float(d.len) * stretch), false, Color(0.84, 0.91, 1.0, 0.20 * k * k * rain_amount))
-	draw_set_transform(Vector2(_sx, _sy))
-
 
 func _draw_fog() -> void:
 	if fog_amount <= 0.02:
