@@ -123,6 +123,13 @@ var control_mode := "zones"
 var fps_limit := 60
 # Race car art: true = baked 3D sprites, false = the original painted cars.
 var cars_3d := true
+# --- 0.8.0 graphics quality (render pipeline presets) ---
+# gfx_choice: GfxPresets.AUTO or a fixed level; gfx_auto_level is what the
+# first-launch benchmark resolved Auto to (-1 = not measured yet).
+var gfx_choice := GfxPresets.AUTO
+var gfx_auto_level := -1
+var gfx_buttons: Array = []
+var gfx_desc: Label
 
 var garage_index := 0
 var settings_from_pause := false
@@ -170,7 +177,10 @@ func _ready() -> void:
 	game = Game.new()
 	game.name = "Game"
 	game.use_3d_cars = cars_3d
+	game.gfx_level = _gfx_effective_level()
+	game.gfx_target_fps = fps_limit
 	add_child(game)
+	_gfx_maybe_benchmark()
 	game.hud_changed.connect(_on_hud)
 	game.run_ended.connect(_on_crashed)
 	game.near_miss.connect(_on_near)
@@ -371,6 +381,8 @@ func _load() -> void:
 		var fl := int(cf.get_value("display", "fps", 60))
 		fps_limit = fl if fl in [30, 60, 120] else 60
 		cars_3d = bool(cf.get_value("display", "cars_3d", true))
+		gfx_choice = GfxPresets.level_from_key(str(cf.get_value("display", "gfx", "auto")))
+		gfx_auto_level = int(cf.get_value("display", "gfx_auto_level", -1))
 		tutorial_done = bool(cf.get_value("game", "tutorial_done", false))
 		player_name = ChallengeCodec.sanitize_name(str(cf.get_value("challenge", "player_name", "ГОНЩИК")))
 		daily_date = str(cf.get_value("challenge", "daily_date", ""))
@@ -398,6 +410,8 @@ func _save() -> void:
 	cf.set_value("controls", "mode", control_mode)
 	cf.set_value("display", "fps", fps_limit)
 	cf.set_value("display", "cars_3d", cars_3d)
+	cf.set_value("display", "gfx", GfxPresets.key_from_level(gfx_choice))
+	cf.set_value("display", "gfx_auto_level", gfx_auto_level)
 	cf.set_value("game", "tutorial_done", tutorial_done)
 	cf.set_value("challenge", "player_name", player_name)
 	cf.set_value("challenge", "daily_date", daily_date)
@@ -2009,6 +2023,7 @@ func _build_settings() -> void:
 	ctrl_cars_3d.pressed.connect(func(): _set_cars_3d(true))
 	cars_row.add_child(ctrl_cars_3d)
 	vb.add_child(_setting_row("МАШИНЫ", "3D — объёмные, 2D — прежние рисованные", cars_row))
+	_build_gfx_settings(vb)
 
 	vb.add_child(_divider())
 
@@ -2115,6 +2130,7 @@ func _update_settings_ui() -> void:
 	if ctrl_cars_2d != null:
 		_style_mode_btn(ctrl_cars_2d, not cars_3d)
 		_style_mode_btn(ctrl_cars_3d, cars_3d)
+	_update_gfx_settings_ui()
 	if fps_desc != null:
 		match fps_limit:
 			30:
@@ -2179,6 +2195,8 @@ func _set_fps(limit: int) -> void:
 	Sfx.click()
 	fps_limit = limit
 	Engine.max_fps = limit
+	if game != null:
+		game.set_graphics(_gfx_effective_level(), fps_limit)
 	_save()
 	_update_settings_ui()
 
@@ -2193,6 +2211,76 @@ func _set_cars_3d(on: bool) -> void:
 		game.queue_redraw()
 	_save()
 	_update_settings_ui()
+
+
+# --- graphics quality (0.8.0) -----------------------------------------------
+
+func _gfx_effective_level() -> int:
+	if gfx_choice != GfxPresets.AUTO:
+		return gfx_choice
+	return gfx_auto_level if gfx_auto_level >= 0 else GfxPresets.MEDIUM
+
+
+func _gfx_maybe_benchmark() -> void:
+	if gfx_choice != GfxPresets.AUTO or gfx_auto_level >= 0:
+		return
+	if DisplayServer.get_name() == "headless":
+		return
+	var bench := GfxBenchmark.new()
+	bench.name = "GfxBenchmark"
+	add_child(bench)
+	bench.finished.connect(func(level: int, _ms: float) -> void:
+		gfx_auto_level = level
+		_save()
+		_update_settings_ui())
+	bench.start(game)
+
+
+func _build_gfx_settings(vb: VBoxContainer) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	gfx_buttons.clear()
+	for lv in [GfxPresets.AUTO, GfxPresets.LOW, GfxPresets.MEDIUM, GfxPresets.HIGH, GfxPresets.ULTRA]:
+		var b := _mode_button(GfxPresets.level_name(lv))
+		b.add_theme_font_size_override("font_size", 17)
+		b.pressed.connect(_set_gfx.bind(lv))
+		row.add_child(b)
+		gfx_buttons.append(b)
+	vb.add_child(row)
+	gfx_desc = _label("", 16, Color(0.68, 0.72, 0.75), font_ui)
+	gfx_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	gfx_desc.custom_minimum_size = Vector2(0, 48)
+	vb.add_child(gfx_desc)
+
+
+func _set_gfx(level: int) -> void:
+	if gfx_choice == level:
+		return
+	Sfx.click()
+	gfx_choice = level
+	if game != null:
+		game.set_graphics(_gfx_effective_level(), fps_limit)
+	_save()
+	_update_settings_ui()
+
+
+func _update_gfx_settings_ui() -> void:
+	var levels := [GfxPresets.AUTO, GfxPresets.LOW, GfxPresets.MEDIUM, GfxPresets.HIGH, GfxPresets.ULTRA]
+	for i in range(gfx_buttons.size()):
+		_style_mode_btn(gfx_buttons[i], gfx_choice == levels[i])
+	if gfx_desc == null:
+		return
+	match gfx_choice:
+		GfxPresets.AUTO:
+			gfx_desc.text = "Подобрано по тесту устройства: %s." % GfxPresets.level_name(_gfx_effective_level()).capitalize()
+		GfxPresets.LOW:
+			gfx_desc.text = "Без теней и пост-эффектов. Для слабых телефонов."
+		GfxPresets.MEDIUM:
+			gfx_desc.text = "Свет фар с тенями, свечение, капли на экране."
+		GfxPresets.HIGH:
+			gfx_desc.text = "Больше теней и частиц, преломление капель."
+		GfxPresets.ULTRA:
+			gfx_desc.text = "Всё на максимум. Для флагманов."
 
 
 # --- how to play ------------------------------------------------------------
@@ -2230,7 +2318,7 @@ func _build_how() -> void:
 	var items := [
 		["РОГАТКА (СЛИПСТРИМ)", "Держись за машиной впереди — шкала зарядится вокруг авто. Резко перестройся, чтобы выстрелить вперёд, получить очки и нитро!"],
 		["ХРОНО-ЩИТ (3 НИТРО)", "Полный бак из 3 зарядов нитро работает как щит: при аварии сгорает и отматывает время на 2 секунды назад."],
-		["УПРАВЛЕНИЕ И ТОРМОЗ", "Две зоны, кнопки или свайпы (выбор в настройках). Тормоз сбрасывает скорость, но колодки греются."],
+		["УПРАВЛЕНИЕ И ТОРМОЗ", "Две зоны, кнопки или свайпы (выбор в настройках). Тормоз сбрасывает скорость, но колодки греются. На мокрой дороге и в лужах тормозной путь длиннее, а глубокая лужа на скорости ненадолго уводит машину в аквапланирование."],
 		["9 СПОСОБНОСТЕЙ МАШИН", "У каждой машины в гараже своя фишка: таран на нитро, магнит монет, 4-й баллон, рекуперация тормоза и гипердрайв."],
 		["ВЫЗОВ ДРУГА И ВЫЗОВ ДНЯ", "Скопируй код после финиша и отправь другу в мессенджер — он сможет проехать с твоим живым призраком по той же трассе!"],
 	]

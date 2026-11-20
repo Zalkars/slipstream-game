@@ -9,7 +9,26 @@ godot --headless --path godot res://tests/RewardsRegression.tscn
 godot --headless --path godot res://tests/FeaturesRegression.tscn
 godot --headless --path godot res://tests/FixesRegression.tscn
 godot --headless --path godot res://tests/AdsRegression.tscn
+godot --headless --path godot res://tests/GfxRegression.tscn
+godot --headless --path godot res://tests/PhysicsRegression.tscn
 ```
+
+`GfxRegression` (0.8.0) covers the graphics preset table, the Auto benchmark
+mapping, the dynamic-resolution state machine and applying every preset to a
+live Game. `PhysicsRegression` covers tyre grip by surface (dry / wet /
+puddle / aquaplaning), wet vs dry braking, braking at 30/60/120/144 FPS,
+same-seed determinism, SLIP1 codes racing with the legacy physics, that the
+render systems never consume `run_rng`, and the seeded fog banks.
+
+Visual QA for the renderer (graphical, writes `godot/shots`, git-ignored):
+
+```powershell
+godot --path godot --fixed-fps 60 res://tests/GfxShots.tscn -- --presets=0,1,2,3
+godot --path godot res://tests/GfxShots.tscn -- --presets=0,1,2,3 --perf=1
+```
+
+Car normal-map atlases (`art/race/cars_N_n.png`) are regenerated with
+`godot --path godot res://tests/BakeRaceNormals.tscn -- --bake-race-normals`.
 
 `RaceRegression` covers touch ownership and cancellation, pause/resume, focus
 loss, tutorial timing and hints, traffic appearances, and 2D/3D atlas lifetimes.
