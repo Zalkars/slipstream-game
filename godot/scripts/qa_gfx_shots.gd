@@ -26,7 +26,7 @@ func _run() -> void:
 	var only_w := _arg("weather", "")
 	var only_t := _arg("tod", "")
 	var tag := _arg("tag", "")
-	var frames := int(_arg("frames", "150"))
+	var frames := int(_arg("frames", "300"))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://shots"))
 	var game := Game.new()
 	game.use_3d_cars = true
@@ -49,9 +49,12 @@ func _run() -> void:
 				game._rewind_invuln = 999.0
 				for i in range(frames):
 					game.time_of_day = float(TODS[tod_name])
-					game._rewind_invuln = 999.0
+					if i < frames - 2:
+						game._rewind_invuln = 999.0
 					if i == frames - 40:
 						game.set_braking(true)
+					if i == frames - 2:
+						game._rewind_invuln = 0.0  # hide the invulnerability ring
 					await get_tree().process_frame
 				game.set_braking(false)
 				await RenderingServer.frame_post_draw

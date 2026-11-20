@@ -5,6 +5,24 @@ extends Node
 # No model construction, GPU readback or texture uploads during a race.
 # The render helper remains available to the offline builder and visual QA.
 const SPRITES_PATH := "res://art/race/sprites.gd"
+# Normal-map atlases baked from the same 3D models (0.8.0). Same layout as the
+# colour pages: page i's normals live in NORMAL_PAGE % i.
+const NORMAL_PAGE := "res://art/race/cars_%d_n.png"
+const NORMAL_SHADER := """
+shader_type spatial;
+render_mode unshaded, cull_back;
+void fragment() {
+	// Normal relative to the ROAD, not the tilted chase camera: x = screen
+	// right, y = towards the car's nose (screen up in the game), z = world up
+	// (out of the 2D screen). The Compatibility viewport writes unshaded
+	// albedo without an sRGB curve, so the vector is stored linearly.
+	vec3 nw = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	vec3 right = normalize(INV_VIEW_MATRIX[0].xyz);
+	right = normalize(vec3(right.x, 0.0, right.z));
+	vec3 fwd = cross(vec3(0.0, 1.0, 0.0), right);
+	ALBEDO = vec3(dot(nw, right), dot(nw, fwd), nw.y) * 0.5 + 0.5;
+}
+"""
 
 const MODEL := preload("res://scripts/car_model.gd")
 
@@ -22,18 +40,33 @@ var _model
 # signature -> shared atlas texture and source rectangle
 var _cache: Dictionary = {}
 var _pages: Array = []
+var _lit_pages: Array = []  # CanvasTexture(diffuse + normal) per page, or null
+var normal_maps := true
+var _env: Environment
 
 # Load only when 3D is selected; the caller enables this before the race.
 func set_enabled(enabled: bool) -> void:
 	if not enabled:
 		_cache.clear()
 		_pages.clear()
+		_lit_pages.clear()
 		return
 	if not _pages.is_empty():
 		return
 	var sprites = load(SPRITES_PATH)
 	for path: String in sprites.PAGES:
-		_pages.append(load(path))
+		var diffuse: Texture2D = load(path)
+		_pages.append(diffuse)
+		var npath := NORMAL_PAGE % (_pages.size() - 1)
+		if ResourceLoader.exists(npath):
+			var ct := CanvasTexture.new()
+			ct.diffuse_texture = diffuse
+			ct.normal_texture = load(npath)
+			ct.specular_color = Color(0.85, 0.85, 0.85)
+			ct.specular_shininess = 0.55
+			_lit_pages.append(ct)
+		else:
+			_lit_pages.append(null)
 	for key: String in sprites.ENTRIES:
 		var entry: Array = sprites.ENTRIES[key]
 		_cache[key] = {"page": int(entry[0]),
@@ -62,6 +95,7 @@ func _build() -> void:
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.tonemap_exposure = 1.02
 	we.environment = env
+	_env = env
 	_vp.add_child(we)
 
 	# High key, because the chase camera sees mostly the roof and the bonnet.
@@ -111,8 +145,62 @@ func draw(ci: CanvasItem, center: Vector2, w: float, h: float, sprite: Dictionar
 		return
 	var k := minf(h * 0.96 / sh, w * 0.99 / sw)
 	var size := Vector2(sw, sh) * k
-	ci.draw_texture_rect_region(_pages[int(sprite.page)], Rect2(center - size * 0.5, size),
+	var page := int(sprite.page)
+	var tex: Texture2D = _pages[page]
+	if normal_maps and page < _lit_pages.size() and _lit_pages[page] != null:
+		tex = _lit_pages[page]
+	ci.draw_texture_rect_region(tex, Rect2(center - size * 0.5, size),
 		sprite.region, modulate)
+
+
+# Offline baker: colour and normal renders of one appearance, both cropped to
+# the colour pass's alpha bounds so they line up pixel for pixel.
+func render_pair(car: Dictionary) -> Array:
+	if _vp == null:
+		_build()
+	var clean := _clean(car)
+	_model.show_car(clean)
+	_frame_model(str(clean.get("silhouette", "sedan")))
+	_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	var col := _vp.get_texture().get_image()
+	var nmat := ShaderMaterial.new()
+	var sh := Shader.new()
+	sh.code = NORMAL_SHADER
+	nmat.shader = sh
+	var saved: Array = []
+	for gi in _model.find_children("*", "GeometryInstance3D", true, false):
+		saved.append([gi, gi.material_override])
+		gi.material_override = nmat
+	var tone := _env.tonemap_mode
+	_env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	var nrm := _vp.get_texture().get_image()
+	_env.tonemap_mode = tone
+	for pair in saved:
+		pair[0].material_override = pair[1]
+	_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if col == null or nrm == null:
+		return []
+	col.convert(Image.FORMAT_RGBA8)
+	nrm.convert(Image.FORMAT_RGBA8)
+	var bb := _alpha_bounds(col)
+	if bb.size.x < 4 or bb.size.y < 4:
+		return []
+	col = col.get_region(bb)
+	nrm = nrm.get_region(bb)
+	# Alpha from the colour pass; transparent pixels get a flat normal so
+	# filtering at the silhouette never tilts the edge.
+	for y in range(nrm.get_height()):
+		for x in range(nrm.get_width()):
+			var a := col.get_pixel(x, y).a
+			var n := nrm.get_pixel(x, y)
+			if a < 0.05:
+				nrm.set_pixel(x, y, Color(0.5, 0.5, 1.0, 0.0))
+			else:
+				nrm.set_pixel(x, y, Color(n.r, n.g, n.b, a))
+	return [col, nrm]
 
 
 # QA hook: render straight away and hand back the cropped image.

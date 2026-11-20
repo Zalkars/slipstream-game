@@ -237,7 +237,6 @@ var _swipe_mouse_down := false
 
 var asphalt_tex: ImageTexture
 var grass_tex: ImageTexture
-var beam_tex: ImageTexture
 var glow_tex: ImageTexture
 var rain_tex: ImageTexture
 var wet_tex: ImageTexture
@@ -299,7 +298,6 @@ func _ready() -> void:
 	run_rng.seed = 1729
 	asphalt_tex = _noise_tex(256, Color(0.365, 0.375, 0.395), 0.034, 11)
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
-	beam_tex = Fx.headlight_tex()
 	glow_tex = Fx.glow_tex()
 	rain_tex = Fx.rain_tex()
 	wet_tex = Fx.wet_tex()
@@ -2479,15 +2477,11 @@ func _draw() -> void:
 	draw_set_transform(Vector2(_sx, _sy))
 
 	_draw_rails()
-	_draw_road_beams()
 	_draw_puddles()
 	_draw_cloud_shadows()
 	_draw_scenery()
 	_draw_road_event_under()
 	_draw_cars()
-	_draw_night_atmosphere()
-	_draw_streetlight_glows()
-	_draw_air_beams()
 	_draw_items()
 	_draw_speed_streaks()
 	_draw_wet_reflections()
@@ -2672,7 +2666,8 @@ func _draw_rails() -> void:
 
 
 func _draw_scenery() -> void:
-	var ambient := get_sky_ambient()
+	# Ambient light is applied by the CanvasModulate (render/lighting.gd).
+	var ambient := Color.WHITE
 	for d in decor:
 		var base_y := fposmod(float(d.y) + scroll, DECOR_CYCLE)
 		# Include every repeated copy for tall viewports as well as wraparound.
@@ -2698,34 +2693,6 @@ func _draw_scenery() -> void:
 					Art.tree(self, p, 41.0 * size, d.tint)
 				elif kind == 1:
 					Art.bush(self, p, 34.0 * size)
-
-
-func _draw_streetlight_glows() -> void:
-	var light := get_light_factor() * clampf(1.0 - blackout_amount, 0.0, 1.0)
-	if light <= 0.04:
-		return
-	var period := DECOR_CYCLE
-	for d in decor:
-		if int(d.kind) != 2:
-			continue
-		var base_y := fposmod(float(d.y) + scroll, period)
-		for k in range(-1, int(ceil(H / DECOR_CYCLE)) + 1):
-			var y: float = base_y + float(k) * period
-			if y < -200.0 or y > H + 200.0:
-				continue
-			var side: float = d.side
-			var x: float = (road_x - 52.0 - float(d.off)) if side < 0 else (road_x + road_w + 52.0 + float(d.off))
-			var s: float = d.size
-			var arm_dir: float = 1.0 if side < 0 else -1.0
-			var lamp_x: float = x + arm_dir * 92.0 * 0.9 * s
-			var pool_x: float = road_x + 120.0 if side < 0 else road_x + road_w - 120.0
-			_glow(Vector2(pool_x, y), 106.0 * s, Color(1.0, 0.80, 0.40, 0.16 * light), Vector2(1.75, 0.62))
-			_glow(Vector2(pool_x, y), 66.0 * s, Color(1.0, 0.90, 0.62, 0.22 * light), Vector2(1.45, 0.60))
-			_glow(Vector2(lamp_x, y), 62.0 * s, Color(1.0, 0.78, 0.38, 0.30 * light))
-			_glow(Vector2(lamp_x, y), 24.0 * s, Color(1.0, 0.97, 0.84, 0.78 * light))
-			if wetness > 0.08:
-				_glow(Vector2(pool_x, y + 78.0 * s), 34.0 * s, Color(1.0, 0.82, 0.46, 0.16 * wetness * light), Vector2(0.55, 3.1))
-
 
 func _draw_items() -> void:
 	for it in items:
@@ -2861,17 +2828,7 @@ func _draw_cars() -> void:
 		else:
 			_draw_vehicle_shadow(center, float(c.w), float(c.h))
 			race_art.draw(self, center, float(c.w), float(c.h), sprite)
-			if bool(c.get("braking", false)):
-				for side in [-1, 1]:
-					_glow(center + Vector2(float(side) * float(c.w) * 0.30, float(c.h) * 0.435),
-						float(c.w) * 0.12, Color(1.0, 0.12, 0.07, 0.45))
-		var sig := int(c.get("signal_dir", 0))
-		if sig != 0 and ram_rot == 0.0 and sin(t * 22.0) > 0.0:
-			var sx_off := float(sig) * float(c.w) * 0.44
-			for end_y in [-float(c.h) * 0.42, float(c.h) * 0.42]:
-				var bp := center + Vector2(sx_off, end_y)
-				_glow(bp, float(c.w) * 0.17, Color(1.0, 0.62, 0.10, 0.65))
-				draw_circle(bp, float(c.w) * 0.055, Color(1.0, 0.80, 0.22, 0.96))
+		# Stop lights and indicators are light sources: see render/lighting.gd.
 		if ram_rot != 0.0:
 			draw_set_transform(Vector2(_sx, _sy))
 	if running and not demo and not player_drawn:
@@ -2918,14 +2875,7 @@ func _draw_player() -> void:
 	else:
 		_draw_vehicle_shadow(Vector2.ZERO, car_w, car_h)
 		race_art.draw(self, Vector2.ZERO, car_w, car_h, sprite)
-		# The baked lamps are always on, so braking and brake heat are added as
-		# 2D light on top of the sprite.
-		if braking and running:
-			for side in [-1, 1]:
-				_glow(Vector2(float(side) * car_w * 0.30, car_h * 0.435), car_w * 0.13,
-					Color(1.0, 0.12, 0.07, 0.60))
-				_glow(Vector2(float(side) * car_w * 0.30, car_h * 0.435), car_w * 0.05,
-					Color(1.0, 0.36, 0.20, 0.85))
+		# Stop lights come from render/lighting.gd; brake-disc heat stays here.
 		if brake_heat > 0.35:
 			var ht := clampf((brake_heat - 0.35) / 0.65, 0.0, 1.0)
 			for side in [-1, 1]:
@@ -2975,12 +2925,6 @@ func _draw_haze() -> void:
 	var vig := 0.13 + night * 0.12 + storm_amount * 0.08
 	_grad_h(Rect2(0.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, vig), Color(0.0, 0.0, 0.0, 0.0))
 	_grad_h(Rect2(W - 120.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, 0.0), Color(0.0, 0.0, 0.0, vig))
-	# At night everything outside the headlights sinks into darkness. The heavy
-	# falloff towards the top of the screen is what plants the feeling that
-	# only the road ahead is lit.
-	if night > 0.05:
-		_grad_v(Rect2(0.0, 0.0, W, H * 0.38), Color(0.0, 0.0, 0.0, night * 0.20 * (1.0 - light * 0.5)), Color(0.0, 0.0, 0.0, 0.0))
-		_grad_v(Rect2(0.0, H * 0.70, W, H * 0.30), Color(0.0, 0.0, 0.0, 0.0), Color(0.0, 0.0, 0.0, night * 0.16))
 
 
 func _grad_h(rect: Rect2, left: Color, right: Color) -> void:
@@ -2995,97 +2939,6 @@ func _grad_v(rect: Rect2, top: Color, bottom: Color) -> void:
 		PackedVector2Array([rect.position, Vector2(rect.end.x, rect.position.y), rect.end, Vector2(rect.position.x, rect.end.y)]),
 		PackedColorArray([top, top, bottom, bottom])
 	)
-
-
-# All headlight illumination that lands ON the road. Drawn before the cars and
-# the scenery, so the bodywork always stays on top: what we see is light on
-# asphalt, not a translucent decal over the whole scene. Each lamp gets a long
-# throw plus a hot near-field wedge, the way a real low beam reads from above.
-func _draw_road_beams() -> void:
-	var light := get_light_factor()
-	if light <= 0.015 or beam_tex == null:
-		return
-	# Rain and fog scatter light away from the surface, so the pool under the
-	# car loses some punch while the glow around the lamp grows.
-	var gain := light * (1.0 + fog_amount * 0.25) * (1.0 - wetness * 0.25)
-	for c in cars:
-		var cy := float(c.y)
-		if cy < -480.0 or cy > H + 260.0:
-			continue
-		var cx := float(c.x)
-		var cw := float(c.w)
-		var ch := float(c.h)
-		var s := cw / car_w
-		# Traffic drives up the screen, so its beams point to -Y.
-		var nose := Vector2(cx, cy - ch * 0.44)
-		var sway := sin(t * 0.9 + cy * 0.011 + cx * 0.02) * 0.010 * (0.4 + wind)
-		for side in [-1.0, 1.0]:
-			var lamp := nose + Vector2(float(side) * cw * 0.26, 0.0)
-			var ang := PI + sway
-			var throw_len := 300.0 * s * (1.0 + fog_amount * 0.22)
-			Fx.beam(self, beam_tex, lamp, ang, cw * 1.55, throw_len, Color(1.0, 0.90, 0.70, 0.26 * gain))
-			Fx.beam(self, beam_tex, lamp, ang, cw * 0.92, throw_len * 0.62, Color(1.0, 0.96, 0.86, 0.30 * gain))
-		Fx.pool(self, glow_tex, Vector2(cx, cy - ch * 0.75), 96.0 * s * (1.0 + fog_amount * 0.3),
-			Color(1.0, 0.86, 0.62, 0.09 * gain), Vector2(1.7, 1.0))
-	if running and not demo:
-		var nose := Vector2(player_x, player_y - car_h * 0.44)
-		var sway_p := sin(t * 0.7) * 0.006 * (0.5 + wind)
-		for side in [-1.0, 1.0]:
-			var lamp := nose + Vector2(float(side) * car_w * 0.26, 0.0)
-			var ang := sway_p + float(side) * 0.035 + player_tilt * 0.6
-			# Long throw: the point of real headlights is seeing far ahead.
-			Fx.beam(self, beam_tex, lamp, ang, car_w * 1.75, 560.0 * (1.0 + fog_amount * 0.18), Color(1.0, 0.91, 0.72, 0.28 * gain))
-			# Hot patch just in front of the bumper, where the cutoff bites.
-			Fx.beam(self, beam_tex, lamp, ang, car_w * 1.05, 330.0, Color(1.0, 0.96, 0.85, 0.34 * gain))
-			# Very wide, very faint spill that reveals the lane edges.
-			Fx.beam(self, beam_tex, lamp, ang, car_w * 2.60, 200.0, Color(1.0, 0.90, 0.70, 0.11 * gain))
-		# The bright pool right at the nose: a low beam is brightest here and
-		# the cutoff makes it almost flat and very wide.
-		Fx.pool(self, glow_tex, Vector2(player_x, player_y - car_h * 0.56 - 210.0), 200.0 * (1.0 + fog_amount * 0.25),
-			Color(1.0, 0.93, 0.76, 0.09 * gain), Vector2(1.9, 0.85))
-
-
-# Beams seen in the AIR: drawn over the cars and under the rain. The cone is
-# deliberately thin here: the bright part lives on the road, this is the halo
-# that makes light feel volumetric, especially in fog and rain. The lamp bloom
-# ("brows") is drawn last so it sits on the bodywork like real glare.
-func _draw_air_beams() -> void:
-	var light := get_light_factor()
-	if light <= 0.015 or beam_tex == null:
-		return
-	var haze := 0.30 * rain_amount + 1.05 * fog_amount + 0.42 * storm_amount
-	var gain := light * maxf(haze, 0.10)
-	var scatter := 1.0 + fog_amount * 0.9 + rain_amount * 0.25
-	var brows: Array = []
-	for c in cars:
-		var cy := float(c.y)
-		if cy < -420.0 or cy > H + 200.0:
-			continue
-		var cx := float(c.x)
-		var cw := float(c.w)
-		var ch := float(c.h)
-		var s := cw / car_w
-		var nose := Vector2(cx, cy - ch * 0.44)
-		var sway := sin(t * 0.9 + cy * 0.011 + cx * 0.02) * 0.010 * (0.4 + wind)
-		for side in [-1.0, 1.0]:
-			var lamp := nose + Vector2(float(side) * cw * 0.26, 0.0)
-			Fx.beam(self, beam_tex, lamp, PI + sway, cw * 0.95 * scatter, 300.0 * s * scatter,
-				Color(1.0, 0.88, 0.66, 0.13 * gain))
-			var r := 44.0 * s * scatter
-			brows.append({"rect": Rect2(lamp + Vector2(-r, -r * 0.62), Vector2(r * 2.0, r * 1.24)), "a": 0.09 * gain})
-	if running and not demo:
-		var nose := Vector2(player_x, player_y - car_h * 0.44)
-		var sway_p := sin(t * 0.7) * 0.006 * (0.5 + wind)
-		for side in [-1.0, 1.0]:
-			var lamp := nose + Vector2(float(side) * car_w * 0.26, 0.0)
-			var ang := sway_p + float(side) * 0.035 + player_tilt * 0.6
-			Fx.beam(self, beam_tex, lamp, ang, car_w * 1.00 * scatter, 500.0 * scatter,
-				Color(1.0, 0.90, 0.70, 0.17 * gain))
-			var r := 64.0 * scatter
-			brows.append({"rect": Rect2(lamp + Vector2(-r, -r * 1.10), Vector2(r * 2.0, r * 1.60)), "a": 0.11 * gain})
-	draw_set_transform(Vector2(_sx, _sy))
-	for b in brows:
-		draw_texture_rect(glow_tex, b.rect, false, Color(1.0, 0.91, 0.74, b.a))
 
 # Reflections on a wet road. A wet surface is a poor mirror but a very long
 # one: every bright lamp smears into a vertical streak towards the viewer. The
@@ -3345,20 +3198,6 @@ func _draw_rear_hazards() -> void:
 			])
 			draw_colored_polygon(pts, col)
 			draw_circle(Vector2(cx, alert_y + 12.0), 3.0, col)
-
-
-func _draw_night_atmosphere() -> void:
-	var night := get_night_factor()
-	if night > 0.02:
-		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.03, 0.04, 0.10, night * 0.52))
-		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.02, 0.03, 0.07, night * 0.12))
-	if blackout_amount > 0.02:
-		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.01, 0.015, 0.04, blackout_amount * 0.38))
-	if storm_amount > 0.02:
-		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.04, 0.05, 0.09, storm_amount * 0.08))
-	if rain_amount > 0.02:
-		draw_rect(Rect2(0.0, 0.0, W, H), Color(0.14, 0.20, 0.28, rain_amount * 0.05))
-
 
 func _draw_ghost_car() -> void:
 	var gx := road_x + float(_ghost_state.get("x_norm", 0.5)) * road_w

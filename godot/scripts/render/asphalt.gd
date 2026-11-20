@@ -23,7 +23,7 @@ func paint_surface(ci: CanvasItem) -> void:
 	var road_w: float = g.road_w
 	var lane_w: float = g.lane_w
 	var scroll: float = g.scroll
-	var amb: Color = g.get_sky_ambient()
+	var amb := Color.WHITE  # ambient comes from the CanvasModulate
 	if g.rain_amount > 0.01:
 		amb = amb.lerp(amb * Color(0.78, 0.78, 0.82), g.rain_amount * 0.42)
 	ci.draw_rect(Rect2(road_x, 0.0, road_w, H), Color(0.355, 0.365, 0.385) * amb)
