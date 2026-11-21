@@ -561,15 +561,27 @@ def build_nitro_specials():
     t = np.arange(n) / SR
     x += np.where(t > 0.11, chirp(n, 2400, 3200, 0.5) * env_ad(n, 0.01, 0.12) * 0.30, 0)
     write("nitro/sling_ready", peak_norm(x, -3), SR, 0.42)
-    # Slingshot snap: whip crack, recorded whoosh, sub punch and turbine surge.
+    # Slingshot snap: a quick release click and a short airy whoosh past the
+    # car - no sub punch or wide pitch sweep, the engine does the rest.
     n = int(SR * 0.95)
     crack = filt_noise(n, rng, lambda f: peak(f, 4200, 1.0, 1) * hp(f, 1500, 2)) * env_ad(n, 0.0004, 0.012)
-    who = load("812689", SR, mono=True)[:n]
-    who = np.pad(who, (0, n - len(who)))
+    rs = np.random.default_rng(23)
+    n2 = int(SR * 0.55)
+    k = np.linspace(0, 1, n2)
+    sweep = np.zeros(n2)
+    for i in range(0, n2, 256):
+        ln = min(512, n2 - i)
+        fc = 700 + 1500 * np.sin(np.pi * 0.5 * k[i])
+        sweep[i:i + ln] += filt_noise(ln, rs, lambda f, fc=fc: peak(f, fc, 1.1, 1)) * np.hanning(ln)
+    sweep *= np.sin(np.pi * k ** 0.6) ** 2
+    sweep /= np.abs(sweep).max() + 1e-9
+    who = load("812689", SR, mono=True)
+    who = fft_shape(who, lambda f: hp(f, 320, 2))[:n2]
+    who = np.pad(who, (0, n2 - len(who))) * np.sin(np.pi * k) ** 1.5
     who /= np.abs(who).max() + 1e-9
-    punch = np.sin(2 * np.pi * np.cumsum(np.linspace(110, 42, n)) / SR) * env_ad(n, 0.003, 0.11)
-    surge = chirp(n, 700, 2800, 0.5) * env_ad(n, 0.06, 0.3) * 0.18
-    write("nitro/sling_snap", peak_norm(soft(crack * 0.8 + who * 0.6 + punch * 0.8 + surge, 1.4), -1.5), SR, 0.42)
+    whine = chirp(n2, 1500, 1950, 0.6) * np.sin(np.pi * k) ** 2 * 0.06
+    x = crack[:n2] * 0.35 + sweep * 0.8 + who * 0.3 + whine
+    write("nitro/sling_snap", peak_norm(x, -3), SR, 0.42)
     # Chrono shield: reverse swell into a glass bell with a time-warp fall.
     n = int(SR * 1.25)
     t = np.arange(n) / SR

@@ -25,9 +25,11 @@ func run() -> void:
 	check_buses()
 	check_assets()
 	check_engine_specs()
+	check_brake_squeal()
+	check_slingshot_envelope()
 	await check_driven_race()
 	check_volume_settings()
-	print("[audio] buses, assets, 9 engines, rpm model, driven race, volume settings: ",
+	print("[audio] buses, assets, 9 engines, rpm model, brake squeal, slingshot envelope, driven race, volume settings: ",
 		"PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
 
@@ -99,6 +101,93 @@ func check_engine_specs() -> void:
 		check(ea.rpm > 500.0 and ea.rpm <= float(ea.spec.redline) * 1.13, "rpm out of range: %f" % ea.rpm)
 	check(prev_gear >= 5, "high speed must reach a high gear, got %d" % prev_gear)
 	ea.stop()
+
+
+func _st(speed: float, brake := false, wet := 0.0, sling := false) -> Dictionary:
+	return {"speed": speed, "top": 1100.0, "boost": false, "brake": brake, "overheated": false,
+		"draft": 0.0, "wet": wet, "lateral": 0.0, "sling": sling, "grip": 1.0 - wet * 0.3}
+
+
+# Runs a brake press shaped like game.gd (exponential approach to 0.42x at
+# rate k) and returns [peak squeal level, peak squeal dB, peak wet hiss dB,
+# seconds the squeal stayed above 0.3].
+func _brake_run(ea, k: float, wet: float) -> Array:
+	ea.set_car("sedan")
+	ea.start()
+	var dt := 1.0 / 60.0
+	var speed := 1000.0
+	for i in range(90):
+		ea.update(dt, _st(speed, false, wet))
+	var peak := 0.0
+	var peak_db := -80.0
+	var wet_db := -80.0
+	var held := 0.0
+	for i in range(90):
+		speed = lerpf(speed, 420.0, 1.0 - exp(-dt * k))
+		ea.update(dt, _st(speed, k > 0.0, wet))
+		peak = maxf(peak, ea.squeal_level)
+		peak_db = maxf(peak_db, ea._squeal.volume_db)
+		wet_db = maxf(wet_db, ea._skid_wet.volume_db)
+		if ea.squeal_level > 0.3:
+			held += dt
+	ea.stop()
+	return [peak, peak_db, wet_db, held]
+
+
+func check_brake_squeal() -> void:
+	var ea = Sfx.engine_audio
+	var hard: Array = _brake_run(ea, 5.5, 0.0)
+	check(hard[0] > 0.75, "a normal hard stop must squeal strongly (level %.2f)" % hard[0])
+	check(hard[1] > -9.0, "dry squeal must be clearly audible (peak %.1f dB)" % hard[1])
+	check(hard[3] >= 0.35, "squeal must last through the stop (%.2fs)" % hard[3])
+	var light: Array = _brake_run(ea, 1.2, 0.0)
+	check(light[0] < hard[0] - 0.2, "lighter braking must squeal less (%.2f vs %.2f)" % [light[0], hard[0]])
+	var none: Array = _brake_run(ea, 0.0, 0.0)
+	check(none[0] < 0.01, "no brake, no squeal")
+	var wet: Array = _brake_run(ea, 5.5, 0.9)
+	check(wet[2] > -9.0, "wet braking must hiss audibly (peak %.1f dB)" % wet[2])
+	check(wet[1] < hard[1] - 3.0, "on the wet the squeal gives way to hiss")
+	print("[audio] squeal hard %.2f/%.1fdB/%.2fs light %.2f wet hiss %.1fdB squeal %.1fdB" % [hard[0], hard[1], hard[3], light[0], wet[2], wet[1]])
+
+
+func check_slingshot_envelope() -> void:
+	var ea = Sfx.engine_audio
+	for car in ["sedan", "muscle", "ev"]:
+		ea.set_car(car)
+		ea.start()
+		var dt := 1.0 / 60.0
+		var speed := 1000.0
+		for i in range(120):
+			ea.update(dt, _st(speed))
+		var rpm0: float = ea.rpm
+		var gear0: int = ea.gear
+		var db0: float = ea.last_base_db
+		var max_rpm := 0.0
+		var max_db := -80.0
+		var max_step := 0.0
+		var gear_changed := false
+		for i in range(51):  # SLINGSHOT_TIME 0.85 s, speed x1.32 at k 5.2
+			speed = lerpf(speed, 1320.0, 1.0 - exp(-dt * 5.2))
+			var prev: float = ea.rpm
+			ea.update(dt, _st(speed, false, 0.0, true))
+			max_rpm = maxf(max_rpm, ea.rpm)
+			max_db = maxf(max_db, ea.last_base_db)
+			max_step = maxf(max_step, absf(ea.rpm - prev) / prev)
+			gear_changed = gear_changed or ea.gear != gear0
+		for i in range(150):  # back to cruise
+			speed = lerpf(speed, 1000.0, 1.0 - exp(-dt * 2.4))
+			var prev: float = ea.rpm
+			ea.update(dt, _st(speed))
+			max_rpm = maxf(max_rpm, ea.rpm)
+			max_step = maxf(max_step, absf(ea.rpm - prev) / prev)
+		check(max_rpm <= rpm0 * 1.11 + 1.0, "%s slingshot revs must stay modest (%.0f -> %.0f)" % [car, rpm0, max_rpm])
+		check(max_rpm >= rpm0 * 1.03, "%s slingshot must still lift the revs" % car)
+		check(max_db <= db0 + 1.6, "%s slingshot must not swell the engine (%.1f -> %.1f dB)" % [car, db0, max_db])
+		check(not gear_changed, "%s gear holds through the slingshot" % car)
+		check(max_step < 0.05, "%s rpm moves smoothly (max step %.3f)" % [car, max_step])
+		print("[audio] slingshot %s rpm %.0f->%.0f base %.1f->%.1f dB step %.3f end %.0f" % [car, rpm0, max_rpm, db0, max_db, max_step, ea.rpm])
+		check(absf(ea.rpm - rpm0) / rpm0 < 0.06, "%s engine settles back after the slingshot (%.0f vs %.0f)" % [car, ea.rpm, rpm0])
+		ea.stop()
 
 
 func check_driven_race() -> void:

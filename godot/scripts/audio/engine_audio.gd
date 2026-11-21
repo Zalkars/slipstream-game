@@ -56,6 +56,18 @@ var _master_db := 0.0      # fade for start/stop/pause/rewind
 var _nitro_gain := 0.0
 var _squeal_amt := 0.0
 var _lat_skid := 0.0
+var _decel := 0.0           # fast-tracking deceleration (px/s^2) for the brakes
+# Slingshot: a short, believable surge. Gear is held and rpm/loudness are
+# capped relative to the moment it fired, then released smoothly.
+const SLING_RPM_GAIN := 1.10
+const SLING_DB_GAIN := 1.5
+const SLING_RELEASE := 1.2
+var _sling_lock := 0.0
+var _sling_rpm0 := 0.0
+var _sling_db0 := 0.0
+var _was_sling := false
+var last_base_db := 0.0     # engine loudness before per-loop weights (tests)
+var squeal_level := 0.0     # 0..1 current brake squeal/hiss drive
 
 
 func _ready() -> void:
@@ -175,6 +187,16 @@ func update(dt: float, s: Dictionary) -> void:
 	var raw_acc := (speed - _prev_speed) / maxf(dt, 0.001)
 	_prev_speed = speed
 	_accel = lerpf(_accel, raw_acc, minf(1.0, dt * 8.0))
+	_decel = lerpf(_decel, maxf(0.0, -raw_acc), minf(1.0, dt * 25.0))
+	var sling: bool = s.get("sling", false)
+	if sling and not _was_sling:
+		_sling_rpm0 = rpm
+		_sling_db0 = last_base_db
+	if sling:
+		_sling_lock = SLING_RELEASE
+	elif _sling_lock > 0.0:
+		_sling_lock = maxf(0.0, _sling_lock - dt)
+	_was_sling = sling
 
 	var fade_target := 0.0
 	if paused:
@@ -186,7 +208,8 @@ func update(dt: float, s: Dictionary) -> void:
 	_update_rpm(dt, speed / top, boost, brake)
 	_engine_mix(dt)
 	_nitro_mix(dt, boost, speed / top)
-	_tyres_mix(dt, speed, top, brake, wet, float(s.lateral), bool(s.overheated), float(s.draft), boost)
+	_tyres_mix(dt, speed, top, brake, wet, float(s.lateral), bool(s.overheated), float(s.draft), boost,
+		float(s.get("grip", 1.0)))
 	if _pop_cd > 0.0:
 		_pop_cd -= dt
 	_was_boost = boost
@@ -209,16 +232,18 @@ func _update_rpm(dt: float, u: float, boost: bool, brake: bool) -> void:
 		want_load = 0.15
 	if is_ev:
 		var target := redline * clampf(u / 1.55, 0.03, 1.0)
+		if _sling_lock > 0.0 and not brake and not boost:
+			target = minf(target, _sling_rpm0 * SLING_RPM_GAIN)
 		rpm = lerpf(rpm, target, minf(1.0, dt * 10.0))
 		load = lerpf(load, want_load, minf(1.0, dt * 6.0))
 		return
-	# Gear from speed with hysteresis so braking/boost don't hunt.
+	# Gear from speed with hysteresis so braking/boost don't hunt. The gear is
+	# held through a slingshot so its brief speed spike cannot shift and rev.
 	var g := gear
-	while g < GEAR_TOP.size() and u > float(GEAR_TOP[g - 1]) * 1.0:
-		g += 1
-	while g > 1 and u < float(GEAR_TOP[g - 2]) * 0.90:
-		g -= 1
-	g = clampi(g, 1, GEAR_TOP.size())
+	if _sling_lock > 0.0 and not brake and not boost:
+		g = gear
+	else:
+		g = _pick_gear(u)
 	if g != gear:
 		if g > gear:
 			_shift_t = SHIFT_TIME
@@ -240,6 +265,11 @@ func _update_rpm(dt: float, u: float, boost: bool, brake: bool) -> void:
 		target_rpm *= 1.12
 		want_load = 0.6
 	var slew := 6.0
+	if _sling_lock > 0.0 and not brake and not boost:
+		# Quick, modest rev rise; the release phase glides back down.
+		target_rpm = minf(target_rpm, _sling_rpm0 * SLING_RPM_GAIN)
+		want_load = minf(want_load, 0.8)
+		slew = 5.0 if _was_sling else 3.0
 	if _shift_t > 0.0:
 		_shift_t -= dt
 		want_load = 0.08
@@ -250,6 +280,15 @@ func _update_rpm(dt: float, u: float, boost: bool, brake: bool) -> void:
 		if rpm > shift_rpm * 0.5:
 			_maybe_pop(1.0)
 	load = lerpf(load, want_load, minf(1.0, dt * (14.0 if want_load < load else 7.0)))
+
+
+func _pick_gear(u: float) -> int:
+	var g := gear
+	while g < GEAR_TOP.size() and u > float(GEAR_TOP[g - 1]):
+		g += 1
+	while g > 1 and u < float(GEAR_TOP[g - 2]) * 0.90:
+		g -= 1
+	return clampi(g, 1, GEAR_TOP.size())
 
 
 func _maybe_pop(chance: float) -> void:
@@ -295,6 +334,11 @@ func _engine_mix(dt: float) -> void:
 	var base_db: float = -7.0 + float(spec.get("vol", 0.0)) + rn * 5.0 + load * 3.0
 	if _shift_t > 0.0:
 		base_db -= 3.0
+	if _sling_lock > 0.0:
+		base_db = minf(base_db, _sling_db0 + SLING_DB_GAIN)
+	last_base_db = base_db
+	# Step back under a hard brake so the tyres read clearly.
+	base_db -= squeal_level * 4.0
 	for i in range(3):
 		var pitch := clampf(rpm / _refs[i], 0.45, 2.2)
 		for j in range(2):
@@ -316,7 +360,7 @@ func _nitro_mix(dt: float, boost: bool, u: float) -> void:
 
 
 func _tyres_mix(dt: float, speed: float, top: float, brake: bool, wet: float,
-		lateral: float, overheated: bool, draft: float, boost: bool) -> void:
+		lateral: float, overheated: bool, draft: float, boost: bool, grip := 1.0) -> void:
 	var u := clampf(speed / top, 0.0, 1.8)
 	var dry_k := 1.0 - wet * 0.65
 	_roll_dry.pitch_scale = 0.75 + u * 0.35
@@ -329,19 +373,25 @@ func _tyres_mix(dt: float, speed: float, top: float, brake: bool, wet: float,
 	_draft.pitch_scale = 0.55 + u * 0.12
 	_vol(_draft, -16.0 + _gain_db(clampf((draft - 0.2) * 1.4, 0.0, 1.0)), dt, 8.0)
 
-	# Braking: friction rumble always, squeal from deceleration, water on wet.
-	var decel := clampf(-_accel / 2600.0, 0.0, 1.0)
+	# Braking: friction rumble always, squeal from brake force (deceleration)
+	# and speed, a water hiss on the wet. A normal hard stop (~3000 px/s^2 at
+	# first, decaying as speed drops) squeals clearly for most of a second.
 	var bite := 0.0
 	if brake and not overheated and speed > 120.0:
-		bite = clampf(decel * 1.3, 0.0, 1.0) * clampf(speed / 500.0, 0.0, 1.0)
-	_squeal_amt = lerpf(_squeal_amt, bite, minf(1.0, dt * (14.0 if bite > _squeal_amt else 5.0)))
+		var force := pow(clampf(_decel / 2400.0, 0.0, 1.0), 0.55)
+		var spd := clampf((speed - 120.0) / 480.0, 0.0, 1.0)
+		# Less grip (wet, puddles) means more slip for the same pedal.
+		var slip_k := 1.0 + (1.0 - clampf(grip, 0.0, 1.0)) * 0.6
+		bite = clampf(force * spd * slip_k, 0.0, 1.0)
+	_squeal_amt = lerpf(_squeal_amt, bite, minf(1.0, dt * (18.0 if bite > _squeal_amt else 4.0)))
+	squeal_level = _squeal_amt
 	# Hard stops engage ABS: on the wet early, on the dry only at full bite.
 	var abs_on := brake and not overheated and speed > 180.0 and (wet > 0.3 and _squeal_amt > 0.25 or _squeal_amt > 0.82)
-	var squeal_w := _squeal_amt * (1.0 - wet * 0.8) * (0.55 if abs_on else 1.0)
+	var squeal_w := _squeal_amt * (1.0 - wet * 0.75) * (0.7 if abs_on else 1.0)
 	_squeal.pitch_scale = 0.88 + u * 0.22 + _squeal_amt * 0.06
-	_vol(_squeal, -9.0 + _gain_db(squeal_w), dt, 22.0)
+	_vol(_squeal, -2.0 + _gain_db(squeal_w), dt, 24.0)
 	_skid_wet.pitch_scale = 0.9 + u * 0.15
-	_vol(_skid_wet, -8.0 + _gain_db(_squeal_amt * wet), dt, 22.0)
+	_vol(_skid_wet, -3.0 + _gain_db(_squeal_amt * clampf(wet * 1.6, 0.0, 1.0)), dt, 24.0)
 	_scrub.pitch_scale = 0.85 + u * 0.25
 	_vol(_scrub, -15.0 + _gain_db((0.35 + _squeal_amt * 0.65) if brake and speed > 100.0 and not overheated else 0.0), dt, 16.0)
 	_abs.pitch_scale = 1.0

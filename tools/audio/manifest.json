@@ -815,8 +815,8 @@
  },
  "nitro/sling_snap": {
   "ch": 1,
-  "len": 0.95,
-  "rms_db": -12.8,
+  "len": 0.55,
+  "rms_db": -18.8,
   "sr": 32000
  },
  "nitro/sustain": {
