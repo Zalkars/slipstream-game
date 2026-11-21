@@ -521,12 +521,10 @@ func paint_reflections(ci: CanvasItem) -> void:
 func _burst_drops(n: int) -> void:
 	if int(params.get("screen_drops", 0)) == 0:
 		return
-	var g = game
 	for i in range(n):
 		if drops.size() >= _drop_cap():
 			return
-		drops.append({"p": Vector2(rng.randf_range(0.0, g.W), rng.randf_range(0.0, g.H)),
-			"r": rng.randf_range(8.0, 22.0), "v": Vector2.ZERO, "life": rng.randf_range(1.5, 3.5), "trail": 0.0})
+		_spawn_drop(rng.randf_range(8.0, 20.0), rng.randf_range(1.5, 3.5))
 
 
 func _drop_cap() -> int:
@@ -538,6 +536,25 @@ func _drop_cap() -> int:
 	return 60 if int(params.get("level", 1)) >= 3 else 0
 
 
+# Drops gather where the airflow over the glass is slowest: along the edges of
+# the screen. A distance from the nearest edge drawn with a squared random
+# keeps about two thirds of the drops in the outer quarter on each side.
+func _edge_x() -> float:
+	var g = game
+	var from_edge: float = g.W * 0.5 * pow(rng.randf(), 2.2)
+	return from_edge if rng.randf() < 0.5 else g.W - from_edge
+
+
+func _spawn_drop(r: float, life: float) -> void:
+	var g = game
+	drops.append({"p": Vector2(_edge_x(), rng.randf_range(-10.0, g.H * 0.92)),
+		"r": r, "v": Vector2.ZERO, "life": life, "trail": 0.0,
+		"stick": rng.randf_range(0.15, 0.9)})
+
+
+# Every drop runs DOWN the screen. Small drops cling and creep, heavy ones
+# run and leave a trail of beads; at speed the airflow only nudges them a
+# little sideways, towards the edge they are already closest to.
 func _update_drops(dt: float) -> void:
 	var g = game
 	var mode := int(params.get("screen_drops", 0))
@@ -545,13 +562,12 @@ func _update_drops(dt: float) -> void:
 		return
 	var rain: float = g.rain_amount
 	var spd: float = g.speed if g.running else 0.0
-	var fast := clampf((spd - 500.0) / 600.0, 0.0, 1.0)
-	_drop_spawn += dt * rain * (6.0 + float(g.storm_amount) * 10.0) * (1.0 - fast * 0.6)
+	var fast := clampf((spd - 400.0) / 700.0, 0.0, 1.0)
+	_drop_spawn += dt * rain * (6.0 + float(g.storm_amount) * 10.0)
 	while _drop_spawn >= 1.0:
 		_drop_spawn -= 1.0
 		if drops.size() < _drop_cap():
-			drops.append({"p": Vector2(rng.randf_range(0.0, g.W), rng.randf_range(0.0, g.H)),
-				"r": rng.randf_range(5.0, 14.0), "v": Vector2.ZERO, "life": rng.randf_range(2.0, 5.0), "trail": 0.0})
+			_spawn_drop(rng.randf_range(5.0, 13.0), rng.randf_range(2.5, 6.0))
 	# Storm gusts throw a sudden volley.
 	if float(g.storm_amount) > 0.3 and rng.randf() < dt * 0.35 * float(g.storm_amount):
 		_burst_drops(10)
@@ -562,33 +578,37 @@ func _update_drops(dt: float) -> void:
 			if dy > 0.0 and dy < float(g.car_h) * 1.3 and absf(float(c.x) - float(g.player_x)) < float(g.lane_w) * 0.9:
 				if rng.randf() < dt * 3.0:
 					_burst_drops(3)
-	var wind_x: float = g.rain_vx / 600.0
+	var wind_x: float = clampf(g.rain_vx / 900.0, -0.6, 0.6)
+	var half: float = g.W * 0.5
 	for i in range(drops.size() - 1, -1, -1):
 		var d: Dictionary = drops[i]
 		d.life -= dt
 		var r: float = d.r
-		if fast > 0.05:
-			# Airflow: blown sideways and up the screen, stretching thin.
-			d.v = Vector2(wind_x * 260.0 - 120.0 * fast * signf(d.p.x - g.W * 0.5), -520.0 * fast)
-		elif r > 11.0:
-			# Heavy drops run down, leaving a wet trail of small beads.
-			d.v = Vector2(0.0, lerpf(float(d.v.y), 90.0 + r * 4.0, minf(1.0, dt * 2.0)))
+		# Downward speed grows with the drop's weight; small ones cling.
+		var heavy := clampf((r - 6.0) / 10.0, 0.0, 1.0)
+		var fall := lerpf(6.0 + 20.0 * (1.0 - float(d.stick)), 120.0 + r * 5.0, heavy) * (1.0 + fast * 0.6)
+		# Sideways drift at speed: outwards, plus a little of the crosswind.
+		var side := signf(float(d.p.x) - half)
+		var drift := (side * 26.0 + wind_x * 40.0) * fast * (0.4 + heavy * 0.6)
+		d.v = d.v.lerp(Vector2(drift, fall), minf(1.0, dt * 3.0))
+		if heavy > 0.25:
 			d.trail += dt
-			if d.trail > 0.09 and drops.size() < _drop_cap() + 20:
+			if d.trail > 0.08 and drops.size() < _drop_cap() + 20:
 				d.trail = 0.0
-				drops.append({"p": d.p - Vector2(0.0, r * 0.6), "r": r * 0.32, "v": Vector2.ZERO, "life": 1.2, "trail": 0.0})
-		else:
-			d.v = d.v * pow(0.1, dt)
+				drops.append({"p": d.p - Vector2(0.0, r * 0.7), "r": maxf(2.5, r * 0.30), "v": Vector2.ZERO,
+					"life": 1.1, "trail": 0.0, "stick": 1.0})
+				# The running drop loses a little water to every bead it leaves.
+				d.r = maxf(5.0, r * 0.985)
 		d.p += d.v * dt
-		if d.life <= 0.0 or d.p.y < -40.0 or d.p.y > g.H + 40.0 or d.p.x < -40.0 or d.p.x > g.W + 40.0:
+		if d.life <= 0.0 or d.p.y > g.H + 40.0 or d.p.x < -40.0 or d.p.x > g.W + 40.0:
 			drops.remove_at(i)
-	# Merging: small drops that touch join into a heavier one that will run.
-	if drops.size() > 1 and fast < 0.05:
+	# Merging: drops that touch join into a heavier one that will run.
+	if drops.size() > 1:
 		for a in range(drops.size() - 1, 0, -1):
 			var da: Dictionary = drops[a]
 			var db: Dictionary = drops[a - 1]
 			if da.p.distance_to(db.p) < (float(da.r) + float(db.r)) * 0.55:
-				db.r = sqrt(float(da.r) * float(da.r) + float(db.r) * float(db.r))
+				db.r = minf(26.0, sqrt(float(da.r) * float(da.r) + float(db.r) * float(db.r)))
 				db.life = maxf(float(db.life), float(da.life))
 				drops.remove_at(a)
 
@@ -603,8 +623,8 @@ func paint_drops(ci: CanvasItem) -> void:
 		var r: float = d.r
 		var stretch: Vector2 = Vector2(1.0, 1.0)
 		var v: Vector2 = d.v
-		if v.length() > 150.0:
-			stretch = Vector2(0.7, 1.0 + minf(v.length() / 300.0, 2.0))
+		if v.length() > 60.0:
+			stretch = Vector2(0.85, 1.0 + minf(v.length() / 400.0, 0.9))
 		var a := clampf(float(d.life) * 1.5, 0.0, 1.0)
 		var size := Vector2(r, r) * stretch * 2.0
 		ci.draw_texture_rect(_drop_tex, Rect2(d.p - size * 0.5, size), false, Color(clampf(r / 12.0, 0.5, 2.0), 1.0, 1.0, a))
