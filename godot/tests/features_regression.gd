@@ -197,7 +197,9 @@ func check_traffic_signals_and_events(game: Game) -> void:
 	game.lane = 0
 	game.player_x = game._lane_x(0)
 	game.road_event_type = Game.EVENT_ROADWORKS
-	game.road_event = {"type": Game.EVENT_ROADWORKS, "head_y": game.player_y + 600.0, "taper_len": 440.0, "zone_len": 2600.0, "warned": true, "cone_hit": true}
+	game.road_event = Game.roadworks_layout(0, game.speed)
+	game.road_event["warned"] = true
+	game.road_event["y"] = game.player_y + float(game.road_event.lead) + 200.0
 	game._update_road_events(0.016, 10.0)
 	check(game.crashed, "Hitting solid roadworks barrier must crash player")
 

@@ -168,6 +168,11 @@ var _revive_watching := false
 var _revive_t := 0.0
 var _revive_result: Array = []
 var _banner_shown := false
+# Race banner: decided when a race starts from a height already measured, and
+# kept for the whole race so the HUD never jumps (late load / failure / no net).
+var race_banner_on := false
+var race_banner_top := 0.0
+const TUTORIAL_PANEL_Y := 216.0
 
 
 func _ready() -> void:
@@ -530,6 +535,16 @@ func _start_solo_game() -> void:
 func start_game(force_tutorial := false) -> void:
 	_run_id += 1
 	_close_revive()
+	var bench := get_node_or_null("GfxBenchmark")
+	if bench != null:
+		bench.cancel()
+		gfx_benchmarking = false
+	var known_banner := AdsService.known_banner_height()
+	race_banner_on = known_banner > 0
+	race_banner_top = AdsService.px_to_design(get_viewport(), known_banner) if race_banner_on else 0.0
+	if not race_banner_on:
+		AdsService.prefetch_banner()
+	_apply_banner_layout()
 	Sfx.click()
 	_hide_screens()
 	pause_panel.visible = false
@@ -1108,12 +1123,13 @@ func _input(event: InputEvent) -> void:
 
 # --- ads: top banner and rewarded revive -------------------------------------
 
-# The banner shows on the main menu, garage and finish screen only (never
-# during a race: it would cover the road). Change-detected every frame.
+# The banner shows on the main menu, garage and finish screen and, when its
+# height was known at the start, during the race (HUD moved below it).
+# Change-detected every frame.
 func _sync_ads_banner() -> void:
-	var want := not in_game and not revive_open and (
+	var want := (in_game and race_banner_on) or (not in_game and not revive_open and (
 		(menu != null and menu.visible) or (garage != null and garage.visible)
-		or (result_panel != null and result_panel.visible))
+		or (result_panel != null and result_panel.visible)))
 	if want == _banner_shown:
 		return
 	_banner_shown = want
@@ -1127,6 +1143,12 @@ func _apply_banner_layout() -> void:
 	for c in [menu, garage, result_panel]:
 		if c != null:
 			c.offset_top = top
+	# The race HUD uses the height reserved at race start, never the live one.
+	var race_top := race_banner_top if race_banner_on else 0.0
+	if hud != null:
+		hud.offset_top = race_top
+	if tutorial_panel != null:
+		tutorial_panel.position.y = TUTORIAL_PANEL_Y + race_top
 
 
 func _revive_offerable() -> bool:
@@ -2221,18 +2243,38 @@ func _gfx_effective_level() -> int:
 	return gfx_auto_level if gfx_auto_level >= 0 else GfxPresets.MEDIUM
 
 
+var gfx_benchmarking := false
+
+
 func _gfx_maybe_benchmark() -> void:
 	if gfx_choice != GfxPresets.AUTO or gfx_auto_level >= 0:
 		return
-	if DisplayServer.get_name() == "headless":
+	_gfx_run_benchmark(1.5)
+
+
+# Runs the Auto test on the demo behind the menu/settings. The start is
+# delayed past the launch/loading spike; re-run any time by tapping Авто.
+func _gfx_run_benchmark(delay := 0.0) -> void:
+	if gfx_benchmarking or DisplayServer.get_name() == "headless":
+		return
+	gfx_benchmarking = true
+	_update_gfx_settings_ui()
+	if delay > 0.0:
+		await get_tree().create_timer(delay).timeout
+	if in_game or game == null:
+		# A race started meanwhile: test again on the next menu visit.
+		gfx_benchmarking = false
 		return
 	var bench := GfxBenchmark.new()
 	bench.name = "GfxBenchmark"
 	add_child(bench)
 	bench.finished.connect(func(level: int, _ms: float) -> void:
+		gfx_benchmarking = false
 		gfx_auto_level = level
+		if gfx_choice == GfxPresets.AUTO and game != null:
+			game.set_graphics(level, fps_limit)
 		_save()
-		_update_settings_ui())
+		_update_gfx_settings_ui())
 	bench.start(game)
 
 
@@ -2254,6 +2296,14 @@ func _build_gfx_settings(vb: VBoxContainer) -> void:
 
 
 func _set_gfx(level: int) -> void:
+	if level == GfxPresets.AUTO:
+		# Tapping Авто (again) re-runs the device test.
+		Sfx.click()
+		gfx_choice = GfxPresets.AUTO
+		_save()
+		_update_settings_ui()
+		_gfx_run_benchmark(0.3)
+		return
 	if gfx_choice == level:
 		return
 	Sfx.click()
@@ -2272,7 +2322,10 @@ func _update_gfx_settings_ui() -> void:
 		return
 	match gfx_choice:
 		GfxPresets.AUTO:
-			gfx_desc.text = "Подобрано по тесту устройства: %s." % GfxPresets.level_name(_gfx_effective_level()).capitalize()
+			if gfx_benchmarking:
+				gfx_desc.text = "Идёт тест устройства…"
+			else:
+				gfx_desc.text = "Подобрано по тесту устройства: %s. Нажмите «Авто», чтобы проверить снова." % GfxPresets.level_name(_gfx_effective_level()).capitalize()
 		GfxPresets.LOW:
 			gfx_desc.text = "Без теней и пост-эффектов. Для слабых телефонов."
 		GfxPresets.MEDIUM:
@@ -2319,6 +2372,7 @@ func _build_how() -> void:
 		["РОГАТКА (СЛИПСТРИМ)", "Держись за машиной впереди — шкала зарядится вокруг авто. Резко перестройся, чтобы выстрелить вперёд, получить очки и нитро!"],
 		["ХРОНО-ЩИТ (3 НИТРО)", "Полный бак из 3 зарядов нитро работает как щит: при аварии сгорает и отматывает время на 2 секунды назад."],
 		["УПРАВЛЕНИЕ И ТОРМОЗ", "Две зоны, кнопки или свайпы (выбор в настройках). Тормоз сбрасывает скорость, но колодки греются. На мокрой дороге и в лужах тормозной путь длиннее, а глубокая лужа на скорости ненадолго уводит машину в аквапланирование."],
+		["ДОРОЖНЫЕ РАБОТЫ", "Знак у обочины предупреждает заранее: перестройся. Стрелки и конусы можно сбить — это очки, но машина чуть теряет скорость. Ограждение со знаком STOP — авария."],
 		["9 СПОСОБНОСТЕЙ МАШИН", "У каждой машины в гараже своя фишка: таран на нитро, магнит монет, 4-й баллон, рекуперация тормоза и гипердрайв."],
 		["ВЫЗОВ ДРУГА И ВЫЗОВ ДНЯ", "Скопируй код после финиша и отправь другу в мессенджер — он сможет проехать с твоим живым призраком по той же трассе!"],
 	]

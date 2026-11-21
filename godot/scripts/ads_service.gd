@@ -6,8 +6,10 @@ extends Node
 # tests there is no plugin: supported stays false, the banner takes no room
 # and no rewarded ad is ever offered.
 #
-# - One top banner slot ("menu"), shown on the main menu, garage and finish
-#   screen only. UI moves down by its real, measured height.
+# - One top banner slot ("menu") with one unit, shown on the main menu,
+#   garage, finish screen and (0.8.0) during the race. UI moves down by its
+#   real, measured height; the race reserves the height measured before it
+#   starts, so a banner loading late or failing never moves the race HUD.
 # - One rewarded ad: the revive after a fatal crash.
 # Debug builds request Yandex's demo units, release builds the real ones.
 
@@ -35,6 +37,8 @@ var banner_height := 0
 var _banner_wanted := false
 var _banner_requested := false
 var _banner_native_height := 0
+# Tallest banner measured this session (kept when a later load fails).
+var _banner_seen_height := 0
 var _reward_earned := false
 var _showing := ""
 var _loading: Dictionary = {}
@@ -93,6 +97,7 @@ func detach_backend() -> void:
 	banner_height = 0
 	_banner_requested = false
 	_banner_native_height = 0
+	_banner_seen_height = 0
 	_reward_earned = false
 	_showing = ""
 	_loading.clear()
@@ -139,6 +144,19 @@ func is_banner_wanted() -> bool:
 	return _banner_wanted
 
 
+# Loads the banner without showing it, so the next screen that wants it (a
+# race that starts without one) already knows its height.
+func prefetch_banner() -> void:
+	if supported and initialized and not _banner_requested:
+		_load_banner()
+
+
+# Height in physical pixels of a banner that has loaded at least once this
+# session, shown or not; 0 when none has (no network, no fill, desktop).
+func known_banner_height() -> int:
+	return _banner_seen_height if supported else 0
+
+
 func _load_banner() -> void:
 	if not _can_load("banner") or not units.has("menu_banner"):
 		return
@@ -148,19 +166,25 @@ func _load_banner() -> void:
 
 # Banner height converted to the UI's design units (viewport pixels).
 func banner_height_in(viewport: Viewport) -> float:
-	if banner_height <= 0 or viewport == null:
+	return px_to_design(viewport, banner_height)
+
+
+# Physical screen pixels to the UI's design units.
+static func px_to_design(viewport: Viewport, pixels: int) -> float:
+	if pixels <= 0 or viewport == null:
 		return 0.0
 	var ratio := 1.0
 	var window := DisplayServer.window_get_size()
 	if OS.has_feature("mobile") and window.y > 0:
 		ratio = viewport.get_visible_rect().size.y / float(window.y)
-	return float(banner_height) * ratio
+	return float(pixels) * ratio
 
 
 func _on_banner_height(slot_name: String, height: int) -> void:
 	if slot_name != BANNER_SLOT:
 		return
 	_banner_native_height = maxi(0, height)
+	_banner_seen_height = maxi(_banner_seen_height, _banner_native_height)
 	_apply_banner_height()
 
 
