@@ -81,7 +81,7 @@ var _joint_ph := PackedFloat32Array([-1.0, -1.0])
 var _rail_ph := -1.0
 var _clock := 0.0
 var _state := {"speed": 0.0, "top": 1100.0, "boost": false, "brake": false, "overheated": false,
-	"draft": 0.0, "wet": 0.0, "lateral": 0.0}
+	"draft": 0.0, "wet": 0.0, "lateral": 0.0, "sling": false, "grip": 1.0}
 var _rng := RandomNumberGenerator.new()
 
 var _music_buf := PackedFloat32Array()
@@ -277,6 +277,10 @@ func _process(delta: float) -> void:
 	_state.lateral = _lateral
 	if g != null:
 		_state.top = float(g.top_speed)
+		var st = g.get("slingshot_t")
+		_state.sling = st != null and float(st) > 0.0 and _engine_on
+		var gm = g.get("grip_mu")
+		_state.grip = float(gm) if gm != null else 1.0
 	engine_audio.paused = _paused
 	engine_audio.rewinding = _rewinding
 	engine_audio.update(dt, _state)
@@ -286,6 +290,9 @@ func _process(delta: float) -> void:
 	if g != null and _engine_on and running and not _paused and not _rewinding:
 		_road_features(g)
 	_update_scrape(dt)
+	# A hard stop pushes the world back a little so the tyres cut through.
+	if engine_audio.squeal_level > 0.2:
+		_duck_to(-6.0 * engine_audio.squeal_level)
 	_update_duck(dt)
 
 
@@ -575,8 +582,8 @@ func slingshot_ready() -> void:
 
 
 func slingshot_snap() -> void:
-	engine_audio.one_shot("nitro/sling_snap", -3.0)
-	_duck_to(-4.0)
+	engine_audio.one_shot("nitro/sling_snap", -7.0)
+	_duck_to(-2.0)
 
 
 func ram_hit() -> void:
