@@ -102,6 +102,7 @@ func set_post_scale(s: float) -> void:
 
 func set_enabled(on: bool) -> void:
 	enabled = on
+	_active = on
 	if src_vp == null:
 		return
 	var mode := SubViewport.UPDATE_ALWAYS if on else SubViewport.UPDATE_DISABLED
@@ -110,8 +111,22 @@ func set_enabled(on: bool) -> void:
 	composite.visible = on
 
 
-func frame(screen: Vector2) -> void:
+# active = false when nothing on screen can bloom (a dry day with no stop
+# lights or sparks): both buffer passes and the full-screen composite are
+# skipped. They come back on the same frame a source appears.
+var _active := true
+
+
+func frame(screen: Vector2, active := true) -> void:
 	if src_vp == null or not enabled:
+		return
+	if active != _active:
+		_active = active
+		var mode := SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_DISABLED
+		src_vp.render_target_update_mode = mode
+		blur_vp.render_target_update_mode = mode
+		composite.visible = active
+	if not active:
 		return
 	if screen != _screen:
 		_screen = screen

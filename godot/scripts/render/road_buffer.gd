@@ -26,6 +26,10 @@ var _full_clear := true
 var _last_scroll := 0.0
 var _cleared_top := 0.0       # smallest v already wiped ahead of the screen
 var _dirty := false
+# The furthest-ahead mark since the last clear: once it has scrolled off the
+# bottom, the buffer is empty on screen and the quad is not drawn at all.
+var _min_v := INF
+var _pending_min := INF  # strokes queued this frame
 
 
 func setup(p_x0: float, p_width: float, screen_h: float, p_scale: float) -> void:
@@ -64,12 +68,14 @@ func line(a: Vector2, b: Vector2, w: float, col: Color, scroll: float) -> void:
 	if _strokes.size() > 900:
 		return
 	_strokes.append([0, Vector2(a.x, a.y - scroll), Vector2(b.x, b.y - scroll), w, col])
+	_pending_min = minf(_pending_min, minf(a.y, b.y) - scroll - w)
 
 
 func dot(p: Vector2, r: float, col: Color, scroll: float) -> void:
 	if _strokes.size() > 900:
 		return
 	_strokes.append([1, Vector2(p.x, p.y - scroll), r, col])
+	_pending_min = minf(_pending_min, p.y - scroll - r)
 
 
 # A textured ribbon segment (tread pattern): quad from a to b, width w, the
@@ -78,6 +84,7 @@ func ribbon(a: Vector2, b: Vector2, w: float, col: Color, tex: Texture2D, scroll
 	if _strokes.size() > 900:
 		return
 	_strokes.append([2, Vector2(a.x, a.y - scroll), Vector2(b.x, b.y - scroll), w, col, tex])
+	_pending_min = minf(_pending_min, minf(a.y, b.y) - scroll - w)
 
 
 # --- per frame --------------------------------------------------------------
@@ -89,6 +96,8 @@ func update(scroll: float) -> void:
 		# Rewind, a new run or a huge jump: the stored marks no longer match
 		# the road under them.
 		_full_clear = true
+	_min_v = _pending_min if _full_clear else minf(_min_v, _pending_min)
+	_pending_min = INF
 	if _full_clear:
 		_cleared_top = -scroll - AHEAD
 		_clears.clear()
@@ -119,8 +128,12 @@ func clear_all() -> void:
 
 
 # Shows the buffer: the visible screen rows map to at most two ring segments.
+func has_visible_marks(scroll: float, screen_h: float) -> bool:
+	return _min_v + scroll < screen_h + 8.0
+
+
 func draw_to(ci: CanvasItem, scroll: float, screen_h: float, modulate := Color.WHITE) -> void:
-	if vp == null:
+	if vp == null or not has_visible_marks(scroll, screen_h):
 		return
 	var tex := vp.get_texture()
 	var r0 := fposmod(-scroll, ring_h)

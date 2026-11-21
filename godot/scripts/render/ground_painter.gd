@@ -22,10 +22,18 @@ func _paint_grass(ci: CanvasItem) -> void:
 	var H: float = game.H
 	var scroll: float = game.scroll
 	var amb := Color.WHITE  # ambient comes from the CanvasModulate
-	ci.draw_rect(Rect2(0.0, 0.0, W, H), Color(0.40, 0.50, 0.30))
-	if grass_tex:
-		var off := fposmod(scroll, 128.0)
-		ci.draw_texture_rect(grass_tex, Rect2(0.0, off - 128.0, W, H + 128.0), true, Color(amb.r, amb.g, amb.b, 0.62))
+	# Grass only where it can be seen: the carriageway covers the middle, so
+	# filling the whole screen would shade ~70% of the pixels twice.
+	var rl: float = game.road_x - 27.0
+	var rr: float = game.road_x + game.road_w + 27.0
+	var off := fposmod(scroll, 128.0)
+	for span in [Vector2(0.0, rl), Vector2(rr, W)]:
+		var r := Rect2(span.x, 0.0, span.y - span.x, H)
+		ci.draw_rect(r, Color(0.40, 0.50, 0.30))
+		if grass_tex:
+			# UVs keep the old full-screen tiling, so the pattern is unchanged.
+			ci.draw_texture_rect_region(grass_tex, Rect2(span.x, off - 128.0, span.y - span.x, H + 128.0),
+				Rect2(span.x, 0.0, span.y - span.x, H + 128.0), Color(amb.r, amb.g, amb.b, 0.62))
 	var period := 380.0
 	var off2 := fposmod(scroll, period)
 	var count := int(H / period) + 3
@@ -36,7 +44,8 @@ func _paint_grass(ci: CanvasItem) -> void:
 	# A wet verge goes darker and a little cooler.
 	var wet: float = game.wetness
 	if wet > 0.03:
-		ci.draw_rect(Rect2(0.0, 0.0, W, H), Color(0.04, 0.07, 0.06, wet * 0.22))
+		ci.draw_rect(Rect2(0.0, 0.0, rl, H), Color(0.04, 0.07, 0.06, wet * 0.22))
+		ci.draw_rect(Rect2(rr, 0.0, W - rr, H), Color(0.04, 0.07, 0.06, wet * 0.22))
 
 
 func _paint_shoulders(ci: CanvasItem) -> void:

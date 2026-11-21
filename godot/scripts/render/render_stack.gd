@@ -38,6 +38,8 @@ var systems: Array = []  # objects with optional apply_params/frame/set_post_sca
 var overlay: CanvasLayer
 var ground_layer: DrawLayer
 var road_layer: DrawLayer
+const ROAD_STRIPS := 4
+var road_strips: Array = []
 var decal_layer: DrawLayer
 var puddle_layer: DrawLayer
 var road_glow_layer: DrawLayer
@@ -53,6 +55,8 @@ var air_painters: Array = []
 var overlay_painters: Array = []
 var puddle_painters: Array = []
 var _last_size := Vector2.ZERO
+var last_cpu_ms := 0.0  # CPU time of the last frame() (QA perf mode)
+var system_ms: Dictionary = {}  # per-system CPU time of the last frame
 
 
 func setup(p_game) -> void:
@@ -65,6 +69,17 @@ func setup(p_game) -> void:
 	ground_layer = _layer("Ground", -30, ground_painter.paint, MASK_ROAD)
 	road_layer = _layer("Road", -20, _paint_road, MASK_ROAD)
 	road_layer.material = asphalt.material
+	# 2D lights are culled per canvas item. One screen-tall road item would
+	# run every light over every road pixel; horizontal strips (same shader,
+	# seamless because it works in world space) only see the lights that
+	# actually reach them.
+	for i in range(ROAD_STRIPS):
+		var strip := DrawLayer.new("RoadStrip%d" % i, 0, _paint_road_strip.bind(i))
+		strip.light_mask = MASK_ROAD
+		strip.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		strip.material = asphalt.material
+		road_layer.add_child(strip)
+		road_strips.append(strip)
 	decal_layer = _layer("Decals", -15, _paint_decals, MASK_ROAD)
 	# The buffer holds premultiplied colour (marks drawn over transparent black).
 	var premul := CanvasItemMaterial.new()
@@ -158,6 +173,7 @@ func _relayout(force := false) -> void:
 func frame(delta: float) -> void:
 	if game == null:
 		return
+	var t0 := Time.get_ticks_usec()
 	_relayout()
 	if dyn.feed(delta):
 		post_scale = dyn.scale()
@@ -168,17 +184,31 @@ func frame(delta: float) -> void:
 	position = Vector2(game._sx, game._sy)
 	for s in systems:
 		if s.has_method("frame"):
+			var ts := Time.get_ticks_usec()
 			s.frame(delta)
+			system_ms[s.get_script().get_global_name()] = float(Time.get_ticks_usec() - ts) / 1000.0
 	road_buffer.update(game.scroll)
-	bloom.frame(Vector2(game.W, game.H))
+	var lit = game.lighting_fx
+	var cfx = game.contact_fx
+	var bloom_on: bool = (lit != null and lit.count > 0) or (cfx != null and not cfx.sparks.is_empty()) or float(game.lightning) > 0.02
+	bloom.frame(Vector2(game.W, game.H), bloom_on)
+	bloom.composite.position = position
 	for l in [ground_layer, road_layer, decal_layer, puddle_layer, road_glow_layer,
 			particle_layer, emissive_layer, air_layer, overlay_layer]:
 		l.queue_redraw()
+	for st in road_strips:
+		st.queue_redraw()
+	last_cpu_ms = float(Time.get_ticks_usec() - t0) / 1000.0
 
 
 func _paint_list(ci: CanvasItem, list: Array) -> void:
 	for p in list:
 		p.call(ci)
+
+
+func _paint_road_strip(ci: CanvasItem, i: int) -> void:
+	var h: float = (game.H + 80.0) / float(ROAD_STRIPS)
+	asphalt.draw_rect_part(ci, -40.0 + h * float(i), h)
 
 
 func _paint_road(ci: CanvasItem) -> void:
