@@ -30,6 +30,16 @@ godot --path godot res://tests/GfxShots.tscn -- --presets=0,1,2,3 --perf=1
 
 Car normal-map atlases (`art/race/cars_N_n.png`) are regenerated with
 `godot --path godot res://tests/BakeRaceNormals.tscn -- --bake-race-normals`.
+Lamp anchors for every car class in both art modes (`art/race/lamps.gd`) are
+measured from the 3D models and the 2D paintings with
+`godot --path godot res://tests/BakeRaceLamps.tscn -- --bake-race-lamps`;
+rerun after changing `car_model.gd`, `traffic_model.gd` or the car drawing in
+`art.gd`.
+
+Extra QA modes of `GfxShots.tscn`: `--cars2d=1` (painted cars),
+`--surfaces=8` (one shot per road-surface segment and transition, stitched into
+`shots/surfaces.png`), and `--perf=1 --scene=night_storm|day_clear` (frame,
+GPU, render-system CPU, `Game._draw` CPU, draw calls per preset).
 
 `RaceRegression` covers touch ownership and cancellation, pause/resume, focus
 loss, tutorial timing and hints, traffic appearances, and 2D/3D atlas lifetimes.

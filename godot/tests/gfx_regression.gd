@@ -18,7 +18,9 @@ func run() -> void:
 	check_benchmark_mapping()
 	check_dynamic_resolution()
 	check_preset_application()
-	print("[gfx] presets, auto benchmark, dynamic resolution, preset application: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
+	check_lamp_table()
+	await check_followup_render()
+	print("[gfx] presets, auto benchmark, dynamic resolution, preset application, lamp anchors, drops, beams, surfaces: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
 
 
@@ -95,3 +97,74 @@ func check_preset_application() -> void:
 			game.render_stack.frame(1.0 / 60.0)
 	check(game.running or game.crashed, "Run must survive preset switches")
 	game.queue_free()
+
+
+# Lamp anchors (bake_race_lamps.gd): every class in both art modes, lamps on
+# the right ends of the body and in left/right order.
+func check_lamp_table() -> void:
+	var sils: Array = []
+	for c: Dictionary in Cars.LIST:
+		sils.append(str(c.silhouette))
+	sils.append_array(["van", "pickup", "truck", "bus", "offroad", "sport", "hatch", "sedan", "ev", "muscle", "hyper"])
+	for sil in sils:
+		check(CarLamps.LAMPS.LAMPS_3D.has(sil), "3D lamp anchors for " + sil)
+		check(CarLamps.LAMPS.LAMPS_2D.has("player|" + sil) or not Cars.LIST.any(func(c): return str(c.silhouette) == sil),
+			"2D player lamp anchors for " + sil)
+	for table in [CarLamps.LAMPS.LAMPS_3D, CarLamps.LAMPS.LAMPS_2D]:
+		for key in table:
+			var a: Dictionary = table[key]
+			for cat in ["head", "tail", "ind_f", "ind_r"]:
+				check(a.has(cat), "%s has %s" % [key, cat])
+			if not (a.has("head") and a.has("tail")):
+				continue
+			check(float(a.head[0]) < float(a.head[2]) and float(a.tail[0]) < float(a.tail[2]), "Left lamp left of right lamp: " + key)
+			check(float(a.head[1]) < 0.3 and float(a.tail[1]) > 0.7, "Headlights at the nose, tail lights at the back: " + key)
+			check(float(a.ind_f[0]) <= float(a.head[0]) + 0.02 and float(a.ind_f[2]) >= float(a.head[2]) - 0.02, "Indicators outboard of headlights: " + key)
+	# Placement follows the drawn box (2D) or the fitted sprite (3D).
+	var out := {}
+	CarLamps.points({"head": [0.25, 0.0, 0.75, 0.0]}, Vector2(100, 200), Vector2(80, 160), 0.0, out)
+	check(out.head[0].is_equal_approx(Vector2(80, 120)) and out.head[1].is_equal_approx(Vector2(120, 120)), "Anchor maps to screen")
+
+
+func check_followup_render() -> void:
+	var game := Game.new()
+	game.use_3d_cars = false
+	add_child(game)
+	game.set_process(false)
+	game.set_graphics(GfxPresets.MEDIUM, 60)
+	check(Asphalt.SEG_LEN >= 6000.0 and Asphalt.SEG_BLEND >= 1200.0, "Road surfaces change slowly and blend gradually")
+	check(game.render_stack.road_strips.size() == RenderStack.ROAD_STRIPS, "Road drawn in light-culling strips")
+	# Screen drops: only ever run down, and gather at the edges.
+	game.challenge_config = {"type": "daily", "seed": 5, "car_index": 0, "tod": 0.7, "weather": Game.WEATHER_STORM}
+	game.start_run()
+	game._rewind_invuln = 9999.0
+	var wx: WeatherFx = game.weather_fx
+	var edge := 0
+	var total := 0
+	for i in range(600):
+		game.speed = game.top_speed if i > 300 else game.base_speed
+		wx.frame(1.0 / 60.0)
+		for d in wx.drops:
+			check(float(d.v.y) >= -0.001, "Screen drops must never move up")
+			total += 1
+			if float(d.p.x) < game.W * 0.25 or float(d.p.x) > game.W * 0.75:
+				edge += 1
+	check(total > 100, "Storm produces screen drops")
+	check(float(edge) / maxf(1.0, float(total)) > 0.6, "Drops gather near the screen edges: %d/%d" % [edge, total])
+	# Headlights: every traffic car on screen (and just above it) has a beam,
+	# whether it got a PointLight2D or the matching fallback.
+	game._snap_challenge_weather(0.70, Game.WEATHER_CLEAR)
+	game.cars.clear()
+	for k in range(10):
+		game.cars.append({"lane": k % 4, "x": game._lane_x(k % 4), "y": -150.0 + k * 150.0, "w": game.car_w, "h": game.car_h,
+			"kind": 0, "color": Color(0.5, 0.5, 0.5), "rel": 0.7, "cur_speed": 500.0, "braking": false, "silhouette": "sedan"})
+	game.lighting_fx.frame(1.0 / 60.0)
+	for c in game.cars:
+		var found := false
+		for ri in range(game.lighting_fx._req_count):
+			var r: Dictionary = game.lighting_fx._requests[ri]
+			if int(r.kind) == 0 and absf(float(r.pos.x) - float(c.x)) < 4.0 and absf(float(r.pos.y) - (float(c.y) - game.car_h * 0.5)) < game.car_h * 0.2:
+				found = true
+		check(found, "Traffic car at y=%.0f must have its headlight beam" % float(c.y))
+	game.queue_free()
+	await get_tree().process_frame
