@@ -272,6 +272,7 @@ var weather_fx: WeatherFx
 var fog_fx: FogFx
 var gfx_level := GfxPresets.MEDIUM
 var gfx_target_fps := 60
+var draw_cpu_ms := 0.0  # CPU time of the last _draw (QA perf mode)
 
 
 static func top_kmh(px_speed: float) -> int:
@@ -339,6 +340,7 @@ func _setup_render() -> void:
 	contact_fx = ContactFx.new()
 	contact_fx.setup(self, render_stack)
 	render_stack.add_system(contact_fx)
+	render_stack.overlay_painters.insert(0, paint_haze)
 	render_stack.finish_setup()
 	render_stack.apply_preset(gfx_level, gfx_target_fps)
 
@@ -546,6 +548,63 @@ func _gen_decor() -> void:
 	for plot in plots:
 		_add_decor(rng, int(plot.side), float(plot.y), 5, int(plot.prop), 1.0, 4.0, 2)
 	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a.layer) < int(b.layer))
+	_index_decor()
+
+
+# Spatial index of the decor (render cost, 0.8.0): y buckets along the cycle
+# so drawing only touches props near the screen, plus the lamp-post and
+# sign indices the lighting needs every frame. Buildings are tall and few,
+# so they are always checked.
+const DECOR_BUCKETS := 32
+var _decor_buckets: Array = []
+var _decor_tall: PackedInt32Array = PackedInt32Array()
+var decor_lamps: PackedInt32Array = PackedInt32Array()
+var decor_poles: PackedInt32Array = PackedInt32Array()
+var _decor_visible: PackedInt32Array = PackedInt32Array()
+
+
+func _index_decor() -> void:
+	_decor_buckets.clear()
+	for b in range(DECOR_BUCKETS):
+		_decor_buckets.append(PackedInt32Array())
+	_decor_tall = PackedInt32Array()
+	decor_lamps = PackedInt32Array()
+	decor_poles = PackedInt32Array()
+	var bw := DECOR_CYCLE / float(DECOR_BUCKETS)
+	for i in range(decor.size()):
+		var d: Dictionary = decor[i]
+		var kind := int(d.kind)
+		if kind == 5:
+			_decor_tall.append(i)
+		else:
+			var b := clampi(int(float(d.y) / bw), 0, DECOR_BUCKETS - 1)
+			_decor_buckets[b].append(i)
+		if kind == 2:
+			decor_lamps.append(i)
+		if kind == 2 or kind == 3:
+			decor_poles.append(i)
+
+
+# Indices (in draw order) of decor that can be on screen this frame.
+func _visible_decor() -> PackedInt32Array:
+	_decor_visible.clear()
+	if _decor_buckets.size() != DECOR_BUCKETS:
+		_index_decor()
+	var bw := DECOR_CYCLE / float(DECOR_BUCKETS)
+	# Decor y that lands on [-100, H + 100] on screen, one bucket of slack.
+	var lo := -100.0 - scroll - bw
+	var count := int(ceil((H + 200.0 + bw * 2.0) / bw)) + 1
+	var first := int(floor(lo / bw))
+	if count >= DECOR_BUCKETS:
+		for i in range(decor.size()):
+			_decor_visible.append(i)
+		return _decor_visible
+	for k in range(count):
+		var b := posmod(first + k, DECOR_BUCKETS)
+		_decor_visible.append_array(_decor_buckets[b])
+	_decor_visible.append_array(_decor_tall)
+	_decor_visible.sort()
+	return _decor_visible
 
 
 func _building_plot_bounds(plot: Dictionary) -> Rect2:
@@ -2487,6 +2546,7 @@ func build_challenge_payload(player_name: String) -> Dictionary:
 # --- drawing ----------------------------------------------------------------
 
 func _draw() -> void:
+	var t_draw := Time.get_ticks_usec()
 	draw_set_transform(Vector2(_sx, _sy))
 
 	_draw_rails()
@@ -2500,11 +2560,11 @@ func _draw() -> void:
 	_draw_rear_hazards()
 
 	draw_set_transform(Vector2.ZERO)
-	_draw_haze()
 	if flash > 0.01:
 		draw_rect(Rect2(0.0, 0.0, W, H), Color(1.0, 1.0, 1.0, flash * 0.5))
 	if rewinding:
 		_draw_rewind_fx()
+	draw_cpu_ms = float(Time.get_ticks_usec() - t_draw) / 1000.0
 
 
 func _sample_sky(t: float) -> Array:
@@ -2612,7 +2672,8 @@ func _draw_rails() -> void:
 func _draw_scenery() -> void:
 	# Ambient light is applied by the CanvasModulate (render/lighting.gd).
 	var ambient := Color.WHITE
-	for d in decor:
+	for di in _visible_decor():
+		var d: Dictionary = decor[di]
 		var base_y := fposmod(float(d.y) + scroll, DECOR_CYCLE)
 		# Include every repeated copy for tall viewports as well as wraparound.
 		for k in range(-1, int(ceil(H / DECOR_CYCLE)) + 1):
@@ -2628,7 +2689,7 @@ func _draw_scenery() -> void:
 			if kind == 5:
 				roadside_art.draw_building(self, p, int(d.prop), int(d.variant), size * car_w / 86.0, side, ambient, Vector2(_sx, _sy), (1.0 - get_light_factor()) * (1.0 - cloud_amount * 0.7))
 			elif kind == 2:
-				Art.streetlight(self, p, -side, 0.9 * size)
+				Art.streetlight(self, p, -side, 0.9 * size, Lighting.STREET_ARM)
 			elif kind == 3:
 				Art.road_sign(self, p, side)
 			elif not roadside_art.draw_prop(self, p, int(d.prop), int(d.variant), size, ambient):
@@ -2776,25 +2837,31 @@ func _draw_vehicle_shadow(center: Vector2, w: float, h: float) -> void:
 	_glow(center + Vector2(0.0, h * 0.02), w * 0.82,
 		Color(0.0, 0.0, 0.0, 0.30), Vector2(0.62, 1.02))
 
-func _draw_haze() -> void:
+# Distance haze, sunset wash and vignette. Drawn on the unshaded FX overlay
+# (render/render_stack.gd), pre-tinted by the ambient light, so these large
+# translucent gradients do not run the 2D-light loop for every pixel.
+func paint_haze(ci: CanvasItem) -> void:
 	var night := get_night_factor()
 	var amb := get_sky_ambient()
-	var light := get_light_factor()
+	var lit: Color = lighting_fx.ambient if lighting_fx != null else Color.WHITE
 	# Fog itself is render/fog_fx.gd; this is only the distance haze.
 	var top := Color(0.78, 0.80, 0.80, 0.12)
 	top = top.lerp(Color(0.10, 0.13, 0.21, 0.22), night)
-	_grad_v(Rect2(0.0, 0.0, W, 230.0), top, Color(top.r, top.g, top.b, 0.0))
-	_grad_v(Rect2(0.0, H - 170.0, W, 170.0), Color(0.10, 0.11, 0.12, 0.0), Color(0.10, 0.11, 0.12, 0.10 + night * 0.10))
+	top = Color(top.r * lit.r, top.g * lit.g, top.b * lit.b, top.a)
+	Fx.vgrad(ci, Rect2(0.0, 0.0, W, 230.0), top, Color(top.r, top.g, top.b, 0.0))
+	var low := Color(0.10 * lit.r, 0.11 * lit.g, 0.12 * lit.b, 0.0)
+	Fx.vgrad(ci, Rect2(0.0, H - 170.0, W, 170.0), low, Color(low.r, low.g, low.b, 0.10 + night * 0.10))
 
 	# Warm sunset wash only while the sky is actually warm.
 	var warmth := clampf((amb.r - amb.b) * 0.55, 0.0, 1.0) * (1.0 - night)
 	if warmth > 0.02:
-		_grad_v(Rect2(0.0, 0.0, W, 520.0), Color(1.0, 0.54, 0.24, warmth * 0.14), Color(1.0, 0.54, 0.24, 0.0))
-		draw_rect(Rect2(0.0, 0.0, W, H), Color(1.0, 0.58, 0.30, warmth * 0.045))
+		var wc := Color(1.0 * lit.r, 0.54 * lit.g, 0.24 * lit.b, warmth * 0.14)
+		Fx.vgrad(ci, Rect2(0.0, 0.0, W, 520.0), wc, Color(wc.r, wc.g, wc.b, 0.0))
+		ci.draw_rect(Rect2(0.0, 0.0, W, H), Color(1.0 * lit.r, 0.58 * lit.g, 0.30 * lit.b, warmth * 0.045))
 
 	var vig := 0.13 + night * 0.12 + storm_amount * 0.08
-	_grad_h(Rect2(0.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, vig), Color(0.0, 0.0, 0.0, 0.0))
-	_grad_h(Rect2(W - 120.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, 0.0), Color(0.0, 0.0, 0.0, vig))
+	Fx.hgrad(ci, Rect2(0.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, vig), Color(0.0, 0.0, 0.0, 0.0))
+	Fx.hgrad(ci, Rect2(W - 120.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, 0.0), Color(0.0, 0.0, 0.0, vig))
 
 
 func _grad_h(rect: Rect2, left: Color, right: Color) -> void:

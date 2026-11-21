@@ -18,6 +18,9 @@ extends Node2D
 enum { HEAD, TAIL, BRAKE, STREET, SIGNAL, NITRO, SPARK, BEACON }
 
 const TRAIL_STEP := 1.0 / 60.0
+# Lamp arm length (art units): long enough that the head hangs over the outer
+# lane, so the pool reads as light from above, not from the verge.
+const STREET_ARM := 150.0
 const TRAIL_POINTS := 14
 
 var game  # Game
@@ -33,6 +36,8 @@ var count := 0
 var _requests: Array = []
 var _req_count := 0
 var _order: Array = []
+var _had_light: Dictionary = {}
+var _lp: Dictionary = {}  # scratch lamp points (CarLamps.points)
 
 var canvas_mod: CanvasModulate
 var _lights: Array = []        # PointLight2D pool
@@ -50,8 +55,10 @@ var _trail_t := 0.0
 var _next_tid := 1
 
 static var _cone_tex: ImageTexture
+static var _cone_texs: Array = []
 static var _point_tex: ImageTexture
 static var _pool_tex: ImageTexture
+static var _overhead_tex: ImageTexture
 
 
 func setup(p_game, p_stack) -> void:
@@ -106,13 +113,25 @@ func apply_params(p: Dictionary) -> void:
 
 # --- textures ---------------------------------------------------------------
 
-static func _make_textures() -> void:
-	if _cone_tex != null:
-		return
-	# Twin low-beam pattern seen from above. The light node sits at the middle
-	# of the bumper (bottom centre of the image); two lamps at +-14% of the
-	# width throw overlapping cones up the image, with a hot zone just past
-	# the cutoff and a long soft throw.
+# Lamp offsets (fraction of the texture half-width) of the twin-beam family.
+# Each car picks the texture whose two beams start exactly on its own lamps:
+# offset = lamp spacing / beam length * 2 (the texture is half as wide as long).
+const CONE_SPREADS := [0.10, 0.14, 0.18, 0.22, 0.26, 0.30, 0.34]
+
+
+static func cone_for(spread: float) -> ImageTexture:
+	var best := 0
+	for i in range(CONE_SPREADS.size()):
+		if absf(float(CONE_SPREADS[i]) - spread) < absf(float(CONE_SPREADS[best]) - spread):
+			best = i
+	return _cone_texs[best]
+
+
+# Twin low-beam pattern seen from above. The light node sits at the middle of
+# the bumper (bottom centre of the image); the two lamps at +-lamp of the
+# half-width throw overlapping cones up the image, with a hot zone just past
+# the cutoff and a long soft throw. No hard edges anywhere.
+static func _make_cone(lamp_nx: float) -> ImageTexture:
 	var w := 128
 	var h := 256
 	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
@@ -120,21 +139,35 @@ static func _make_textures() -> void:
 		var v := 1.0 - float(y) / float(h - 1)  # 0 at the bumper, 1 far ahead
 		var reach := pow(clampf(1.0 - v, 0.0, 1.0), 1.15)
 		var hot := exp(-pow((v - 0.22) / 0.14, 2.0))
+		var halfw := 0.05 + 0.58 * pow(v, 0.80)
 		for x in range(w):
 			var nx := (float(x) / float(w - 1)) * 2.0 - 1.0
 			var a := 0.0
-			for lamp in [-0.14, 0.14]:
-				var halfw := 0.05 + 0.80 * pow(v, 0.80)
-				var d := absf(nx - lamp * (1.0 - v * 0.6)) / halfw
+			for lamp in [-lamp_nx, lamp_nx]:
+				# Beams stay almost parallel: each lights its own side of the lane.
+				var d := absf(nx - lamp * (1.0 - v * 0.25)) / halfw
 				if d < 1.0:
 					var prof := pow(1.0 - d, 0.9)
 					a = maxf(a, prof * (0.55 * reach + 0.65 * hot))
 			# Spill: a dim wide fan close to the bumper.
 			a += 0.12 * exp(-pow(v / 0.18, 2.0)) * clampf(1.0 - absf(nx), 0.0, 1.0)
-			a *= smoothstep(0.0, 0.03, v)
+			# Fade in past the bumper, die out before the far end and never
+			# touch the texture's sides, so the beam is never cut off.
+			a *= smoothstep(0.0, 0.09, v)
+			a *= 1.0 - smoothstep(0.72, 0.98, v)
+			a *= 1.0 - smoothstep(0.66, 0.98, absf(nx))
 			var c := clampf(a, 0.0, 1.0)
 			img.set_pixel(x, y, Color(c, c, c, 1.0))
-	_cone_tex = ImageTexture.create_from_image(img)
+	return ImageTexture.create_from_image(img)
+
+
+static func _make_textures() -> void:
+	if _cone_tex != null:
+		return
+	_cone_texs.clear()
+	for sp in CONE_SPREADS:
+		_cone_texs.append(_make_cone(float(sp)))
+	_cone_tex = cone_for(0.14)
 
 	var s := 128
 	var pimg := Image.create(s, s, false, Image.FORMAT_RGBA8)
@@ -149,6 +182,20 @@ static func _make_textures() -> void:
 			pool.set_pixel(x, y, Color(1, 1, 1, q))
 	_point_tex = ImageTexture.create_from_image(pimg)
 	_pool_tex = ImageTexture.create_from_image(pool)
+	# Street-lamp pool seen from above: a bright core under the lamp head, an
+	# elliptical pool along the road (1 : 1.4) and a soft wide skirt.
+	var oimg := Image.create(s, s, false, Image.FORMAT_RGBA8)
+	for y in range(s):
+		for x in range(s):
+			var q := Vector2((float(x) - 63.5) / 63.5, (float(y) - 63.5) / 63.5)
+			var d := Vector2(q.x, q.y / 1.0).length()
+			var e := Vector2(q.x * 1.4, q.y).length()
+			var pool_v := pow(clampf(1.0 - e, 0.0, 1.0), 1.6) * 0.75
+			var core := pow(clampf(1.0 - d * 2.6, 0.0, 1.0), 2.0) * 0.45
+			var skirt := pow(clampf(1.0 - d, 0.0, 1.0), 3.0) * 0.18
+			var v := clampf(pool_v + core + skirt, 0.0, 1.0)
+			oimg.set_pixel(x, y, Color(v, v, v, 1.0))
+	_overhead_tex = ImageTexture.create_from_image(oimg)
 
 
 # --- source collection ------------------------------------------------------
@@ -172,7 +219,11 @@ func _add(kind: int, pos: Vector2, dir: float, col: Color, energy: float, radius
 
 
 # kind: 0 cone, 1 point. prio higher = more important.
-func _request(kind: int, pos: Vector2, rot: float, col: Color, energy: float, size: float, prio: float, shadow_ok: bool) -> void:
+func _request(kind: int, pos: Vector2, rot: float, col: Color, energy: float, size: float, prio: float, shadow_ok: bool, key := -1, spread := 0.14) -> void:
+	# Hysteresis: a light that had a PointLight2D last frame keeps it unless
+	# something clearly more important needs it, so beams never flicker.
+	if key != -1 and _had_light.has(key):
+		prio += 120.0
 	var r: Dictionary
 	if _req_count < _requests.size():
 		r = _requests[_req_count]
@@ -187,6 +238,8 @@ func _request(kind: int, pos: Vector2, rot: float, col: Color, energy: float, si
 	r["size"] = size
 	r["prio"] = prio
 	r["shadow"] = shadow_ok
+	r["key"] = key
+	r["spread"] = spread
 	_req_count += 1
 
 
@@ -207,35 +260,41 @@ func collect() -> void:
 	var light: float = headlight_level()
 	var H: float = g.H
 	var ref := Vector2(g.player_x, g.player_y)
-	# Player.
+	# Player. Lamp positions come from the measured anchors of the car's
+	# own model (render/car_lamps.gd), rotated with the body yaw.
 	if g.running and not g.demo:
-		var px: float = g.player_x
-		var py: float = g.player_y
-		var cw: float = g.car_w
-		var ch: float = g.car_h
 		var tilt: float = g.player_tilt
+		var sprite: Dictionary = g._race_sprite(g._player_art)
+		var box := CarLamps.draw_box(sprite, g.car_w, g.car_h)
+		CarLamps.points(CarLamps.anchors(g._player_art, sprite, true), Vector2(g.player_x, g.player_y), box, tilt, _lp)
+		var hl: Vector2 = _lp.head[0]
+		var hr: Vector2 = _lp.head[1]
 		if light > 0.02:
-			for side in [-1.0, 1.0]:
-				_add(HEAD, Vector2(px + side * cw * 0.27, py - ch * 0.47), -PI * 0.5 + tilt * 0.6, Color(1.0, 0.93, 0.80), light, 560.0, -2)
-			_request(0, Vector2(px, py - ch * 0.50), tilt * 0.6, Color(1.0, 0.94, 0.82), 1.35 * light, 620.0, 1000.0, true)
+			_add(HEAD, hl, -PI * 0.5 + tilt, Color(1.0, 0.93, 0.80), light, 560.0, -2)
+			_add(HEAD, hr, -PI * 0.5 + tilt, Color(1.0, 0.93, 0.80), light, 560.0, -2)
+			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0).rotated(tilt), tilt * 0.6, Color(1.0, 0.94, 0.82), 1.35 * light, 620.0, 1000.0, true, -2,
+				hl.distance_to(hr) / 620.0 * 2.0)
 		var braking: bool = g.braking and not g.overheated
-		for side in [-1.0, 1.0]:
-			var tp := Vector2(px + side * cw * 0.29, py + ch * 0.465)
+		var tl: Vector2 = _lp.tail[0]
+		var tr: Vector2 = _lp.tail[1]
+		for tp in [tl, tr]:
 			if braking:
 				_add(BRAKE, tp, PI * 0.5, Color(1.0, 0.10, 0.05), 1.0, 120.0, -2)
 			elif light > 0.02:
 				_add(TAIL, tp, PI * 0.5, Color(1.0, 0.12, 0.07), light * 0.6, 70.0, -2)
 		if braking:
-			_request(1, Vector2(px, py + ch * 0.56), 0.0, Color(1.0, 0.12, 0.06), 0.85, 150.0, 800.0, false)
+			_request(1, (tl + tr) * 0.5 + Vector2(0.0, g.car_h * 0.08), 0.0, Color(1.0, 0.12, 0.06), 0.85, 150.0, 800.0, false, -3)
 		if g.boosting:
-			for side in [-1.0, 1.0]:
-				_add(NITRO, Vector2(px + side * cw * 0.23, py + ch * 0.55), PI * 0.5, Color(1.0, 0.55, 0.20), 1.0, 90.0, -2)
-			_request(1, Vector2(px, py + ch * 0.62), 0.0, Color(1.0, 0.55, 0.22), 0.9, 130.0, 790.0, false)
-	# Traffic.
+			for tp in [tl, tr]:
+				_add(NITRO, tp.lerp((tl + tr) * 0.5, 0.25) + Vector2(0.0, g.car_h * 0.07), PI * 0.5, Color(1.0, 0.55, 0.20), 1.0, 90.0, -2)
+			_request(1, (tl + tr) * 0.5 + Vector2(0.0, g.car_h * 0.14), 0.0, Color(1.0, 0.55, 0.22), 0.9, 130.0, 790.0, false, -4)
+	# Traffic. Headlights are on from before a car enters the screen; the
+	# light pool is shared, and cars without a PointLight2D get an identical
+	# looking additive beam (paint_light_pools), so there is no pop-in.
 	for i in range(g.cars.size()):
 		var c: Dictionary = g.cars[i]
 		var cy := float(c.y)
-		if cy < -700.0 or cy > H + 260.0:
+		if cy < -900.0 or cy > H + 260.0:
 			continue
 		if bool(c.get("rammed", false)):
 			continue
@@ -245,32 +304,37 @@ func collect() -> void:
 		var k := cw / float(g.car_w)
 		var dist := Vector2(cx, cy).distance_to(ref)
 		var onscreen := cy > -ch and cy < H + ch
+		var tid := _tid(c)
+		var sprite: Dictionary = g._race_sprite(c)
+		CarLamps.points(CarLamps.anchors(c, sprite, false), Vector2(cx, cy), CarLamps.draw_box(sprite, cw, ch), 0.0, _lp)
+		var hl: Vector2 = _lp.head[0]
+		var hr: Vector2 = _lp.head[1]
 		if light > 0.02:
-			for side in [-1.0, 1.0]:
-				_add(HEAD, Vector2(cx + side * cw * 0.27, cy - ch * 0.47), -PI * 0.5, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
-			_request(0, Vector2(cx, cy - ch * 0.50), 0.0, Color(1.0, 0.92, 0.78), 1.1 * light, 380.0 * k,
-				500.0 - dist * 0.25 + (60.0 if onscreen else -200.0), true)
+			_add(HEAD, hl, -PI * 0.5, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
+			_add(HEAD, hr, -PI * 0.5, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
+			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0), 0.0, Color(1.0, 0.92, 0.78), 1.1 * light, 420.0 * k,
+				520.0 - dist * 0.18 + (60.0 if onscreen else -120.0), true, tid * 4, hl.distance_to(hr) / (420.0 * k) * 2.0)
 		var braking := bool(c.get("braking", false))
-		for side in [-1.0, 1.0]:
-			var tp := Vector2(cx + side * cw * 0.29, cy + ch * 0.465)
+		var tl: Vector2 = _lp.tail[0]
+		var tr: Vector2 = _lp.tail[1]
+		for tp in [tl, tr]:
 			if braking:
 				_add(BRAKE, tp, PI * 0.5, Color(1.0, 0.10, 0.05), 0.9, 110.0, i)
 			elif light > 0.02:
 				_add(TAIL, tp, PI * 0.5, Color(1.0, 0.12, 0.07), light * 0.55, 60.0, i)
 		if braking and onscreen:
-			_request(1, Vector2(cx, cy + ch * 0.56), 0.0, Color(1.0, 0.12, 0.06), 0.7, 120.0 * k, 300.0 - dist * 0.25, false)
+			_request(1, (tl + tr) * 0.5 + Vector2(0.0, ch * 0.07), 0.0, Color(1.0, 0.12, 0.06), 0.7, 120.0 * k, 300.0 - dist * 0.25, false, tid * 4 + 1)
 		var sig := int(c.get("signal_dir", 0))
 		if sig != 0 and sin(float(g.t) * 22.0) > 0.0:
-			for end_y in [-ch * 0.42, ch * 0.42]:
-				_add(SIGNAL, Vector2(cx + float(sig) * cw * 0.44, cy + end_y), 0.0, Color(1.0, 0.62, 0.12), 0.8, 50.0, i)
+			var si := 1 if sig > 0 else 0
+			_add(SIGNAL, _lp.ind_f[si], 0.0, Color(1.0, 0.62, 0.12), 0.8, 50.0, i)
+			_add(SIGNAL, _lp.ind_r[si], 0.0, Color(1.0, 0.62, 0.12), 0.8, 50.0, i)
 	# Street lamps.
 	var street := light * clampf(1.0 - float(g.blackout_amount), 0.0, 1.0)
 	if street > 0.04:
 		var period: float = g.DECOR_CYCLE
-		for di in range(g.decor.size()):
+		for di in g.decor_lamps:
 			var d: Dictionary = g.decor[di]
-			if int(d.kind) != 2:
-				continue
 			var base_y := fposmod(float(d.y) + float(g.scroll), period)
 			for kk in range(-1, int(ceil(H / period)) + 1):
 				var y: float = base_y + float(kk) * period
@@ -280,15 +344,18 @@ func collect() -> void:
 				var x: float = (g.road_x - 52.0 - float(d.off)) if side < 0 else (g.road_x + g.road_w + 52.0 + float(d.off))
 				var s: float = d.size
 				var arm_dir: float = 1.0 if side < 0 else -1.0
-				var lamp := Vector2(x + arm_dir * 92.0 * 0.9 * s, y)
+				var lamp := Vector2(x + arm_dir * STREET_ARM * 0.9 * s, y)
 				var flick := street_flicker(di, float(g.t))
 				if flick <= 0.01:
 					continue
-				var led := (di % 3) == 0
+				var led: bool = (int(di) % 3) == 0
 				var col := Color(0.80, 0.88, 1.0) if led else Color(1.0, 0.70, 0.34)
 				_add(STREET, lamp, 0.0, col, street * flick, 300.0 * s, di)
-				_request(1, lamp, 0.0, col, 1.15 * street * flick, 330.0 * s,
-					450.0 - lamp.distance_to(ref) * 0.25, true)
+				# Overhead lamp: the pool lies right under the head, stretched
+				# along the road; no shadows - a lamp above the carriageway does
+				# not throw its post or a passing car across the lanes.
+				_request(2, lamp, 0.0, col, 1.45 * street * flick, 320.0 * s,
+					450.0 - lamp.distance_to(ref) * 0.25, false, 100000 + di * 8 + kk + 1)
 	# Road-event beacons (roadworks blinkers, radar posts) as small sources.
 	if g.road_event_type == g.EVENT_ROADWORKS and g.closed_lane >= 0:
 		var head_y := float(g.road_event.get("head_y", -2000.0))
@@ -349,24 +416,35 @@ func _assign_lights() -> void:
 	_order.sort_custom(func(a: int, b: int) -> bool: return float(reqs[a].prio) > float(reqs[b].prio))
 	var shadows_left := int(params.get("shadow_lights", 0))
 	var n := _lights.size()
+	_had_light.clear()
 	for li in range(n):
 		var l: PointLight2D = _lights[li]
 		if li >= _req_count:
 			l.enabled = false
 			continue
 		var r: Dictionary = reqs[_order[li]]
+		if int(r.get("key", -1)) != -1:
+			_had_light[int(r.key)] = true
 		l.enabled = true
 		l.position = r.pos
 		l.color = r.col
 		l.energy = float(r.energy)
 		if int(r.kind) == 0:
-			if l.texture != _cone_tex:
-				l.texture = _cone_tex
+			var ct := cone_for(float(r.get("spread", 0.14)))
+			if l.texture != ct:
+				l.texture = ct
 			var sc := float(r.size) / 256.0
 			l.texture_scale = sc
 			l.offset = Vector2(0.0, -128.0 * sc)
 			l.rotation = float(r.rot)
 			l.height = 240.0
+		elif int(r.kind) == 2:
+			if l.texture != _overhead_tex:
+				l.texture = _overhead_tex
+			l.texture_scale = float(r.size) * 2.0 / 128.0
+			l.offset = Vector2.ZERO
+			l.rotation = 0.0
+			l.height = 320.0  # above the road: even diffuse, a tight wet reflection
 		else:
 			if l.texture != _point_tex:
 				l.texture = _point_tex
@@ -416,9 +494,8 @@ func _update_occluders() -> void:
 			o.scale = Vector2(g.car_w * 0.84, g.car_h * 0.90)
 		# Lamp posts: their shadows fall across the lanes from the next lamp.
 		var period: float = g.DECOR_CYCLE
-		for d in g.decor:
-			if int(d.kind) != 2 and int(d.kind) != 3:
-				continue
+		for di in g.decor_poles:
+			var d: Dictionary = g.decor[di]
 			var base_y := fposmod(float(d.y) + float(g.scroll), period)
 			for kk in range(-1, int(ceil(H / period)) + 1):
 				var y: float = base_y + float(kk) * period
@@ -463,8 +540,8 @@ func _update_trails(dt: float) -> void:
 	var maxp := TRAIL_POINTS * (2 if g.boosting else 1)
 	if g.running and not g.demo:
 		for side in [-1.0, 1.0]:
-			_push_trail("p%d" % int(side), Vector2(g.player_x + side * g.car_w * 0.29, g.player_y + g.car_h * 0.47), scroll, seen, maxp, 1)
-			_push_trail("ph%d" % int(side), Vector2(g.player_x + side * g.car_w * 0.27, g.player_y - g.car_h * 0.46), scroll, seen, maxp, 0, g.car_h)
+			_push_trail(-10 - int(side), Vector2(g.player_x + side * g.car_w * 0.29, g.player_y + g.car_h * 0.47), scroll, seen, maxp, 1)
+			_push_trail(-20 - int(side), Vector2(g.player_x + side * g.car_w * 0.27, g.player_y - g.car_h * 0.46), scroll, seen, maxp, 0, g.car_h)
 	for c in g.cars:
 		var cy := float(c.y)
 		if cy < -200.0 or cy > g.H + 200.0 or bool(c.get("rammed", false)):
@@ -472,8 +549,8 @@ func _update_trails(dt: float) -> void:
 		var id := _tid(c)
 		for side in [-1.0, 1.0]:
 			var x: float = float(c.x) + side * float(c.w) * 0.29
-			_push_trail("t%d_%d" % [id, int(side)], Vector2(x, cy + float(c.h) * 0.47), scroll, seen, TRAIL_POINTS, 1)
-			_push_trail("h%d_%d" % [id, int(side)], Vector2(x, cy - float(c.h) * 0.46), scroll, seen, TRAIL_POINTS, 0, float(c.h))
+			_push_trail(id * 4 + (0 if side < 0.0 else 1), Vector2(x, cy + float(c.h) * 0.47), scroll, seen, TRAIL_POINTS, 1)
+			_push_trail(id * 4 + (2 if side < 0.0 else 3), Vector2(x, cy - float(c.h) * 0.46), scroll, seen, TRAIL_POINTS, 0, float(c.h))
 	for key in _trails.keys():
 		if not seen.has(key):
 			_trails.erase(key)
@@ -481,7 +558,7 @@ func _update_trails(dt: float) -> void:
 
 # clear: a headlight trail would smear back across its own car, so the
 # white streak only shows where it has left the body (clear = body length).
-func _push_trail(key: String, p: Vector2, scroll: float, seen: Dictionary, maxp: int, kind: int, clear := 0.0) -> void:
+func _push_trail(key: int, p: Vector2, scroll: float, seen: Dictionary, maxp: int, kind: int, clear := 0.0) -> void:
 	seen[key] = true
 	var tr: Dictionary = _trails.get(key, {})
 	if tr.is_empty():
@@ -592,15 +669,24 @@ func paint_light_pools(ci: CanvasItem) -> void:
 	var assigned := mini(_lights.size(), _req_count)
 	if _req_count <= assigned:
 		return
+	# Same texture, size and placement as the PointLight2D it stands in for,
+	# scaled to what that light would add to asphalt of ~0.28 albedo, so a
+	# light moving between the pool and this fallback does not visibly change.
+	var albedo := 0.28 * (1.0 - float(game.wetness) * 0.25)
 	for oi in range(assigned, _req_count):
 		var r: Dictionary = _requests[_order[oi]]
-		var e := float(r.energy) * 0.22
+		var e := float(r.energy) * albedo
 		var col: Color = r.col
+		var tint := Color(col.r * e, col.g * e, col.b * e, 1.0)
 		var sz := float(r.size)
 		var p: Vector2 = r.pos
-		if int(r.kind) == 0:
-			ci.draw_texture_rect(_pool_tex, Rect2(p + Vector2(-sz * 0.22, -sz * 0.75), Vector2(sz * 0.44, sz * 0.7)), false,
-				Color(col.r * e, col.g * e, col.b * e, 1.0))
-		else:
-			ci.draw_texture_rect(_pool_tex, Rect2(p - Vector2(sz, sz) * 0.6, Vector2(sz, sz) * 1.2), false,
-				Color(col.r * e, col.g * e, col.b * e, 1.0))
+		match int(r.kind):
+			0:
+				var sc := sz / 256.0
+				ci.draw_set_transform(p, float(r.rot), Vector2.ONE)
+				ci.draw_texture_rect(cone_for(float(r.get("spread", 0.14))), Rect2(-64.0 * sc, -256.0 * sc, 128.0 * sc, 256.0 * sc), false, tint)
+				ci.draw_set_transform(Vector2.ZERO)
+			2:
+				ci.draw_texture_rect(_overhead_tex, Rect2(p - Vector2(sz, sz), Vector2(sz, sz) * 2.0), false, tint)
+			_:
+				ci.draw_texture_rect(_point_tex, Rect2(p - Vector2(sz, sz), Vector2(sz, sz) * 2.0), false, tint)

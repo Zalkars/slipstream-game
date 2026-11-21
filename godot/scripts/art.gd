@@ -955,9 +955,9 @@ static func bush(ci: CanvasItem, p: Vector2, s: float) -> void:
 	ci.draw_circle(p + Vector2(-s * 0.08, -s * 0.12), s * 0.24, Color(0.36, 0.50, 0.28))
 
 
-static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float) -> void:
+static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm := 92.0) -> void:
 	# top-down street lamp: base, arm reaching over the road, lamp head
-	var arm_len := 92.0 * s
+	var arm_len := arm * s
 	var lamp_x := base.x + arm_len * dir
 	ci.draw_polygon(
 		PackedVector2Array([
