@@ -145,6 +145,67 @@ static func pick_from_benchmark(avg_ms: float) -> int:
 	return LOW
 
 
+# GPU / device tier from RenderingServer.get_video_adapter_name(): a floor for
+# Auto so a flagship is never left on Medium because the benchmark could not
+# see past vsync. -1 = unknown GPU (no hint, the benchmark alone decides).
+static func gpu_tier(adapter: String) -> int:
+	var a := adapter.to_lower()
+	var n := _first_number(a)
+	if a.contains("adreno"):
+		if n >= 740:
+			return ULTRA          # 8 Gen 2 / 8 Gen 3 / 8 Elite (740, 750, 830)
+		if n >= 700:
+			return HIGH           # 7xx: 8 Gen 1, 7+ Gen 2 ...
+		if n >= 640:
+			return MEDIUM         # 640-660: 8xx flagships of 2019-2020
+		if n > 0:
+			return LOW
+		return -1
+	if a.contains("immortalis"):
+		return ULTRA              # Immortalis-G715/G720/G925
+	if a.contains("xclipse"):
+		return ULTRA if n >= 940 else HIGH
+	if a.contains("mali"):
+		# Mali-G710/G715/G720 = HIGH, G77/G78/G610/G615 = MEDIUM, G57/G52 = LOW.
+		if a.contains("-g7") or a.contains(" g7"):
+			return HIGH if n >= 700 else MEDIUM
+		if n >= 610 and n < 700:
+			return MEDIUM
+		if n > 0:
+			return LOW
+		return -1
+	if a.contains("apple"):
+		return HIGH
+	return -1
+
+
+static func _first_number(s: String) -> int:
+	var digits := ""
+	for ch in s:
+		if ch >= "0" and ch <= "9":
+			digits += ch
+		elif digits != "":
+			break
+	return int(digits) if digits != "" else 0
+
+
+# Auto choice from the benchmark and the GPU tier.
+# vsync_bound: the measured frames never got faster than the display refresh
+# (Android often keeps vsync on whatever we ask), so the time only says "at
+# least this fast" — the GPU tier then decides upward. Otherwise the tier may
+# lift a slow measurement by one step at most (a hot or busy phone), and an
+# unknown GPU leaves the benchmark alone.
+static func pick_auto(median_ms: float, vsync_bound: bool, tier: int) -> int:
+	var bench := pick_from_benchmark(median_ms)
+	if tier < 0:
+		if vsync_bound and median_ms > 0.0 and median_ms <= 17.5:
+			return maxi(bench, HIGH)
+		return bench
+	if vsync_bound:
+		return maxi(maxi(bench, tier), HIGH)
+	return maxi(bench, tier - 1)
+
+
 # Dynamic resolution for post-effect buffers. Pure state machine so it can be
 # unit-tested without a renderer: feed frame times, read scale().
 class DynamicRes:

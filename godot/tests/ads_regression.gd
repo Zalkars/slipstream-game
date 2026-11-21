@@ -154,8 +154,25 @@ func check_main_banner_and_revive() -> void:
 	check(native.banner_visible and is_equal_approx(main.garage.offset_top, 120.0), "Garage shows the banner and makes room")
 	main._start_solo_game()
 	main._sync_ads_banner()
-	check(not native.banner_visible, "No banner during a race")
-	check(is_equal_approx(main.menu.offset_top, 0.0), "Race screens take no banner room")
+	# 0.8.0: the banner stays during the race, the HUD sits below it.
+	check(native.banner_visible and main.race_banner_on, "A banner measured before the race shows during it")
+	check(is_equal_approx(main.hud.offset_top, 120.0), "Race HUD moves below the banner")
+	check(is_equal_approx(main.tutorial_panel.position.y, main.TUTORIAL_PANEL_Y + 120.0), "Race prompts move below the banner")
+	var pause_top := INF
+	for b in main.hud.find_children("*", "Button", true, false):
+		if b.visible:
+			pause_top = minf(pause_top, b.get_global_rect().position.y)
+	check(pause_top >= 120.0, "No race HUD control lies under the banner")
+	# Failure or a different creative mid-race: the HUD must not jump.
+	native.ad_failed.emit("bannermenu_load", "no fill")
+	await flush()
+	main._sync_ads_banner()
+	check(is_equal_approx(main.hud.offset_top, 120.0), "A banner failing mid-race does not move the HUD")
+	native.banner_slot_height_changed.emit("menu", 150)
+	await flush()
+	check(is_equal_approx(main.hud.offset_top, 120.0), "A taller creative mid-race does not move the HUD")
+	native.banner_slot_height_changed.emit("menu", 120)
+	await flush()
 
 	# No ad loaded: no offer, the run settles immediately.
 	var coins0: int = main.coins
@@ -175,7 +192,7 @@ func check_main_banner_and_revive() -> void:
 	check(main.revive_open and main.revive_panel.visible, "A fatal crash offers the revive")
 	check(main.coins == coins1, "Nothing is paid while the revive is offered")
 	main._sync_ads_banner()
-	check(not native.banner_visible, "No banner over the revive offer")
+	check(native.banner_visible and is_equal_approx(main.hud.offset_top, 150.0), "The race banner stays over the revive offer; later races reserve the tallest banner seen (150)")
 	main._process(2.0)
 	check(main.revive_count_label.text == "3", "The countdown shows the remaining seconds")
 	main._process(3.1)
@@ -239,6 +256,27 @@ func check_main_banner_and_revive() -> void:
 	check(not main.revive_open, "No revive in the Daily Challenge")
 	main.game.challenge_config = {"type": "duel"}
 	check(not main.game.can_revive(), "No revive in a duel")
+
+	# No banner known when the race starts (no network so far): none in this
+	# race even if it loads late, it is prefetched for the next one instead.
+	AdsService.detach_backend()
+	var late := FakeAds.new()
+	AdsService.attach_backend(late, true)
+	await flush()
+	main.active_challenge = {}
+	main._start_solo_game()
+	main._sync_ads_banner()
+	check(not main.race_banner_on and is_equal_approx(main.hud.offset_top, 0.0), "Without a known banner the race takes no room")
+	check(late.banners_loaded == 1 and not late.banner_visible, "The banner is prefetched hidden during that race")
+	late.banner_slot_height_changed.emit("menu", 110)
+	await flush()
+	main._sync_ads_banner()
+	check(not late.banner_visible and is_equal_approx(main.hud.offset_top, 0.0), "A late banner does not appear or move the HUD mid-race")
+	main.game.finish_run()
+	await get_tree().create_timer(1.2).timeout
+	main._start_solo_game()
+	main._sync_ads_banner()
+	check(late.banner_visible and is_equal_approx(main.hud.offset_top, 110.0), "The next race shows the prefetched banner")
 
 	main.show_menu()
 	main.queue_free()

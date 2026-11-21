@@ -758,7 +758,7 @@ func start_run() -> void:
 	_cutin_window = 0.0
 	_cutin_lane = -1
 	_rear_spawn_t = 0.45
-	_traffic_lc_t = 2.4
+	_traffic_lc_t = 4.0
 	road_event_type = EVENT_NONE
 	road_event.clear()
 	road_event_t = 18.0
@@ -1789,6 +1789,17 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 				c.y = float(c.y) + (min_lead_gap - lead_gap)
 				c["cur_speed"] = minf(float(c.get("cur_speed", desired_speed)), lead_spd)
 
+		# 1b. Road works ahead in the closed lane: slow down and wait behind them.
+		var block_y := _roadworks_block_y(c)
+		if block_y > -INF:
+			var w_gap: float = (float(c.y) - float(c.h) * 0.5) - block_y
+			if w_gap < 520.0:
+				wants_brake = true
+				target_speed = minf(target_speed, maxf(0.0, (w_gap - 50.0) * 1.3))
+				if w_gap < 10.0:
+					c.y = block_y + float(c.h) * 0.5 + 10.0
+					c["cur_speed"] = 0.0
+
 		# 2. Check for player ahead in the same lane (traffic braking behind player)
 		if float(c.y) > py and absf(float(c.x) - player_x) < lane_w * 0.72:
 			var p_gap: float = (float(c.y) - float(c.h) * 0.5) - (py + car_h * 0.5)
@@ -2212,6 +2223,66 @@ func _lane_wall_safe(y_center: float, adding_lane: int) -> bool:
 	return occupied.size() < LANES
 
 
+# Seconds a traffic car takes to slide into its new lane once it commits.
+const LC_MOVE_TIME := 0.72
+# Time gap (s) a car keeps in front of the player when it moves into the
+# player's lane, on top of a fixed clearance; scaled by the closing speed.
+const LC_PLAYER_TIME_GAP := 1.3
+
+
+func _traffic_speed(c: Dictionary) -> float:
+	return float(c.get("cur_speed", float(c.get("rel", 0.72)) * base_speed))
+
+
+# Lanes the player's car occupies now or is heading into.
+func _player_lanes() -> Array:
+	var out: Array = [lane]
+	for l in range(LANES):
+		if absf(_lane_x(l) - player_x) < (lane_w + car_w) * 0.5 - 4.0 and not out.has(l):
+			out.append(l)
+	return out
+
+
+# True when car c can move into lane cand and stay clear of every other car
+# and of the player for the next `horizon` seconds (signal + manoeuvre), with
+# positions extrapolated from the current speeds. Used both before a car may
+# switch its indicator on and on every frame while it signals.
+func _lane_change_safe(c: Dictionary, cand: int, horizon: float) -> bool:
+	if cand < 0 or cand >= LANES or cand == closed_lane:
+		return false
+	var cy := float(c.y)
+	var cs := _traffic_speed(c)
+	var ch := float(c.h)
+	for c2 in cars:
+		if c2 == c or bool(c2.get("rammed", false)):
+			continue
+		var heading := int(c2.get("signal_target", -1)) if int(c2.get("signal_dir", 0)) != 0 else -1
+		if int(c2.lane) != cand and heading != cand:
+			continue
+		var g0 := float(c2.y) - cy
+		var g1 := g0 + (cs - _traffic_speed(c2)) * horizon
+		var need := (ch + float(c2.h)) * 0.5 + ch * 0.55
+		if signf(g0) != signf(g1) or minf(absf(g0), absf(g1)) < need:
+			return false
+	if not demo and running and _player_lanes().has(cand):
+		# Never cut into the space right in front of or beside the player.
+		var p0 := player_y - cy
+		var p1 := p0 - (speed - cs) * horizon
+		var base_clear := (car_h + ch) * 0.5
+		if signf(p0) != signf(p1):
+			return false
+		if p0 > 0.0:
+			var need_ahead := base_clear + car_h * 0.9 + maxf(0.0, speed - cs) * LC_PLAYER_TIME_GAP
+			if minf(p0, p1) < need_ahead:
+				return false
+		else:
+			var need_behind := base_clear + car_h * 0.8 + maxf(0.0, cs - speed) * LC_PLAYER_TIME_GAP
+			if minf(-p0, -p1) < need_behind:
+				return false
+	return _lane_wall_safe(cy, cand)
+
+
+# A car switches its indicator on only for a move already checked as safe.
 func _try_start_lane_change(c: Dictionary, force_fast := false) -> bool:
 	if bool(c.get("rammed", false)) or int(c.get("signal_dir", 0)) != 0 or float(c.get("lane_move_t", 0.0)) > 0.0:
 		return false
@@ -2219,52 +2290,37 @@ func _try_start_lane_change(c: Dictionary, force_fast := false) -> bool:
 	var dirs := [-1, 1]
 	if _rf() < 0.5:
 		dirs = [1, -1]
+	var sig_t := 0.55 if force_fast else 1.25
 	for d in dirs:
 		var cand := clane + int(d)
-		if cand < 0 or cand >= LANES or cand == closed_lane:
-			continue
-		var safe := true
-		for c2 in cars:
-			if c2 == c or bool(c2.get("rammed", false)):
-				continue
-			if int(c2.lane) == cand and absf(float(c2.y) - float(c.y)) < float(c.h) * 1.45 + float(c2.h) * 0.75:
-				safe = false
-				break
-		if not safe:
-			continue
-		if not _lane_wall_safe(float(c.y), cand):
+		if not _lane_change_safe(c, cand, sig_t + LC_MOVE_TIME):
 			continue
 		c["signal_dir"] = int(d)
 		c["signal_target"] = cand
-		c["signal_t"] = 0.55 if force_fast else 1.25
+		c["signal_t"] = sig_t
 		return true
 	return false
 
 
+# Once a car signals it completes the move; if the gap closes it switches the
+# indicator off at once instead of blinking and staying put.
 func _update_traffic_signals(dt: float) -> void:
 	for c in cars:
 		if bool(c.get("rammed", false)):
 			continue
 		var st := float(c.get("signal_t", 0.0))
 		if st > 0.0:
+			var cand := int(c.get("signal_target", c.lane))
+			if not _lane_change_safe(c, cand, st + LC_MOVE_TIME):
+				c["signal_dir"] = 0
+				c["signal_t"] = 0.0
+				continue
 			st -= dt
 			c["signal_t"] = st
 			if st <= 0.0:
-				var cand := int(c.get("signal_target", c.lane))
-				var clear := cand >= 0 and cand < LANES and cand != closed_lane
-				if clear:
-					for c2 in cars:
-						if c2 == c or bool(c2.get("rammed", false)):
-							continue
-						if int(c2.lane) == cand and absf(float(c2.y) - float(c.y)) < float(c.h) * 1.1 + float(c2.h) * 0.6:
-							clear = false
-							break
-				if clear and _lane_wall_safe(float(c.y), cand):
-					c["lane"] = cand
-					c["lane_move_t"] = 0.72
-				else:
-					c["signal_dir"] = 0
-					c["signal_t"] = 0.0
+				c["signal_t"] = 0.0
+				c["lane"] = cand
+				c["lane_move_t"] = LC_MOVE_TIME
 
 	# OFF-ROAD LED lightbar makes traffic ahead politely move aside if safe.
 	if car_perk == "all_weather" and not crashed:
@@ -2276,7 +2332,8 @@ func _update_traffic_signals(dt: float) -> void:
 
 	_traffic_lc_t -= dt
 	if _traffic_lc_t <= 0.0:
-		_traffic_lc_t = _rfr(1.5, 2.7)
+		# Spontaneous lane changes: noticeably rarer than in 0.7.0 (1.5-2.7 s).
+		_traffic_lc_t = _rfr(3.0, 5.2)
 		var candidates: Array = []
 		for c in cars:
 			if bool(c.get("rammed", false)) or int(c.get("signal_dir", 0)) != 0 or float(c.get("lane_move_t", 0.0)) > 0.0:
@@ -2361,53 +2418,9 @@ func _update_road_events(dt: float, travel: float) -> void:
 				_end_road_event()
 		EVENT_ROADWORKS:
 			blackout_amount = maxf(0.0, blackout_amount - dt * 1.4)
-			road_event.head_y = float(road_event.head_y) + travel
-			var head_y := float(road_event.head_y)
-			var taper_len := float(road_event.taper_len)
-			var zone_len := float(road_event.zone_len)
-			var tail_y := head_y - taper_len - zone_len
-			var barrier_head := head_y - taper_len
-			if not bool(road_event.get("warned", false)) and head_y > -950.0:
-				road_event["warned"] = true
-				road_event_banner.emit("ДОРОЖНЫЕ РАБОТЫ!", "СУЖЕНИЕ ПОЛОСЫ · ОЧКИ ×2", Color("#f2b134"))
-			# Nudge traffic out of closed lane ahead of barrier
-			for c in cars:
-				if int(c.get("lane", -1)) == closed_lane and float(c.y) < barrier_head + 160.0 and float(c.y) > tail_y - 220.0:
-					_try_start_lane_change(c, true)
-			if head_y >= player_y - car_h * 0.5 and tail_y <= player_y + car_h * 0.5:
-				score_mult = 2
-			else:
-				score_mult = 1
-			# Taper cone warning bump
-			if not bool(road_event.get("cone_hit", false)) and player_y <= head_y and player_y >= barrier_head:
-				var frac := clampf((head_y - player_y) / maxf(1.0, taper_len), 0.0, 1.0)
-				var edge_x := (road_x + 12.0) if closed_lane == 0 else (road_x + road_w - 12.0)
-				var inner_x := (road_x + lane_w) if closed_lane == 0 else (road_x + road_w - lane_w)
-				var cone_x := lerpf(edge_x, inner_x, frac)
-				var hit_taper := (player_x - car_w * 0.36 < cone_x) if closed_lane == 0 else (player_x + car_w * 0.36 > cone_x)
-				if hit_taper:
-					road_event["cone_hit"] = true
-					shake = maxf(shake, 8.5)
-					speed *= 0.88
-					Sfx.bump()
-					if contact_fx != null:
-						contact_fx.spark_burst(Vector2(cone_x, player_y - car_h * 0.35), Vector2(0.0, 1.0), 0.35)
-					for k in range(10):
-						particles.append({
-							"p": Vector2(cone_x, player_y - car_h * 0.35),
-							"v": Vector2(randf_range(-180.0, 180.0), randf_range(-140.0, 140.0)),
-							"life": randf_range(0.22, 0.45),
-							"max": 0.45,
-							"col": Color(1.0, 0.52, 0.14),
-							"size": randf_range(3.0, 6.0),
-						})
-			# Solid barrier collision
-			if _rewind_invuln <= 0.0 and player_y + car_h * 0.36 >= tail_y and player_y - car_h * 0.36 <= barrier_head:
-				if absf(player_x - _lane_x(closed_lane)) < lane_w * 0.42 + car_w * 0.34:
-					_crash()
-					return
-			if tail_y > H + 200.0:
-				_end_road_event()
+			road_event.y = float(road_event.y) + travel
+			if _update_roadworks(dt):
+				return
 		EVENT_BLACKOUT:
 			road_event.time_left = float(road_event.time_left) - dt
 			blackout_amount = lerpf(blackout_amount, 1.0, minf(1.0, dt * 2.2))
@@ -2440,20 +2453,168 @@ func _start_next_road_event() -> void:
 			closed_lane = 0 if _rf() < 0.5 else LANES - 1
 			if free_lane == closed_lane:
 				_rotate_free_lane()
-			road_event = {
-				"type": EVENT_ROADWORKS,
-				"head_y": -1200.0,
-				"taper_len": 440.0,
-				"zone_len": 2600.0,
-				"warned": false,
-				"cone_hit": false,
-			}
+			road_event = roadworks_layout(closed_lane, speed)
 		EVENT_BLACKOUT:
 			road_event = {
 				"type": EVENT_BLACKOUT,
 				"time_left": 10.5,
 			}
 			road_event_banner.emit("БЛЭКАУТ НА ТРАССЕ!", "ФАРЫ ВКЛЮЧЕНЫ · ОЧКИ ×2", Color("#7fc4ff"))
+
+
+# --- staged road-works zone -------------------------------------------------
+# Seen from the player, in road order: (a) a roadside "Дорожные работы" sign,
+# far enough ahead for the current speed; (b) arrow signs on the closed lane
+# telling you to move over; (c) a taper of cones closing the lane; (d) a solid
+# barrier with a STOP sign where the works start, then the closed stretch.
+# Signs and cones can be knocked over for points (small speed loss); the STOP
+# barrier and the closed stretch behind it are a normal crash.
+# road_event.y is the warning sign's screen y; every object keeps an offset
+# "off" (pixels further up the road). The layout depends only on the closed
+# lane and the speed when the event starts, so runs stay deterministic.
+const RW_REACT_TIME := 2.9      # s from the warning sign to the STOP barrier
+const RW_LEAD_MIN := 1500.0
+const RW_LEAD_MAX := 4600.0
+const RW_ZONE_LEN := 2600.0
+const RW_CONES := 9
+const RW_CONE_PTS := 40
+const RW_SIGN_PTS := 75
+const RW_STOP_DEPTH := 34.0
+
+
+static func roadworks_layout(closed: int, at_speed: float) -> Dictionary:
+	var lead := clampf(at_speed * RW_REACT_TIME, RW_LEAD_MIN, RW_LEAD_MAX)
+	var taper := clampf(lead * 0.30, 480.0, 1100.0)
+	var objs: Array = []
+	var taper_start := lead - taper
+	for k in [2, 1]:
+		var off := taper_start - 360.0 * float(k)
+		if off > 260.0:
+			objs.append({"kind": "arrow", "off": off, "u": 0.5, "hit": false})
+	for i in range(RW_CONES):
+		var frac := float(i) / float(RW_CONES - 1)
+		# u: across the closed lane, 0 = outer road edge, 1 = edge next to the open lanes.
+		objs.append({"kind": "cone", "off": taper_start + taper * frac, "u": lerpf(0.12, 0.96, frac), "hit": false})
+	return {
+		"type": EVENT_ROADWORKS,
+		"y": -160.0,
+		"closed": closed,
+		"lead": lead,
+		"taper_len": taper,
+		"zone_len": RW_ZONE_LEN,
+		"warned": false,
+		"objs": objs,
+	}
+
+
+func _rw_y(off: float) -> float:
+	return float(road_event.get("y", -9999.0)) - off
+
+
+func roadworks_stop_y() -> float:
+	return _rw_y(float(road_event.get("lead", 0.0)))
+
+
+func roadworks_tail_y() -> float:
+	return roadworks_stop_y() - float(road_event.get("zone_len", RW_ZONE_LEN))
+
+
+func roadworks_taper_y() -> float:
+	return _rw_y(float(road_event.get("lead", 0.0)) - float(road_event.get("taper_len", 0.0)))
+
+
+# x of a point across the closed lane (u: 0 outer edge .. 1 inner edge).
+func _rw_x(u: float) -> float:
+	var outer := road_x if closed_lane == 0 else road_x + road_w
+	var inner := road_x + lane_w if closed_lane == 0 else road_x + road_w - lane_w
+	return lerpf(outer, inner, u)
+
+
+func roadworks_object_pos(o: Dictionary) -> Vector2:
+	return Vector2(_rw_x(float(o.u)), _rw_y(float(o.off)))
+
+
+# Returns true when the run ended (crash) this frame.
+func _update_roadworks(dt: float) -> bool:
+	var sign_y := float(road_event.y)
+	var stop_y := roadworks_stop_y()
+	var tail_y := roadworks_tail_y()
+	var taper_y := roadworks_taper_y()
+	if not bool(road_event.get("warned", false)) and sign_y > -40.0:
+		road_event["warned"] = true
+		road_event_banner.emit("ДОРОЖНЫЕ РАБОТЫ!", "%s ПОЛОСА ЗАКРЫТА · ПЕРЕСТРОЙТЕСЬ" % ("ЛЕВАЯ" if closed_lane == 0 else "ПРАВАЯ"), Color("#f2b134"))
+	# Traffic leaves the closed lane well before the taper.
+	for c in cars:
+		if int(c.get("lane", -1)) == closed_lane and float(c.y) - taper_y < 1300.0 and float(c.y) > tail_y - 220.0:
+			_try_start_lane_change(c, true)
+	score_mult = 2 if (taper_y >= player_y - car_h * 0.5 and tail_y <= player_y + car_h * 0.5) else 1
+	# Knock-over signs and cones.
+	for o in road_event.objs:
+		if bool(o.hit):
+			o["t"] = float(o.get("t", 0.0)) + dt
+			o["kx"] = float(o.get("kx", 0.0)) + float(o.get("vx", 0.0)) * dt
+			o["ky"] = float(o.get("ky", 0.0)) + float(o.get("vy", 0.0)) * dt
+			o["rot"] = float(o.get("rot", 0.0)) + float(o.get("spin", 0.0)) * dt
+			continue
+		if crashed or _rewind_invuln > 0.0:
+			continue
+		var pos := roadworks_object_pos(o)
+		var r := 16.0 if str(o.kind) == "cone" else 30.0
+		if absf(pos.x - player_x) < car_w * 0.40 + r and absf(pos.y - player_y) < car_h * 0.42 + r:
+			_knock_roadworks_object(o, pos)
+	# Solid STOP barrier and the closed stretch behind it.
+	if _rewind_invuln <= 0.0 and player_y - car_h * 0.40 <= stop_y + RW_STOP_DEPTH and player_y + car_h * 0.40 >= tail_y:
+		if absf(player_x - _lane_x(closed_lane)) < lane_w * 0.42 + car_w * 0.34:
+			_crash()
+			return true
+	if tail_y > H + 200.0:
+		_end_road_event()
+	return false
+
+
+func _knock_roadworks_object(o: Dictionary, pos: Vector2) -> void:
+	var is_cone := str(o.kind) == "cone"
+	var side := 1.0 if pos.x >= player_x else -1.0
+	o["hit"] = true
+	o["t"] = 0.0
+	# Visual-only tumble: plain randf, never run_rng.
+	o["vx"] = side * randf_range(260.0, 460.0)
+	o["vy"] = -randf_range(380.0, 620.0)
+	o["spin"] = side * randf_range(7.0, 13.0)
+	var pts := (RW_CONE_PTS if is_cone else RW_SIGN_PTS) * _effective_score_mult()
+	bonus += pts
+	speed *= 0.97 if is_cone else 0.94
+	shake = maxf(shake, 5.0 if is_cone else 9.0)
+	Sfx.bump()
+	if contact_fx != null:
+		contact_fx.spark_burst(pos, Vector2(side, -0.6), 0.30 if is_cone else 0.55)
+	for k in range(8 if is_cone else 14):
+		particles.append({
+			"p": pos,
+			"v": Vector2(side * randf_range(40.0, 260.0), randf_range(-260.0, 60.0)),
+			"life": randf_range(0.22, 0.48),
+			"max": 0.48,
+			"col": Color(1.0, 0.50, 0.12) if k % 2 == 0 else Color(0.96, 0.96, 0.94),
+			"size": randf_range(2.5, 5.5),
+		})
+	road_event_banner.emit("СБИТ КОНУС!" if is_cone else "СБИТ ЗНАК!", "+%d ОЧКОВ" % pts, Color("#f2b134"))
+
+
+# Closest road-works obstacle ahead of a traffic car in the closed lane (its
+# screen y), or -INF when there is none: traffic waits behind the closure.
+func _roadworks_block_y(c: Dictionary) -> float:
+	if road_event_type != EVENT_ROADWORKS or closed_lane < 0 or int(c.get("lane", -1)) != closed_lane:
+		return -INF
+	if float(c.get("lane_move_t", 0.0)) > 0.0:
+		return -INF
+	var front := float(c.y) - float(c.h) * 0.5
+	var taper_y := roadworks_taper_y()
+	if front >= taper_y - 6.0:
+		return taper_y
+	var stop_y := roadworks_stop_y() + RW_STOP_DEPTH
+	if front >= stop_y - 6.0:
+		return stop_y
+	return -INF
 
 
 func _end_road_event() -> void:
@@ -2950,11 +3111,8 @@ func _draw_road_event_under() -> void:
 			draw_rect(Rect2(road_x, ry - 4.0, road_w, 8.0), Color(lcol.r, lcol.g, lcol.b, 0.22))
 			draw_line(Vector2(road_x, ry), Vector2(road_x + road_w, ry), lcol, 3.0)
 	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
-		var head_y := float(road_event.get("head_y", -2000.0))
-		var taper_len := float(road_event.get("taper_len", 440.0))
-		var zone_len := float(road_event.get("zone_len", 2600.0))
-		var barrier_head := head_y - taper_len
-		var tail_y := barrier_head - zone_len
+		var barrier_head := roadworks_stop_y()
+		var tail_y := roadworks_tail_y()
 		var y0 := maxf(-40.0, tail_y)
 		var y1 := minf(H + 40.0, barrier_head)
 		if y1 > y0:
@@ -2967,6 +3125,111 @@ func _draw_road_event_under() -> void:
 					draw_line(Vector2(lx + 14.0, sy), Vector2(lx + lane_w - 14.0, sy + 52.0), Color(1.0, 0.62, 0.18, 0.35), 4.0)
 					draw_line(Vector2(lx + lane_w - 14.0, sy), Vector2(lx + 14.0, sy + 52.0), Color(1.0, 0.62, 0.18, 0.35), 4.0)
 				sy += step
+		# Taper: a fading orange wedge on the asphalt under the cones.
+		var taper_y := roadworks_taper_y()
+		if taper_y > -40.0 and barrier_head < H + 40.0:
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(_rw_x(0.05), taper_y), Vector2(_rw_x(0.05), barrier_head), Vector2(_rw_x(0.98), barrier_head),
+			]), Color(0.95, 0.48, 0.12, 0.10))
+
+# --- road-works art (procedural, top-down, drawn on the objects pass) --------
+
+# (a) Roadside sign beyond the guard rail on the closed side.
+func _draw_roadworks_warning_sign(y: float) -> void:
+	if y < -120.0 or y > H + 120.0:
+		return
+	var x := road_x - 72.0 if closed_lane == 0 else road_x + road_w + 72.0
+	x = clampf(x, 50.0, W - 50.0)
+	# Drawn at 1.3x around its post.
+	draw_set_transform(Vector2(_sx, _sy) + Vector2(x, y) * (1.0 - 1.3), 0.0, Vector2(1.3, 1.3))
+	draw_rect(Rect2(x - 3.0, y - 4.0, 6.0, 46.0), Color(0.30, 0.32, 0.34))
+	draw_rect(Rect2(x - 38.0, y - 2.0, 80.0, 70.0), Color(0, 0, 0, 0.22))
+	var tri := PackedVector2Array([Vector2(x, y - 44.0), Vector2(x + 38.0, y + 22.0), Vector2(x - 38.0, y + 22.0)])
+	draw_colored_polygon(tri, Color(0.96, 0.96, 0.94))
+	var tri_in := PackedVector2Array([Vector2(x, y - 34.0), Vector2(x + 29.0, y + 16.0), Vector2(x - 29.0, y + 16.0)])
+	draw_colored_polygon(tri_in, Color(0.98, 0.70, 0.12))
+	# Worker with a shovel, simplified.
+	draw_circle(Vector2(x - 2.0, y - 14.0), 3.6, Color(0.08, 0.08, 0.09))
+	draw_line(Vector2(x - 2.0, y - 10.0), Vector2(x - 6.0, y + 4.0), Color(0.08, 0.08, 0.09), 3.0)
+	draw_line(Vector2(x - 6.0, y + 4.0), Vector2(x - 12.0, y + 12.0), Color(0.08, 0.08, 0.09), 2.5)
+	draw_line(Vector2(x - 6.0, y + 4.0), Vector2(x, y + 12.0), Color(0.08, 0.08, 0.09), 2.5)
+	draw_line(Vector2(x - 4.0, y - 6.0), Vector2(x + 10.0, y + 6.0), Color(0.08, 0.08, 0.09), 2.0)
+	draw_rect(Rect2(x + 7.0, y + 5.0, 9.0, 5.0), Color(0.08, 0.08, 0.09))
+	if _hud_font != null:
+		for ln in [["ДОРОЖНЫЕ", 30.0], ["РАБОТЫ", 46.0]]:
+			var tw := _hud_font.get_string_size(str(ln[0]), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13).x
+			draw_rect(Rect2(x - tw * 0.5 - 4.0, y + float(ln[1]) - 12.0, tw + 8.0, 15.0), Color(0.08, 0.09, 0.10, 0.85))
+			draw_string(_hud_font, Vector2(x - tw * 0.5, y + float(ln[1])), str(ln[0]), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, Color(0.98, 0.72, 0.18))
+	draw_set_transform(Vector2(_sx, _sy))
+
+
+# (b) Free-standing arrow board on the closed lane, pointing to the open lanes.
+func _draw_arrow_sign(pos: Vector2, rot: float, alpha: float, knocked: bool) -> void:
+	draw_set_transform(Vector2(_sx, _sy) + pos, rot, Vector2(1.35, 1.35))
+	var dir := 1.0 if closed_lane == 0 else -1.0
+	if not knocked:
+		draw_rect(Rect2(-36.0, 6.0, 76.0, 14.0), Color(0, 0, 0, 0.25 * alpha))
+	draw_rect(Rect2(-34.0, 8.0, 6.0, 10.0), Color(0.22, 0.23, 0.25, alpha))
+	draw_rect(Rect2(28.0, 8.0, 6.0, 10.0), Color(0.22, 0.23, 0.25, alpha))
+	draw_rect(Rect2(-38.0, -18.0, 76.0, 30.0), Color(0.10, 0.11, 0.12, alpha))
+	draw_rect(Rect2(-35.0, -15.0, 70.0, 24.0), Color(0.98, 0.66, 0.12, alpha))
+	for k in range(3):
+		var cx := (-16.0 + float(k) * 16.0) * dir
+		draw_polyline(PackedVector2Array([
+			Vector2(cx - 6.0 * dir, -10.0), Vector2(cx + 5.0 * dir, -3.0), Vector2(cx - 6.0 * dir, 4.0),
+		]), Color(0.08, 0.08, 0.09, alpha), 4.0)
+	draw_set_transform(Vector2(_sx, _sy))
+	if not knocked:
+		var blink := 0.5 + 0.5 * sin(t * 10.0)
+		_glow(pos + Vector2(0.0, -16.0), 18.0, Color(1.0, 0.70, 0.18, 0.35 * blink))
+
+
+# (c) Traffic cone seen from above: shadow, orange base, white band, tip.
+func _draw_cone(pos: Vector2, rot: float, alpha: float, knocked: bool) -> void:
+	if knocked:
+		draw_set_transform(Vector2(_sx, _sy) + pos, rot, Vector2(1.2, 1.2))
+		draw_rect(Rect2(-14.0, -6.0, 28.0, 12.0), Color(0.98, 0.44, 0.10, alpha))
+		draw_rect(Rect2(-2.0, -6.0, 7.0, 12.0), Color(0.96, 0.96, 0.94, alpha))
+		draw_set_transform(Vector2(_sx, _sy))
+		return
+	draw_circle(pos + Vector2(3.0, 5.0), 16.0, Color(0, 0, 0, 0.25))
+	draw_rect(Rect2(pos.x - 14.0, pos.y - 14.0, 28.0, 28.0), Color(0.90, 0.36, 0.08))
+	draw_circle(pos, 12.0, Color(0.98, 0.46, 0.10))
+	draw_arc(pos, 8.0, 0.0, TAU, 18, Color(0.97, 0.97, 0.95), 3.5)
+	draw_circle(pos, 3.4, Color(1.0, 0.56, 0.18))
+
+
+# (d) Solid barrier with a STOP sign across the closed lane.
+func _draw_stop_barrier(y: float) -> void:
+	if y < -80.0 or y > H + 80.0:
+		return
+	var x0 := minf(_rw_x(0.04), _rw_x(0.98))
+	var x1 := maxf(_rw_x(0.04), _rw_x(0.98))
+	draw_rect(Rect2(x0 + 4.0, y + 6.0, x1 - x0, RW_STOP_DEPTH), Color(0, 0, 0, 0.28))
+	draw_rect(Rect2(x0, y, x1 - x0, RW_STOP_DEPTH), Color(0.96, 0.96, 0.94))
+	var stripe := 22.0
+	var sx := x0
+	var k := 0
+	while sx < x1:
+		if k % 2 == 0:
+			draw_rect(Rect2(sx, y, minf(stripe, x1 - sx), RW_STOP_DEPTH), Color(0.86, 0.12, 0.10))
+		sx += stripe
+		k += 1
+	var c := Vector2((x0 + x1) * 0.5, y - 14.0)
+	var oct := PackedVector2Array()
+	for i in range(8):
+		oct.append(c + Vector2.from_angle(PI / 8.0 + float(i) * PI / 4.0) * 26.0)
+	draw_colored_polygon(oct, Color(0.96, 0.96, 0.94))
+	var oct_in := PackedVector2Array()
+	for i in range(8):
+		oct_in.append(c + Vector2.from_angle(PI / 8.0 + float(i) * PI / 4.0) * 22.0)
+	draw_colored_polygon(oct_in, Color(0.84, 0.10, 0.10))
+	if _hud_font != null:
+		var tw := _hud_font.get_string_size("STOP", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15).x
+		draw_string(_hud_font, Vector2(c.x - tw * 0.5, c.y + 6.0), "STOP", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15, Color(0.98, 0.98, 0.96))
+	var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 9.0))
+	for u in [0.2, 0.8]:
+		_glow(Vector2(_rw_x(u), y + 6.0), 26.0, Color(1.0, 0.22, 0.10, 0.55 * blink))
 
 
 func _draw_road_event_over() -> void:
@@ -3017,23 +3280,29 @@ func _draw_road_event_over() -> void:
 				draw_rect(Rect2(road_x + road_w * 0.5 - tw * 0.5 - 14.0, ry - 42.0, tw + 28.0, 32.0), Color(0.05, 0.07, 0.09, 0.90))
 				draw_string(_hud_font, Vector2(road_x + road_w * 0.5 - tw * 0.5, ry - 19.0), badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20, rcol)
 	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
-		var head_y := float(road_event.get("head_y", -2000.0))
-		var taper_len := float(road_event.get("taper_len", 440.0))
-		var zone_len := float(road_event.get("zone_len", 2600.0))
-		var barrier_head := head_y - taper_len
-		var tail_y := barrier_head - zone_len
-		var edge_x := (road_x + 12.0) if closed_lane == 0 else (road_x + road_w - 12.0)
-		var inner_x := (road_x + lane_w) if closed_lane == 0 else (road_x + road_w - lane_w)
-		# Taper cones
-		for i in range(7):
-			var frac := float(i) / 6.0
-			var cy := lerpf(head_y, barrier_head, frac)
-			if cy < -40.0 or cy > H + 40.0:
+		var barrier_head := roadworks_stop_y()
+		var tail_y := roadworks_tail_y()
+		var inner_x := _rw_x(1.0)
+		_draw_roadworks_warning_sign(float(road_event.get("y", -9999.0)))
+		for o in road_event.get("objs", []):
+			var pos := roadworks_object_pos(o)
+			var rot := 0.0
+			var alpha := 1.0
+			if bool(o.hit):
+				var kt := float(o.get("t", 0.0))
+				if kt > 0.9:
+					continue
+				pos += Vector2(float(o.get("kx", 0.0)), float(o.get("ky", 0.0)))
+				rot = float(o.get("rot", 0.0))
+				alpha = clampf(1.0 - (kt - 0.5) / 0.4, 0.0, 1.0)
+			if pos.y < -80.0 or pos.y > H + 80.0:
 				continue
-			var cx := lerpf(edge_x, inner_x, frac)
-			draw_circle(Vector2(cx, cy), 10.0, Color(0.98, 0.44, 0.10))
-			draw_circle(Vector2(cx, cy), 5.0, Color(0.98, 0.96, 0.92))
-		# Barrier blocks along closed lane
+			if str(o.kind) == "cone":
+				_draw_cone(pos, rot, alpha, bool(o.hit))
+			else:
+				_draw_arrow_sign(pos, rot, alpha, bool(o.hit))
+		_draw_stop_barrier(barrier_head)
+		# Barrier blocks along the closed stretch
 		var y0 := maxf(-60.0, tail_y)
 		var y1 := minf(H + 60.0, barrier_head)
 		if y1 > y0:
@@ -3041,7 +3310,7 @@ func _draw_road_event_over() -> void:
 			var by: float = floor(y0 / step) * step
 			var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 14.0))
 			while by < y1:
-				if by >= tail_y and by <= barrier_head:
+				if by >= tail_y and by <= barrier_head - 40.0:
 					draw_rect(Rect2(inner_x - 8.0, by, 16.0, 62.0), Color(0.95, 0.46, 0.12))
 					draw_rect(Rect2(inner_x - 8.0, by + 18.0, 16.0, 22.0), Color(0.95, 0.95, 0.95))
 					_glow(Vector2(inner_x, by + 31.0), 22.0, Color(1.0, 0.65, 0.12, 0.42 * blink))

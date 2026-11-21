@@ -358,9 +358,12 @@ func collect() -> void:
 					450.0 - lamp.distance_to(ref) * 0.25, false, 100000 + di * 8 + kk + 1)
 	# Road-event beacons (roadworks blinkers, radar posts) as small sources.
 	if g.road_event_type == g.EVENT_ROADWORKS and g.closed_lane >= 0:
-		var head_y := float(g.road_event.get("head_y", -2000.0))
-		var barrier_head := head_y - float(g.road_event.get("taper_len", 440.0))
-		var tail_y := barrier_head - float(g.road_event.get("zone_len", 2600.0))
+		var barrier_head: float = g.roadworks_stop_y()
+		var tail_y: float = g.roadworks_tail_y()
+		# Blinkers on the STOP barrier across the closed lane.
+		if barrier_head > -60.0 and barrier_head < H + 60.0:
+			for u in [0.2, 0.8]:
+				_add(BEACON, Vector2(g._rw_x(u), barrier_head + 6.0), 0.0, Color(1.0, 0.22, 0.10), 0.8 * (0.4 + 0.6 * (0.5 + 0.5 * sin(float(g.t) * 9.0))), 140.0)
 		var inner_x: float = (g.road_x + g.lane_w) if g.closed_lane == 0 else (g.road_x + g.road_w - g.lane_w)
 		var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(float(g.t) * 14.0))
 		var by := floorf(maxf(-60.0, tail_y) / 110.0) * 110.0
