@@ -18,13 +18,20 @@ extends RefCounted
 # Road coordinate v = scroll - screen_y grows with the distance driven.
 
 const TILE := 256
-const SEG_LEN := 1800.0
+# Surface types last ~600 m of road and fade into the next over ~125 m.
+const SEG_LEN := 7200.0
+const SEG_BLEND := 1500.0
+# The aggregate texture: 512 texels over 256 canvas px = one texel per device
+# pixel on a 1440-wide phone, so the asphalt is never magnified (blurred).
+const GRAIN := 512
 
 const ROAD_SHADER := """
 shader_type canvas_item;
 
 uniform sampler2D detail : repeat_enable, filter_linear_mipmap;
 uniform sampler2D detail_n : hint_normal, repeat_enable, filter_linear_mipmap;
+uniform sampler2D grain_tex : repeat_enable, filter_linear_mipmap;
+uniform float seg_blend = 1500.0;
 uniform float scroll = 0.0;
 uniform float road_x = 101.0;
 uniform float road_w = 518.0;
@@ -46,20 +53,31 @@ void vertex() {
 
 float hash1(float n) { return fract(sin(n * 12.9898 + seed * 78.233) * 43758.5453); }
 
-// Surface type parameters: x tint, y cracks, z ruts, w concrete; plus
-// (milling, marking wear, yellow lines, patches) in the second vector.
-void seg_params(float idx, out vec4 a, out vec4 b) {
+// Surface type parameters:
+//   a = (tint 0 dark..1 grey, cracks, ruts, concrete)
+//   b = (milling, marking wear, yellow lines, patches)
+//   c = (porous, chip seal, red surfacing, patchwork)
+void seg_params(float idx, out vec4 a, out vec4 b, out vec4 c) {
 	float r = hash1(idx);
-	if (r < 0.26) {        // fresh dark asphalt, bright paint
+	c = vec4(0.0);
+	if (r < 0.17) {        // fresh dark asphalt, bright paint
 		a = vec4(0.62, 0.0, 0.15, 0.0); b = vec4(0.0, 0.0, 0.0, 0.05);
-	} else if (r < 0.56) { // old grey: cracks, patches, worn paint
+	} else if (r < 0.36) { // old grey: cracks, patches, worn paint
 		a = vec4(1.0, 1.0, 0.35, 0.0); b = vec4(0.0, 0.65, 0.0, 1.0);
-	} else if (r < 0.76) { // rutted lanes
+	} else if (r < 0.48) { // rutted lanes
 		a = vec4(0.85, 0.35, 1.0, 0.0); b = vec4(0.0, 0.35, 0.0, 0.3);
-	} else if (r < 0.88) { // concrete slabs (bridge / flyover)
+	} else if (r < 0.58) { // concrete slabs (bridge / flyover)
 		a = vec4(1.0, 0.15, 0.1, 1.0); b = vec4(0.0, 0.25, 0.0, 0.0);
-	} else {               // road repair: milling, yellow temporary lines
+	} else if (r < 0.66) { // road repair: milling, yellow temporary lines
 		a = vec4(0.78, 0.2, 0.2, 0.0); b = vec4(1.0, 0.85, 1.0, 0.6);
+	} else if (r < 0.77) { // porous drainage asphalt: very dark, open, dries fast
+		a = vec4(0.35, 0.0, 0.1, 0.0); b = vec4(0.0, 0.1, 0.0, 0.0); c = vec4(1.0, 0.0, 0.0, 0.0);
+	} else if (r < 0.88) { // chip seal: light, coarse stones on top
+		a = vec4(0.9, 0.25, 0.2, 0.0); b = vec4(0.0, 0.45, 0.0, 0.2); c = vec4(0.0, 1.0, 0.0, 0.0);
+	} else if (r < 0.93) { // red high-friction surfacing
+		a = vec4(0.7, 0.0, 0.1, 0.0); b = vec4(0.0, 0.15, 0.0, 0.0); c = vec4(0.0, 0.3, 1.0, 0.0);
+	} else {               // patchwork: decades of repairs
+		a = vec4(0.95, 0.6, 0.4, 0.0); b = vec4(0.0, 0.55, 0.0, 1.0); c = vec4(0.0, 0.0, 0.0, 1.0);
 	}
 }
 
@@ -69,16 +87,19 @@ void fragment() {
 	// Surface type with a soft transition into the next segment.
 	float sidx = floor(v / seg_len);
 	float st = v / seg_len - sidx;
-	vec4 pa; vec4 pb; vec4 qa; vec4 qb;
-	seg_params(sidx, pa, pb);
-	seg_params(sidx + 1.0, qa, qb);
-	float bl = smoothstep(1.0 - 240.0 / seg_len, 1.0, st);
+	vec4 pa; vec4 pb; vec4 pc4; vec4 qa; vec4 qb; vec4 qc;
+	seg_params(sidx, pa, pb, pc4);
+	seg_params(sidx + 1.0, qa, qb, qc);
+	float bl = smoothstep(1.0 - seg_blend / seg_len, 1.0, st);
 	// A ragged edge: transitions follow the aggregate, not a ruler.
 	vec4 d = texture(detail, vec2(u, v) / 256.0);
-	bl = clamp(bl + (d.g - 0.5) * 0.35 * step(0.001, bl) * step(bl, 0.999), 0.0, 1.0);
+	vec4 big = texture(detail, vec2(u, v) / 1100.0 + vec2(0.37, 0.71));
+	// A ragged, patchy front: the new surface arrives in tongues, not a line.
+	float rag = (big.g - 0.5) * 0.6 + (d.g - 0.5) * 0.25;
+	bl = clamp(bl + rag * 4.0 * bl * (1.0 - bl), 0.0, 1.0);
 	vec4 A = mix(pa, qa, bl);
 	vec4 B = mix(pb, qb, bl);
-	vec4 big = texture(detail, vec2(u, v) / 1100.0 + vec2(0.37, 0.71));
+	vec4 C = mix(pc4, qc, bl);
 
 	// Lane geometry: distance to the nearest wheel track and lane centre.
 	float lx = u / lane_w;
@@ -90,19 +111,32 @@ void fragment() {
 	vec3 asphalt = mix(vec3(0.245, 0.25, 0.262), vec3(0.39, 0.392, 0.398), A.x);
 	vec3 concrete = vec3(0.53, 0.53, 0.505);
 	vec3 col = mix(asphalt, concrete, A.w);
-	float grain = d.r;
-	col *= 0.82 + grain * 0.34;
+	col = mix(col, vec3(0.20, 0.205, 0.215), C.x);              // porous
+	col = mix(col, vec3(0.43, 0.41, 0.38), C.y * 0.8);          // chip seal
+	col = mix(col, vec3(0.40, 0.17, 0.14), C.z * 0.85);         // red surfacing
+	float grain = texture(grain_tex, vec2(u, v) / 256.0).r;
+	col *= 0.80 + grain * (0.38 + C.x * 0.2);
+	// Chip seal and porous mixes: individual stones catch the light.
+	float chip = smoothstep(0.70, 0.80, grain) * (C.y * 0.16 + C.x * 0.05);
+	col += vec3(chip);
 	col *= 0.90 + big.g * 0.20;
 	float h = grain;  // height for the hand-made normal tweaks
 	if (detail_level > 0.5) {
 		// Patches: rectangular-ish fresher asphalt on old roads.
 		vec2 pc = floor(vec2(u / 90.0, v / 210.0));
 		float pr = hash1(pc.x * 17.0 + pc.y * 131.0);
-		float patch = step(0.86, pr) * step(0.35, big.r) * B.w;
-		col = mix(col, vec3(0.17, 0.175, 0.185) * (0.85 + grain * 0.3), patch * 0.9);
+		// Whole rectangles: the mask is sampled once per patch cell.
+		float cell_big = texture(detail, (pc + 0.5) * vec2(90.0, 210.0) / 1100.0 + vec2(0.37, 0.71)).r;
+		float patch = step(0.86 - C.w * 0.36, pr) * step(0.35 - C.w * 0.3, cell_big) * B.w;
+		// Patchwork repairs come in every age: fresh black to faded grey.
+		float age = hash1(pc.x * 7.0 + pc.y * 59.0) * C.w;
+		col = mix(col, mix(vec3(0.17, 0.175, 0.185), vec3(0.33, 0.33, 0.335), age) * (0.85 + grain * 0.3), patch * 0.9);
 		// Cracks.
-		float crack = smoothstep(0.55, 0.9, d.b) * A.y * (1.0 - patch);
-		col *= 1.0 - crack * 0.55;
+		// Cracks: a thin network at a larger scale, only where the road is
+		// tired (masked by the low-frequency wear), never a cobblestone grid.
+		float cn = texture(detail, vec2(u, v) / 430.0 + vec2(0.21, 0.08)).b;
+		float crack = smoothstep(0.91, 0.99, cn) * A.y * (1.0 - patch) * smoothstep(0.50, 0.78, big.b);
+		col *= 1.0 - crack * 0.30;
 		h -= crack * 0.8;
 		// Ruts and tyre polish.
 		col *= 1.0 - track * (0.06 + 0.16 * A.z);
@@ -145,11 +179,13 @@ void fragment() {
 	float dash = step(1.0 - 96.0 / 250.0, fract(v / 250.0));
 	paint = max(paint, step(near_line, 3.5) * dash * inner);
 	// Worn paint: the aggregate shows through.
-	float keep = step(wear * 0.9, grain + 0.18 * big.r);
+	float keep = smoothstep(wear * 0.8 - 0.08, wear * 0.8 + 0.08, grain * 0.45 + big.r * 0.55 + 0.12);
 	paint *= mix(1.0, keep, wear);
 	vec3 paint_col = vec3(0.93, 0.92, 0.87);
-	// Repair zones: yellow temporary lines a lane quarter to the side.
-	float yel = B.z * step(abs(near_line - lane_w * 0.18), 3.0) * inner * step(0.5, fract(v / 120.0));
+	// Repair zones: a thin yellow double line straddling the lane boundary
+	// (two 3 px lines 4.5 px either side), replacing the white dashes.
+	float yel = B.z * step(abs(near_line - 4.5), 1.5) * inner;
+	paint *= 1.0 - B.z * 0.85 * inner * step(near_line, 8.0);
 	col = mix(col, paint_col, paint * 0.95);
 	col = mix(col, vec3(0.92, 0.70, 0.12), yel);
 	h += (paint + yel) * 0.35;
@@ -165,6 +201,7 @@ void fragment() {
 	// Drying is uneven: wheel tracks clear first, ruts and low spots last.
 	float bias = track * 0.30 * (1.0 - A.z) - (big.a - 0.5) * 0.55 - track * A.z * 0.25 + paint * 0.1;
 	float wet = clamp(wetness * 1.35 - bias * (1.0 - wetness * 0.6), 0.0, 1.0) * step(0.001, wetness);
+	wet *= 1.0 - C.x * 0.55;  // drainage asphalt sheds water
 	col *= 1.0 - wet * (0.28 - A.w * 0.08);
 	col = mix(col, col * vec3(0.92, 0.96, 1.05), wet);
 
@@ -172,6 +209,7 @@ void fragment() {
 
 	// --- normals & specular for the 2D lights ---
 	vec3 n = texture(detail_n, vec2(u, v) / 256.0).xyz * 2.0 - 1.0;
+	n.xy *= 1.0 + C.y * 0.6 + C.x * 0.3;
 	n.xy *= normal_strength * (1.0 - wet * 0.75);
 	n = normalize(n);
 	//NORMALS NORMAL_MAP = n * 0.5 + 0.5;
@@ -205,6 +243,7 @@ var _normals := true
 
 static var _detail: ImageTexture
 static var _detail_n: ImageTexture
+static var _grain: ImageTexture
 static var _shaders: Dictionary = {}
 
 
@@ -215,7 +254,9 @@ func _init(p_game) -> void:
 	material.shader = _shader(true)
 	material.set_shader_parameter("detail", _detail)
 	material.set_shader_parameter("detail_n", _detail_n)
+	material.set_shader_parameter("grain_tex", _grain)
 	material.set_shader_parameter("seg_len", SEG_LEN)
+	material.set_shader_parameter("seg_blend", SEG_BLEND)
 
 
 static func _shader(normals: bool) -> Shader:
@@ -232,7 +273,9 @@ func apply_params(p: Dictionary) -> void:
 	material.shader = _shader(_normals)
 	material.set_shader_parameter("detail", _detail)
 	material.set_shader_parameter("detail_n", _detail_n)
+	material.set_shader_parameter("grain_tex", _grain)
 	material.set_shader_parameter("seg_len", SEG_LEN)
+	material.set_shader_parameter("seg_blend", SEG_BLEND)
 	material.set_shader_parameter("detail_level", float(p.get("asphalt_detail", 1)))
 
 
@@ -260,8 +303,6 @@ static func _make_textures() -> void:
 	var n := TILE * TILE
 	var rgba := PackedByteArray()
 	rgba.resize(n * 4)
-	var hgt := PackedByteArray()
-	hgt.resize(n)
 	for i in range(n):
 		var gi := g[i]
 		var ci := c[i]
@@ -269,17 +310,27 @@ static func _make_textures() -> void:
 		rgba[i * 4 + 1] = w[i]
 		rgba[i * 4 + 2] = ci
 		rgba[i * 4 + 3] = s[i]
-		# Height: aggregate stones, with the crack network cut into them.
-		var cut := maxi(0, ci - 150) * 2
-		hgt[i] = clampi(gi - cut, 0, 255)
 	var detail := Image.create_from_data(TILE, TILE, false, Image.FORMAT_RGBA8, rgba)
 	detail.generate_mipmaps()
 	_detail = ImageTexture.create_from_image(detail)
-	var hmap := Image.create_from_data(TILE, TILE, false, Image.FORMAT_L8, hgt)
-	hmap.convert(Image.FORMAT_RGBA8)
-	hmap.bump_map_to_normal_map(2.2)
-	hmap.generate_mipmaps()
-	_detail_n = ImageTexture.create_from_image(hmap)
+	# Sharp aggregate at 512: five octaves, the finest about one texel, plus
+	# its normal map - both generated natively (no per-pixel GDScript).
+	var gfn := FastNoiseLite.new()
+	gfn.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	gfn.frequency = 0.075
+	gfn.seed = 11
+	gfn.fractal_type = FastNoiseLite.FRACTAL_FBM
+	gfn.fractal_octaves = 5
+	gfn.fractal_gain = 0.62
+	var gimg := gfn.get_seamless_image(GRAIN, GRAIN, false, false, 0.1, true)
+	gimg.convert(Image.FORMAT_L8)
+	var gtex := gimg.duplicate()
+	gtex.generate_mipmaps()
+	_grain = ImageTexture.create_from_image(gtex)
+	gimg.convert(Image.FORMAT_RGBA8)
+	gimg.bump_map_to_normal_map(3.0)
+	gimg.generate_mipmaps()
+	_detail_n = ImageTexture.create_from_image(gimg)
 
 
 static func _noise(kind: int, freq: float, octaves: int, seed_val: int, fractal: int) -> Image:
@@ -303,7 +354,11 @@ func paint_surface(ci: CanvasItem) -> void:
 	var night: float = g.get_night_factor()
 	m.set_shader_parameter("sun", (1.0 - night) * (1.0 - float(g.cloud_amount) * 0.7))
 	m.set_shader_parameter("seed", float(int(g.active_run_seed) % 997) if not g.demo else 0.0)
-	ci.draw_rect(Rect2(g.road_x, -40.0, g.road_w, g.H + 80.0), Color.WHITE)
+	# The surface itself is drawn by the strips (draw_rect_part).
+
+
+func draw_rect_part(ci: CanvasItem, y: float, h: float) -> void:
+	ci.draw_rect(Rect2(game.road_x, y, game.road_w, h + 0.5), Color.WHITE)
 
 
 func paint_markings(_ci: CanvasItem) -> void:
