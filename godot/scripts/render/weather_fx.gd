@@ -181,6 +181,7 @@ var puddle_level := 0.0
 
 static var _drop_tex: ImageTexture
 static var _streak_tex: ImageTexture
+static var _head_streak_tex: ImageTexture
 
 # Visual-only particle pools.
 var mist: Array = []    # {p, v, life, max, size}
@@ -310,6 +311,9 @@ static func _make_textures() -> void:
 			img.set_pixel(x, y, Color(p.x * 0.5 + 0.5, p.y * 0.5 + 0.5, 0.0, a))
 	_drop_tex = ImageTexture.create_from_image(img)
 	_streak_tex = Fx.streak_tex()
+	var head_streak := _streak_tex.get_image()
+	head_streak.flip_y()
+	_head_streak_tex = ImageTexture.create_from_image(head_streak)
 
 
 # --- per frame --------------------------------------------------------------
@@ -504,10 +508,14 @@ func paint_reflections(ci: CanvasItem) -> void:
 		match int(s.kind):
 			Lighting.HEAD:
 				# The bright end follows the lens, and the reflection fades up the road.
-				ci.draw_set_transform(p + Vector2(wob, 0.0), float(s.dir) - PI * 0.5)
-				ci.draw_texture_rect(tex, Rect2(-14.0, 0.0, 28.0, 230.0), false,
-					Color(col.r * e * 0.22, col.g * e * 0.22, col.b * e * 0.22, 1.0))
-				ci.draw_set_transform(Vector2.ZERO)
+				var tint := Color(col.r * e * 0.22, col.g * e * 0.22, col.b * e * 0.22, 1.0)
+				var tilt := float(s.dir) + PI * 0.5
+				if is_zero_approx(tilt):
+					ci.draw_texture_rect(_head_streak_tex, Rect2(p.x + wob - 14.0, p.y - 230.0, 28.0, 230.0), false, tint)
+				else:
+					ci.draw_set_transform(p + Vector2(wob, 0.0), tilt)
+					ci.draw_texture_rect(_head_streak_tex, Rect2(-14.0, -230.0, 28.0, 230.0), false, tint)
+					ci.draw_set_transform(Vector2.ZERO)
 			Lighting.TAIL, Lighting.BRAKE:
 				var f := 0.55 if int(s.kind) == Lighting.BRAKE else 0.32
 				ci.draw_texture_rect(tex, Rect2(p.x - 10.0 - wob, p.y + 6.0, 20.0, 170.0), false,
@@ -621,7 +629,8 @@ func _update_drops(dt: float) -> void:
 		for a in range(drops.size() - 1, 0, -1):
 			var da: Dictionary = drops[a]
 			var db: Dictionary = drops[a - 1]
-			if da.p.distance_to(db.p) < (float(da.r) + float(db.r)) * 0.55:
+			var contact := (float(da.r) + float(db.r)) * 0.55
+			if da.p.distance_squared_to(db.p) < contact * contact:
 				var area_a := float(da.r) * float(da.r)
 				var area_b := float(db.r) * float(db.r)
 				db.v = db.v.lerp(da.v, area_a / (area_a + area_b))

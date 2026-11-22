@@ -23,6 +23,7 @@ const TRAIL_STEP := 1.0 / 60.0
 const STREET_ARM := 150.0
 const TRAIL_POINTS := 14
 const TAIL_TRAIL_WIDTH := 6.0
+const TAIL_RIBBON_INDICES := [0, 3, 1, 1, 3, 4, 1, 4, 2, 2, 4, 5]
 
 var game  # Game
 var stack  # RenderStack
@@ -580,7 +581,8 @@ func paint_trails(ci: CanvasItem) -> void:
 	var vertices := PackedVector2Array()
 	var colors := PackedColorArray()
 	var indices := PackedInt32Array()
-	for pts: PackedVector2Array in _trails.values():
+	for key in _trails:
+		var pts: PackedVector2Array = _trails[key]
 		if pts.size() >= 3:
 			_append_tail_ribbon(pts, scroll, light * boost, vertices, colors, indices)
 	if not indices.is_empty():
@@ -593,6 +595,10 @@ func _append_tail_ribbon(pts: PackedVector2Array, scroll: float, energy: float,
 	if pts[0].distance_squared_to(pts[last]) < 144.0:
 		return
 	var base := vertices.size()
+	vertices.resize(base + pts.size() * 3)
+	colors.resize(vertices.size())
+	var index_start := indices.size()
+	indices.resize(index_start + last * 12)
 	for i in range(pts.size()):
 		var age := float(i) / float(last)
 		var p := pts[i] + Vector2(0.0, scroll)
@@ -600,12 +606,19 @@ func _append_tail_ribbon(pts: PackedVector2Array, scroll: float, energy: float,
 		var width := TAIL_TRAIL_WIDTH * lerpf(0.30, 1.0, age)
 		var normal := tangent.orthogonal().normalized() * width
 		var intensity := 0.50 * energy * smoothstep(0.0, 1.0, age) * smoothstep(0.0, 0.14, 1.0 - age)
-		vertices.append_array(PackedVector2Array([p - normal, p, p + normal]))
-		colors.append_array(PackedColorArray([Color.BLACK, Color(intensity, intensity * 0.14, intensity * 0.07), Color.BLACK]))
+		var row := base + i * 3
+		vertices[row] = p - normal
+		vertices[row + 1] = p
+		vertices[row + 2] = p + normal
+		colors[row] = Color.BLACK
+		colors[row + 1] = Color(intensity, intensity * 0.14, intensity * 0.07)
+		colors[row + 2] = Color.BLACK
 		if i > 0:
-			var a := base + (i - 1) * 3
-			indices.append_array(PackedInt32Array([a, a + 3, a + 1, a + 1, a + 3, a + 4,
-				a + 1, a + 4, a + 2, a + 2, a + 4, a + 5]))
+			var a := row - 3
+			var at := index_start + (i - 1) * 12
+			for offset in TAIL_RIBBON_INDICES:
+				indices[at] = a + offset
+				at += 1
 
 
 # --- painters ---------------------------------------------------------------
