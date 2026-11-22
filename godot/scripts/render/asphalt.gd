@@ -122,16 +122,17 @@ void fragment() {
 	col *= 0.90 + big.g * 0.20;
 	float h = grain;  // height for the hand-made normal tweaks
 	if (detail_level > 0.5) {
-		// Patches: rectangular-ish fresher asphalt on old roads.
-		vec2 pc = floor(vec2(u / 90.0, v / 210.0));
+		// Repairs feather into the aggregate and end inside their placement cell.
+		vec2 patch_pos = vec2(u / 128.0, v / 240.0);
+		vec2 pc = floor(patch_pos);
 		float pr = hash1(pc.x * 17.0 + pc.y * 131.0);
-		// Whole rectangles: the mask is sampled once per patch cell.
-		float cell_big = texture(detail, (pc + 0.5) * vec2(90.0, 210.0) / 1100.0 + vec2(0.37, 0.71)).r;
-		float patch = step(0.86 - C.w * 0.36, pr) * step(0.35 - C.w * 0.3, cell_big) * B.w;
+		vec2 edge = (fract(patch_pos) - vec2(0.5)) * vec2(1.0, 1.16);
+		edge += (vec2(pr, fract(pr * 13.71)) - 0.5) * 0.10;
+		float shape = length(edge) + (d.g - 0.5) * 0.10;
+		float patch = step(0.89 - C.w * 0.36, pr) * (1.0 - smoothstep(0.24, 0.39, shape)) * B.w;
 		// Patchwork repairs come in every age: fresh black to faded grey.
 		float age = hash1(pc.x * 7.0 + pc.y * 59.0) * C.w;
-		col = mix(col, mix(vec3(0.17, 0.175, 0.185), vec3(0.33, 0.33, 0.335), age) * (0.85 + grain * 0.3), patch * 0.9);
-		// Cracks.
+		col = mix(col, mix(vec3(0.21, 0.215, 0.225), vec3(0.33, 0.33, 0.335), age) * (0.85 + grain * 0.3), patch * 0.72);
 		// Cracks: a thin network at a larger scale, only where the road is
 		// tired (masked by the low-frequency wear), never a cobblestone grid.
 		float cn = texture(detail, vec2(u, v) / 430.0 + vec2(0.21, 0.08)).b;
