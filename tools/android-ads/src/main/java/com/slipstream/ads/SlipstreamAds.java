@@ -178,20 +178,23 @@ public final class SlipstreamAds extends GodotPlugin {
             if (widthPixels <= 0) widthPixels = activity.getResources().getDisplayMetrics().widthPixels;
             float density = activity.getResources().getDisplayMetrics().density;
             if (density <= 0f) density = 1f;
-            int widthDp = (int) Math.floor(widthPixels / density);
+            DisplayCutout cutout = displayCutout(parent);
+            int leftInset = cutout != null ? cutout.getSafeInsetLeft() : 0;
+            int rightInset = cutout != null ? cutout.getSafeInsetRight() : 0;
+            int widthDp = Math.max(1, (int) Math.floor((widthPixels - leftInset - rightInset) / density));
             // The top zone is the cut-out's band plus a 50dp bar (90dp on a
             // tablet); the game lays itself out below it.
-            slot.inset = topInset(parent);
-            int insetDp = (int) Math.ceil(slot.inset / density);
+            slot.inset = cutout != null ? cutout.getSafeInsetTop() : 0;
             int barDp = widthDp > 728 ? 90 : 50;
             slot.zone = slot.inset + Math.round(barDp * density);
-            BannerAdSize size = BannerAdSize.inline(activity, widthDp, barDp + insetDp);
+            BannerAdSize size = BannerAdSize.inline(activity, widthDp, barDp);
             slot.size = size;
             slot.loadedHeight = 0;
             slot.banner = new BannerAdView(activity);
             slot.banner.setAdSize(size);
             slot.container = new FrameLayout(activity);
             slot.container.setBackgroundColor(BAR_COLOR);
+            slot.container.setPadding(leftInset, slot.inset, rightInset, 0);
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, slot.zone);
             params.gravity = Gravity.TOP;
@@ -202,7 +205,7 @@ public final class SlipstreamAds extends GodotPlugin {
             slot.container.setTranslationZ(1000f);
             slot.container.setClipChildren(false);
             FrameLayout.LayoutParams childParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    size.getWidthInPixels(activity), ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP | Gravity.CENTER_HORIZONTAL);
             slot.container.addView(slot.banner, childParams);
             // Hidden while loading, but laid out (INVISIBLE, not GONE), so the
@@ -236,7 +239,7 @@ public final class SlipstreamAds extends GodotPlugin {
             }
             if (measured <= 0 && slot.size != null) measured = slot.size.getHeightInPixels(getActivity());
             if (measured <= 0) return;
-            int total = Math.max(slot.inset, Math.min(measured, slot.zone));
+            int total = Math.min(slot.inset + measured, slot.zone);
             slot.loadedHeight = total;
             ViewGroup.LayoutParams lp = slot.container.getLayoutParams();
             if (lp != null && lp.height != total) {
@@ -252,13 +255,10 @@ public final class SlipstreamAds extends GodotPlugin {
     // SLIPSTREAM's menu background (#121417).
     private static final int BAR_COLOR = 0xFF121417;
 
-    /** The camera cut-out's band at the top of the screen, in pixels. */
-    private static int topInset(View root) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return 0;
+    private static DisplayCutout displayCutout(View root) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null;
         WindowInsets insets = root.getRootWindowInsets();
-        if (insets == null) return 0;
-        DisplayCutout cutout = insets.getDisplayCutout();
-        return cutout != null ? Math.max(0, cutout.getSafeInsetTop()) : 0;
+        return insets != null ? insets.getDisplayCutout() : null;
     }
 
     private void destroyBanner(String name) {
