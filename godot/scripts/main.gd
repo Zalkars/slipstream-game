@@ -37,9 +37,17 @@ var event_banner_sub: Label
 const EVENT_BANNER_TIME := 2.3
 const EVENT_BANNER_ENTER := 0.22
 const EVENT_BANNER_EXIT := 0.30
-const EVENT_BANNER_LIMIT := 5
-const EVENT_BANNER_X := 342.0
+# Quiet time between two notifications, so they never chain back to back.
+const EVENT_BANNER_GAP := 4.0
+const EVENT_BANNER_LIMIT := 2
+# Plain text under the weather line in the left HUD column; drops below the
+# duel bar while that is shown.
+const EVENT_BANNER_X := 46.0
+const EVENT_BANNER_Y := 242.0
+const EVENT_BANNER_Y_DUEL := 298.0
+const EVENT_BANNER_W := 420.0
 var _event_banner_t := 0.0
+var _event_banner_gap := 0.0
 var _event_banner_queue: Array[Dictionary] = []
 var brake_heat_bar: ProgressBar
 var brake_heat_fill: StyleBoxFlat
@@ -203,10 +211,7 @@ func _ready() -> void:
 	game.rewind_started.connect(_on_rewind_started)
 	game.rewind_finished.connect(_on_rewind_finished)
 	game.nitro_boosted.connect(_on_game_nitro_boosted)
-	game.slingshot_ready.connect(_on_slingshot_ready)
-	game.slingshot_fired.connect(_on_slingshot_fired)
 	game.chrono_shield_triggered.connect(_on_chrono_shield)
-	game.ram_used.connect(_on_ram_used)
 	game.road_event_banner.connect(_show_event_banner)
 	game.duel_milestone.connect(_on_duel_milestone)
 	game.challenge_hud_changed.connect(_on_challenge_hud)
@@ -263,7 +268,7 @@ func _process(delta: float) -> void:
 		if _revive_t <= 0.0:
 			_decline_revive()
 
-	if _event_banner_t > 0.0 and in_game and not paused:
+	if (_event_banner_t > 0.0 or _event_banner_gap > 0.0) and in_game and not paused:
 		_update_event_banner(delta)
 
 	if _hint_t > 0.0 and in_game and not paused:
@@ -867,7 +872,7 @@ func _show_event_banner(title: String, sub: String, col: Color) -> void:
 	if _event_banner_queue.size() >= EVENT_BANNER_LIMIT:
 		_event_banner_queue.pop_front()
 	_event_banner_queue.append({"title": title, "sub": sub, "color": col})
-	if _event_banner_t <= 0.0:
+	if _event_banner_t <= 0.0 and _event_banner_gap <= 0.0:
 		_next_event_banner()
 
 
@@ -879,49 +884,43 @@ func _next_event_banner() -> void:
 	event_banner_title.text = entry.title
 	event_banner_sub.text = entry.sub
 	event_banner_title.add_theme_color_override("font_color", entry.color)
-	var panel := event_banner.get_theme_stylebox("panel") as StyleBoxFlat
-	panel.border_color = Color(entry.color, 0.65)
-	event_banner.reset_size()
-	event_banner.size.x = 244.0
-	event_banner.position.x = EVENT_BANNER_X + 12.0
+	var duel_bar := challenge_hud_panel != null and challenge_hud_panel.visible
+	_place(event_banner, EVENT_BANNER_X - 12.0, EVENT_BANNER_Y_DUEL if duel_bar else EVENT_BANNER_Y, EVENT_BANNER_W, 44.0)
 	event_banner.modulate.a = 0.0
 	event_banner.visible = true
 	_event_banner_t = EVENT_BANNER_TIME
 
 
 func _update_event_banner(delta: float) -> void:
+	if _event_banner_t <= 0.0:
+		_event_banner_gap = maxf(0.0, _event_banner_gap - delta)
+		if _event_banner_gap <= 0.0:
+			_next_event_banner()
+		return
 	_event_banner_t = maxf(0.0, _event_banner_t - delta)
 	if _event_banner_t <= 0.0:
-		_next_event_banner()
+		event_banner.visible = false
+		_event_banner_gap = EVENT_BANNER_GAP
 		return
 	var appear := smoothstep(0.0, EVENT_BANNER_ENTER, EVENT_BANNER_TIME - _event_banner_t)
 	var disappear := smoothstep(0.0, EVENT_BANNER_EXIT, _event_banner_t)
 	var weight := appear * disappear
-	event_banner.position.x = EVENT_BANNER_X + (1.0 - weight) * 12.0
+	event_banner.position.x = EVENT_BANNER_X - (1.0 - weight) * 12.0
 	event_banner.modulate.a = weight
 
 
 func _clear_event_banners() -> void:
 	_event_banner_queue.clear()
 	_event_banner_t = 0.0
+	_event_banner_gap = 0.0
 	if event_banner != null:
 		event_banner.visible = false
 
 
-func _on_slingshot_ready() -> void:
-	_show_event_banner("РОГАТКА ЗАРЯЖЕНА!", "РЕЗКО ПЕРЕСТРОЙСЯ ДЛЯ РЫВКА", Color("#ffd447"))
-
-
-func _on_slingshot_fired(combo: int, bonus_pts: int) -> void:
-	_show_event_banner("ВЫСТРЕЛ ИЗ СЛИПСТРИМА!", "+%d ОЧКОВ · ×%d СЕРИЯ · +НИТРО" % [bonus_pts, combo], Color("#5ce1e6"))
-
-
+# Routine manoeuvres (slingshot, nitro ram, cones, puddles) get sound and
+# effects only; notifications are for road events and rare saves.
 func _on_chrono_shield() -> void:
 	_show_event_banner("ХРОНО-ЩИТ АКТИВИРОВАН!", "3 ЗАРЯДА НИТРО СПАСЛИ ОТ АВАРИИ", Color("#5ce1e6"))
-
-
-func _on_ram_used(bonus_pts: int) -> void:
-	_show_event_banner("ТАРАН НА НИТРО!", "+%d ОЧКОВ" % bonus_pts, Color("#ff8a3d"))
 
 
 func _on_duel_milestone(kind: String) -> void:
@@ -1682,20 +1681,9 @@ func _build_hud() -> void:
 
 	event_banner = PanelContainer.new()
 	event_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var eb_sb := StyleBoxFlat.new()
-	eb_sb.bg_color = Color(0.05, 0.07, 0.10, 0.93)
-	eb_sb.set_corner_radius_all(9)
-	eb_sb.border_width_left = 1
-	eb_sb.border_width_right = 3
-	eb_sb.border_width_top = 1
-	eb_sb.border_width_bottom = 1
-	eb_sb.border_color = Color(1.0, 1.0, 1.0, 0.18)
-	eb_sb.content_margin_left = 10
-	eb_sb.content_margin_right = 10
-	eb_sb.content_margin_top = 5
-	eb_sb.content_margin_bottom = 5
-	event_banner.add_theme_stylebox_override("panel", eb_sb)
-	_place(event_banner, EVENT_BANNER_X, 35, 244, 52)
+	event_banner.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	_place(event_banner, EVENT_BANNER_X, EVENT_BANNER_Y, EVENT_BANNER_W, 44)
+	event_banner.clip_contents = true
 	event_banner.visible = false
 	hud.add_child(event_banner)
 
@@ -1703,12 +1691,17 @@ func _build_hud() -> void:
 	eb_vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	eb_vb.add_theme_constant_override("separation", 0)
 	event_banner.add_child(eb_vb)
+	# Single lines, no wrapping: a wrapping label in a container can measure
+	# itself one word per line and stretch over the whole screen.
 	event_banner_title = _label("", 18, amber, font_bold)
-	event_banner_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	eb_vb.add_child(event_banner_title)
-	event_banner_sub = _label("", 15, Color(0.86, 0.90, 0.94), font_ui)
-	event_banner_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	eb_vb.add_child(event_banner_sub)
+	event_banner_sub = _label("", 14, Color(0.86, 0.90, 0.94), font_ui)
+	for l: Label in [event_banner_title, event_banner_sub]:
+		l.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		l.clip_text = true
+		# No backing card, so an outline keeps the text readable on the road.
+		l.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.75))
+		l.add_theme_constant_override("outline_size", 5)
+		eb_vb.add_child(l)
 
 	var bot := _vgrad(Color(0.02, 0.025, 0.03, 0.0), Color(0.02, 0.025, 0.03, 0.14), Color(0.02, 0.025, 0.03, 0.46))
 	_place_bottom(bot, 0, 0, 720, 330)

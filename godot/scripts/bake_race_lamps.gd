@@ -167,9 +167,11 @@ func _measure_3d(art, sil: String) -> Dictionary:
 	if out.has("tail") and not out.has("ind_r"):
 		var t: Array = out.tail
 		out["ind_r"] = [snappedf(maxf(0.04, float(t[0]) - 0.05), 0.001), t[1], snappedf(minf(0.96, float(t[2]) + 0.05), 0.001), t[3]]
-	if sil == "truck":
-		# The tall cab hides the bumper from the chase camera. Start the
-		# visible light at the cab silhouette, keeping the lens spacing.
+	if sil == "truck" or sil == "bus":
+		# The tall cab / bus body hides the bumper from the chase camera, and
+		# the projected lens lands mid-roof, inside the car's own shadow
+		# occluder. Start the visible light at the silhouette's front edge,
+		# keeping the lens spacing.
 		for cat in ["head", "ind_f"]:
 			if not out.has(cat):
 				continue

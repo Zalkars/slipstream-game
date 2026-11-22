@@ -34,6 +34,7 @@ const EVENT_NONE := 0
 const EVENT_RADAR := 1
 const EVENT_ROADWORKS := 2
 const EVENT_BLACKOUT := 3
+const BLACKOUT_MIN_NIGHT := 0.5
 const BRAKE_MULT := 0.42
 const PHYSICS_VERSION := ChallengeCodec.VERSION
 const MU_DRY := 1.0
@@ -62,7 +63,8 @@ const COIN_PICKUP := preload("res://art/roadside/pickup_coin.svg")
 const BATTERY_PICKUP := preload("res://art/roadside/pickup_battery.svg")
 const PICKUP_GLOW := 0.34
 const OVERHEAD_SPACING := 36000.0
-const DAY_LENGTH := 360.0
+# One game minute per real second: dusk takes ~5 min, full night ~4 min.
+const DAY_LENGTH := 1440.0
 const WEATHER := ChallengeCodec.WEATHER
 const WEATHER_CLEAR := WEATHER.CLEAR
 const WEATHER_CLOUDY := WEATHER.CLOUDY
@@ -328,6 +330,9 @@ func _ready() -> void:
 	# Audio reads speed, traffic, weather and road state from here (0.8.0).
 	if Sfx.has_method("bind_game"):
 		Sfx.bind_game(self)
+	# Each session starts at a random hour and weather; after that the clock
+	# only moves forward, through the menu and every run.
+	_snap_challenge_weather(randf(), WEATHER.pick(randi_range(0, 99)))
 	start_demo()
 
 func _setup_render() -> void:
@@ -726,7 +731,9 @@ func start_run(training := false) -> void:
 		if training:
 			_snap_challenge_weather(0.15, WEATHER_CLEAR)
 		else:
-			_snap_challenge_weather(randf(), WEATHER.pick(randi_range(0, 99)))
+			# The race continues the menu's clock and sky: a new random hour
+			# per run turned night into day within seconds of a restart.
+			_snap_challenge_weather(time_of_day, weather_state)
 	run_rng.seed = active_run_seed
 	if uses_random_weather():
 		_weather_rng.seed = active_run_seed ^ 0x57454154
@@ -1301,6 +1308,14 @@ func _snapshot_state() -> Dictionary:
 		"overheated": overheated,
 		"slip": slip,
 		"aquaplane_t": aquaplane_t,
+		# Road-event objects are placed in screen space, so they rewind with the road.
+		"road_event_type": road_event_type,
+		"road_event": road_event.duplicate(true),
+		"road_event_t": road_event_t,
+		"last_event_type": _last_event_type,
+		"closed_lane": closed_lane,
+		"score_mult": score_mult,
+		"blackout_amount": blackout_amount,
 	}
 
 
@@ -1344,6 +1359,14 @@ func _apply_snapshot(s: Dictionary) -> void:
 	overheated = bool(s.overheated)
 	slip = float(s.slip)
 	aquaplane_t = float(s.get("aquaplane_t", 0.0))
+	if s.has("road_event"):
+		road_event_type = int(s.road_event_type)
+		road_event = s.road_event
+		road_event_t = float(s.road_event_t)
+		_last_event_type = int(s.last_event_type)
+		closed_lane = int(s.closed_lane)
+		score_mult = int(s.score_mult)
+		blackout_amount = float(s.blackout_amount)
 
 
 func _begin_rewind() -> void:
@@ -2405,7 +2428,6 @@ func _check_offroad_puddles() -> void:
 							"col": Color(0.70, 0.88, 1.0, 0.65),
 							"size": randf_range(2.5, 5.5),
 						})
-					road_event_banner.emit("СПЛЕШ В ЛУЖЕ!", "+%d ОЧКОВ · +НИТРО" % pts, Color("#5ce1e6"))
 					return
 
 
@@ -2467,6 +2489,9 @@ func _start_next_road_event() -> void:
 	var pool := [EVENT_RADAR, EVENT_ROADWORKS, EVENT_BLACKOUT]
 	if _last_event_type in pool:
 		pool.erase(_last_event_type)
+	# Street lamps going out only reads as a blackout after dark.
+	if get_night_factor() < BLACKOUT_MIN_NIGHT:
+		pool.erase(EVENT_BLACKOUT)
 	var chosen := int(pool[_ri() % pool.size()])
 	_last_event_type = chosen
 	road_event_type = chosen
@@ -2637,7 +2662,6 @@ func _knock_roadworks_object(o: Dictionary, pos: Vector2) -> void:
 			"col": Color(1.0, 0.50, 0.12) if k % 2 == 0 else Color(0.96, 0.96, 0.94),
 			"size": randf_range(2.5, 5.5),
 		})
-	road_event_banner.emit("СБИТ КОНУС!" if is_cone else "СБИТ ЗНАК!", "+%d ОЧКОВ" % pts, Color("#f2b134"))
 
 
 # Closest road-works obstacle ahead of a traffic car in the closed lane (its
@@ -2753,10 +2777,12 @@ func _draw() -> void:
 	_draw_rails()
 	_draw_cloud_shadows()
 	_draw_scenery()
-	_draw_overhead_decor()
+	_draw_overhead_decor(Art.PART_SHADOW)
 	_draw_road_event_under()
-	_draw_cars()
 	_draw_items()
+	_draw_cars()
+	_draw_overhead_lamps()
+	_draw_overhead_decor(Art.PART_BODY)
 	_draw_speed_streaks()
 	_draw_road_event_over()
 	_draw_rear_hazards()
@@ -2891,7 +2917,7 @@ func _draw_scenery() -> void:
 			if kind == 5:
 				roadside_art.draw_building(self, p, int(d.prop), int(d.variant), size * car_w / 86.0, side, ambient, Vector2(_sx, _sy), (1.0 - get_light_factor()) * (1.0 - cloud_amount * 0.7))
 			elif kind == 2:
-				Art.streetlight(self, p, -side, 0.9 * size, Lighting.STREET_ARM)
+				Art.streetlight(self, p, -side, 0.9 * size, Lighting.STREET_ARM, Art.PART_SHADOW)
 			elif kind == 3:
 				Art.road_sign(self, p, side)
 			elif not roadside_art.draw_prop(self, p, int(d.prop), int(d.variant), size, ambient):
@@ -2901,7 +2927,21 @@ func _draw_scenery() -> void:
 				elif kind == 1:
 					Art.bush(self, p, 34.0 * size)
 
-func _draw_overhead_decor() -> void:
+# Lamp arms reach over the road, so the posts go on top of the cars.
+func _draw_overhead_lamps() -> void:
+	for di in decor_lamps:
+		var d: Dictionary = decor[di]
+		var base_y := fposmod(float(d.y) + scroll, DECOR_CYCLE)
+		for k in range(-1, int(ceil(H / DECOR_CYCLE)) + 1):
+			var y: float = base_y + k * DECOR_CYCLE
+			if y < -100.0 or y > H + 100.0:
+				continue
+			var side: float = d.side
+			var x: float = (road_x - 52.0 - float(d.off)) if side < 0 else (road_x + road_w + 52.0 + float(d.off))
+			Art.streetlight(self, Vector2(x, y), -side, 0.9 * float(d.size), Lighting.STREET_ARM, Art.PART_BODY)
+
+
+func _draw_overhead_decor(part: int) -> void:
 	if overhead_spacing <= 0.0:
 		return
 	var first := maxi(0, floori((scroll - H - 80.0) / overhead_spacing))
@@ -2912,7 +2952,7 @@ func _draw_overhead_decor() -> void:
 		var offset := lerpf(0.20, 0.80, float(roll) / 65535.0)
 		var y := scroll - (float(section) + offset) * overhead_spacing
 		if y >= -80.0 and y <= H + 80.0:
-			Art.overhead_decor(self, Rect2(road_x - 40.0, y, road_w + 80.0, 0.0), roll % 3, _hud_font)
+			Art.overhead_decor(self, Rect2(road_x - 40.0, y, road_w + 80.0, 0.0), roll % 3, _hud_font, part)
 
 
 func _draw_items() -> void:

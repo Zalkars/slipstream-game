@@ -5,6 +5,12 @@ extends RefCounted
 
 static var _cache: Dictionary = {}
 
+# Overhead props (lamp arms, gantries) are drawn in two passes: the ground
+# shadow under the cars, the structure itself above them.
+const PART_ALL := 0
+const PART_SHADOW := 1
+const PART_BODY := 2
+
 
 static func _sb(color: Color, radius: int, border_color: Color, border_w: int) -> StyleBoxFlat:
 	var key := color.to_html(true) + "|" + str(radius) + "|" + border_color.to_html(true) + "|" + str(border_w)
@@ -892,7 +898,7 @@ static func pickup(ci: CanvasItem, center: Vector2, w: float, h: float, body: Co
 
 # --- scenery ----------------------------------------------------------------
 
-static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font) -> void:
+static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font, part := PART_ALL) -> void:
 	var left := span.position.x
 	var right := span.end.x
 	var y := span.position.y
@@ -906,10 +912,13 @@ static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font
 	elif variant == 2:
 		beam = Color("#546e78")
 		height = 22.0
-	ci.draw_colored_polygon(PackedVector2Array([
-		Vector2(left, y + 8.0), Vector2(right, y + 8.0),
-		Vector2(right + 21.0, y + height + 20.0), Vector2(left + 21.0, y + height + 20.0)
-	]), Color(0.06, 0.07, 0.09, 0.22))
+	if part != PART_BODY:
+		ci.draw_colored_polygon(PackedVector2Array([
+			Vector2(left, y + 8.0), Vector2(right, y + 8.0),
+			Vector2(right + 21.0, y + height + 20.0), Vector2(left + 21.0, y + height + 20.0)
+		]), Color(0.06, 0.07, 0.09, 0.22))
+	if part == PART_SHADOW:
+		return
 	for x in [left, right]:
 		ci.draw_rect(Rect2(x - 11.0, y - 10.0, 22.0, height + 22.0), beam.darkened(0.42))
 		ci.draw_rect(Rect2(x - 7.0, y - 6.0, 14.0, height + 14.0), beam.lightened(0.2))
@@ -986,20 +995,23 @@ static func bush(ci: CanvasItem, p: Vector2, s: float) -> void:
 	ci.draw_circle(p + Vector2(-s * 0.08, -s * 0.12), s * 0.24, Color(0.36, 0.50, 0.28))
 
 
-static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm := 92.0) -> void:
+static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm := 92.0, part := PART_ALL) -> void:
 	# top-down street lamp: base, arm reaching over the road, lamp head
 	var arm_len := arm * s
 	var lamp_x := base.x + arm_len * dir
-	ci.draw_polygon(
-		PackedVector2Array([
-			Vector2(base.x, base.y + 6.0 * s),
-			Vector2(lamp_x, base.y + 10.0 * s),
-			Vector2(lamp_x + dir * 30.0 * s, base.y + 46.0 * s),
-			Vector2(base.x + dir * 24.0 * s, base.y + 38.0 * s),
-		]),
-		PackedColorArray([Color(0, 0, 0, 0.13), Color(0, 0, 0, 0.10), Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.0)])
-	)
-	ci.draw_circle(base + Vector2(2, 6), 9.0 * s, Color(0, 0, 0, 0.16))
+	if part != PART_BODY:
+		ci.draw_polygon(
+			PackedVector2Array([
+				Vector2(base.x, base.y + 6.0 * s),
+				Vector2(lamp_x, base.y + 10.0 * s),
+				Vector2(lamp_x + dir * 30.0 * s, base.y + 46.0 * s),
+				Vector2(base.x + dir * 24.0 * s, base.y + 38.0 * s),
+			]),
+			PackedColorArray([Color(0, 0, 0, 0.13), Color(0, 0, 0, 0.10), Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.0)])
+		)
+		ci.draw_circle(base + Vector2(2, 6), 9.0 * s, Color(0, 0, 0, 0.16))
+	if part == PART_SHADOW:
+		return
 	ci.draw_circle(base, 8.0 * s, Color(0.44, 0.45, 0.43))
 	ci.draw_circle(base - Vector2(1.5, 1.5), 4.0 * s, Color(0.60, 0.61, 0.58))
 	var x0 := minf(base.x, lamp_x)

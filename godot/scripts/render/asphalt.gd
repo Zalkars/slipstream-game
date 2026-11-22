@@ -18,8 +18,8 @@ extends RefCounted
 # Road coordinate v = scroll - screen_y grows with the distance driven.
 
 const TILE := 256
-# Surface types last ~1800 m of road and fade into the next over ~125 m.
-const SEG_LEN := 21600.0
+# Surface types last ~5400 m of road and fade into the next over ~125 m.
+const SEG_LEN := 64800.0
 const SEG_BLEND := 1500.0
 # The aggregate texture: 512 texels over 256 canvas px = one texel per device
 # pixel on a 1440-wide phone, so the asphalt is never magnified (blurred).
@@ -40,7 +40,7 @@ uniform float wetness = 0.0;
 uniform float sun = 1.0;
 uniform float detail_level = 2.0;
 uniform float normal_strength = 1.0;
-uniform float seg_len = 21600.0;
+uniform float seg_len = 64800.0;
 uniform float seed = 0.0;
 
 varying vec2 world;
@@ -145,12 +145,18 @@ void fragment() {
 		float oil = smoothstep(0.74, 0.88, texture(detail, vec2(u * 1.7, v) / 620.0 + vec2(0.13, 0.52)).a) * centre * (0.4 + 0.6 * big.b);
 		col *= 1.0 - oil * 0.45;
 		// Concrete: transverse joints and a steel expansion joint every 4 slabs.
+		// Joints are sawn grooves filled with sealant: thin, soft and worn in
+		// places, with each slab a slightly different tone, so they read as
+		// slabs and not as lines ruled across the road.
 		float slab = mod(v, 360.0);
-		float joint = (1.0 - smoothstep(0.0, 2.2, abs(slab - 180.0))) * A.w;
-		float steel = (1.0 - smoothstep(4.0, 7.0, abs(mod(v, 1440.0) - 720.0))) * A.w;
-		col = mix(col, vec3(0.08), joint * 0.8);
-		col = mix(col, vec3(0.42, 0.44, 0.46), steel);
-		h -= joint * 0.7;
+		float slab_id = floor((v + 180.0) / 360.0);
+		col *= 1.0 + (hash1(slab_id * 3.7 + floor(lx) * 11.0) - 0.5) * 0.07 * A.w;
+		float joint = (1.0 - smoothstep(0.3, 1.6, abs(slab - 180.0))) * A.w;
+		joint *= 0.55 + 0.45 * smoothstep(0.25, 0.65, big.g + (d.g - 0.5) * 0.4);
+		float steel = (1.0 - smoothstep(3.0, 5.0, abs(mod(v, 1440.0) - 720.0))) * A.w;
+		col = mix(col, vec3(0.16), joint * 0.38);
+		col = mix(col, vec3(0.36, 0.37, 0.38), steel * 0.6);
+		h -= joint * 0.35;
 		// Milling: fine longitudinal grooves of a fresh repair.
 		float mill = B.x * (0.5 + 0.5 * sin(u * 1.35));
 		col *= 1.0 - mill * 0.12;

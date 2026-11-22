@@ -33,8 +33,10 @@ func run() -> void:
 	check_roadworks_collisions(game)
 	check_roadworks_traffic(game)
 	check_roadworks_determinism(game)
+	check_roadworks_rewind(game)
+	check_blackout_only_after_dark(game)
 	check_auto_preset()
-	print("[road] lane-change rate, indicator commits/cancels, no cut-in near player, road-works layout/knocks/STOP/traffic/determinism, auto preset tiers: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
+	print("[road] lane-change rate, indicator commits/cancels, no cut-in near player, road-works layout/knocks/STOP/traffic/determinism/rewind, night-only blackout, auto preset tiers: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
 
 
@@ -369,6 +371,46 @@ func check_roadworks_determinism(game: Game) -> void:
 	var b := _rw_run_signature(game)
 	print("[road] determinism run signature: ", a.slice(0, 7))
 	check(a == b, "Two identical seeded runs through road works give identical results")
+
+
+# Road-works objects live in screen space; a rewind must take them back with
+# the road instead of leaving them where they were on screen.
+func check_roadworks_rewind(game: Game) -> void:
+	_roadworks(game, 0)
+	game.road_event.y = game.player_y - 600.0
+	var world_stop := game.roadworks_stop_y() - game.scroll
+	for _i in range(90):
+		game._tick(1.0 / 60.0)
+	check(is_equal_approx(game.roadworks_stop_y() - game.scroll, world_stop), "Road works move with the road while driving")
+	var scroll_before := game.scroll
+	game._begin_rewind()
+	for _i in range(600):
+		if not game.rewinding:
+			break
+		game._tick_rewind(1.0 / 60.0)
+	check(not game.rewinding, "Rewind finishes")
+	check(game.scroll < scroll_before - 50.0, "Rewind takes the road back")
+	check(game.road_event_type == Game.EVENT_ROADWORKS and game.closed_lane == 0, "Road works survive the rewind")
+	check(absf(game.roadworks_stop_y() - game.scroll - world_stop) < 0.01, "Road works rewind with the road")
+
+
+func check_blackout_only_after_dark(game: Game) -> void:
+	_fresh(game)
+	var day_blackouts := 0
+	var night_blackouts := 0
+	for tod in [0.12, 0.70]:
+		game.time_of_day = tod
+		for _i in range(60):
+			game._last_event_type = Game.EVENT_NONE
+			game._start_next_road_event()
+			if game.road_event_type == Game.EVENT_BLACKOUT:
+				if tod < 0.5:
+					day_blackouts += 1
+				else:
+					night_blackouts += 1
+			game._end_road_event()
+	check(day_blackouts == 0, "No blackout event in daylight")
+	check(night_blackouts > 0, "Blackout events still happen at night")
 
 
 func check_auto_preset() -> void:

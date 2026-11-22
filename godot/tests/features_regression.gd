@@ -21,6 +21,7 @@ func run() -> void:
 	check_all_car_perks(game)
 	check_traffic_signals_and_events(game)
 	check_challenge_codec_and_determinism(game)
+	check_day_night(game)
 	await check_main_duel_and_daily_rewards()
 
 	print("[features] slingshot, chrono-shield, 9 car perks, road events, signals, ghost codec & duel/daily rewards: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
@@ -271,6 +272,35 @@ func check_challenge_codec_and_determinism(game: Game) -> void:
 	check(int(d1.seed) != int(d2.seed), "Daily challenge seed must vary across dates")
 
 
+func check_day_night(game: Game) -> void:
+	game.challenge_config = {}
+	game.start_demo()
+	game.time_of_day = 0.70
+	game.start_run()
+	check(is_equal_approx(game.time_of_day, 0.70), "A new run continues the menu's time of day")
+	game.start_demo()
+	check(is_equal_approx(game.time_of_day, 0.70), "Returning to the menu keeps the time of day")
+	# Darkness never changes faster than 1% per second of real time.
+	var steepest := 0.0
+	var step := 1.0 / game.DAY_LENGTH
+	var tod := 0.0
+	while tod < 1.0:
+		game.time_of_day = tod
+		var a := game.get_night_factor()
+		game.time_of_day = tod + step
+		steepest = maxf(steepest, absf(game.get_night_factor() - a))
+		tod += step
+	check(steepest < 0.01, "Dusk and dawn are gradual (max %.4f per second)" % steepest)
+	var night_s := 0.0
+	tod = 0.0
+	while tod < 1.0:
+		game.time_of_day = tod
+		if game.get_night_factor() > 0.85:
+			night_s += 1.0
+		tod += step
+	check(night_s >= 180.0, "A night lasts minutes, not seconds (%d s)" % int(night_s))
+
+
 func check_main_duel_and_daily_rewards() -> void:
 	Sfx.set_music_enabled(false)
 	var main = load("res://tests/main_without_persistence.gd").new()
@@ -287,8 +317,16 @@ func check_main_duel_and_daily_rewards() -> void:
 	check(main.event_banner_title.text == "ПЕРВОЕ" and main._event_banner_queue.size() == 1,
 		"An active notification is preserved and duplicate pending notifications are merged")
 	main._update_event_banner(main.EVENT_BANNER_TIME)
+	check(not main.event_banner.visible and main._event_banner_queue.size() == 1,
+		"Notifications pause between each other")
+	main._update_event_banner(main.EVENT_BANNER_GAP)
 	check(main.event_banner_title.text == "ВТОРОЕ" and main.event_banner.visible,
-		"Pending notification appears after the first expires")
+		"Pending notification appears after the pause")
+	main._show_event_banner("ОЧЕНЬ ДЛИННЫЙ ЗАГОЛОВОК УВЕДОМЛЕНИЯ О СОБЫТИИ НА ТРАССЕ", "И ДЛИННАЯ ПОДПИСЬ, КОТОРАЯ НЕ ВЛЕЗАЕТ В ОДНУ СТРОКУ", Color.WHITE)
+	main._update_event_banner(main.EVENT_BANNER_TIME)
+	main._update_event_banner(main.EVENT_BANNER_GAP)
+	check(main.event_banner.size.y <= 60.0 and main.event_banner.position.y < 400.0,
+		"A long notification stays one compact line under the score")
 	main.start_game()
 	check(not main.event_banner.visible and main._event_banner_queue.is_empty(),
 		"A new race clears active and pending notifications")
