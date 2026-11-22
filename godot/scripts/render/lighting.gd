@@ -22,6 +22,7 @@ const TRAIL_STEP := 1.0 / 60.0
 # lane, so the pool reads as light from above, not from the verge.
 const STREET_ARM := 150.0
 const TRAIL_POINTS := 14
+const TAIL_TRAIL_WIDTH := 6.0
 
 var game  # Game
 var stack  # RenderStack
@@ -531,7 +532,7 @@ func _tid(c: Dictionary) -> int:
 func _update_trails(dt: float) -> void:
 	var g = game
 	var light: float = headlight_level()
-	if not bool(params.get("trails", true)) or light < 0.15:
+	if not bool(params.get("trails", true)) or light < 0.15 or g.rewinding:
 		if not _trails.is_empty():
 			_trails.clear()
 		return
@@ -542,9 +543,21 @@ func _update_trails(dt: float) -> void:
 	var scroll: float = g.scroll
 	var seen := {}
 	var maxp := TRAIL_POINTS * (2 if g.boosting else 1)
+	var last_owner := -1
+	for i in range(count):
+		var source: Dictionary = sources[i]
+		if int(source.kind) != TAIL and int(source.kind) != BRAKE:
+			continue
+		var owner := int(source.owner)
+		var p: Vector2 = source.pos
+		if p.y < -200.0 or p.y > g.H + 200.0:
+			continue
+		var is_player := owner == -2
+		var id := -10 if is_player else _tid(g.cars[owner]) * 4
+		_push_trail(id + int(last_owner == owner), p, scroll, seen, maxp if is_player else TRAIL_POINTS, 1)
+		last_owner = owner
 	if g.running and not g.demo:
 		for side in [-1.0, 1.0]:
-			_push_trail(-10 - int(side), Vector2(g.player_x + side * g.car_w * 0.29, g.player_y + g.car_h * 0.47), scroll, seen, maxp, 1)
 			_push_trail(-20 - int(side), Vector2(g.player_x + side * g.car_w * 0.27, g.player_y - g.car_h * 0.46), scroll, seen, maxp, 0, g.car_h)
 	for c in g.cars:
 		var cy := float(c.y)
@@ -553,7 +566,6 @@ func _update_trails(dt: float) -> void:
 		var id := _tid(c)
 		for side in [-1.0, 1.0]:
 			var x: float = float(c.x) + side * float(c.w) * 0.29
-			_push_trail(id * 4 + (0 if side < 0.0 else 1), Vector2(x, cy + float(c.h) * 0.47), scroll, seen, TRAIL_POINTS, 1)
 			_push_trail(id * 4 + (2 if side < 0.0 else 3), Vector2(x, cy - float(c.h) * 0.46), scroll, seen, TRAIL_POINTS, 0, float(c.h))
 	for key in _trails.keys():
 		if not seen.has(key):
@@ -582,17 +594,22 @@ func paint_trails(ci: CanvasItem) -> void:
 	var scroll: float = g.scroll
 	var light: float = headlight_level()
 	var boost := 1.6 if g.boosting else 1.0
+	var vertices := PackedVector2Array()
+	var colors := PackedColorArray()
+	var indices := PackedInt32Array()
 	for key in _trails:
 		var tr: Dictionary = _trails[key]
 		var pts: PackedVector2Array = tr.pts
 		var n := pts.size()
 		if n < 3:
 			continue
+		if int(tr.kind) == 1:
+			_append_tail_ribbon(pts, scroll, light * boost, vertices, colors, indices)
+			continue
 		var line := PackedVector2Array()
 		var cols := PackedColorArray()
 		line.resize(n)
 		cols.resize(n)
-		var red := int(tr.kind) == 1
 		var clear := float(tr.get("clear", 0.0))
 		var head_y := pts[n - 1].y + scroll
 		for i in range(n):
@@ -601,11 +618,34 @@ func paint_trails(ci: CanvasItem) -> void:
 			var a := k * k * 0.55 * light * boost
 			if clear > 0.0:
 				a = 0.4 * light * boost * (1.0 - k) * clampf((line[i].y - head_y - clear) / 40.0, 0.0, 1.0)
-			cols[i] = Color(a, a * 0.10, a * 0.06, 1.0) if red else Color(a * 0.85, a * 0.80, a * 0.68, 1.0)
+			cols[i] = Color(a * 0.85, a * 0.80, a * 0.68, 1.0)
 		var length := line[0].distance_to(line[n - 1])
 		if length < 12.0:
 			continue
-		ci.draw_polyline_colors(line, cols, 5.0 if red else 3.5, true)
+		ci.draw_polyline_colors(line, cols, 3.5, true)
+	if not indices.is_empty():
+		RenderingServer.canvas_item_add_triangle_array(ci.get_canvas_item(), indices, vertices, colors)
+
+
+func _append_tail_ribbon(pts: PackedVector2Array, scroll: float, energy: float,
+		vertices: PackedVector2Array, colors: PackedColorArray, indices: PackedInt32Array) -> void:
+	var last := pts.size() - 1
+	if pts[0].distance_squared_to(pts[last]) < 144.0:
+		return
+	var base := vertices.size()
+	for i in range(pts.size()):
+		var age := float(i) / float(last)
+		var p := pts[i] + Vector2(0.0, scroll)
+		var tangent := pts[mini(i + 1, last)] - pts[maxi(i - 1, 0)]
+		var width := TAIL_TRAIL_WIDTH * lerpf(0.30, 1.0, age)
+		var normal := tangent.orthogonal().normalized() * width
+		var intensity := 0.50 * energy * smoothstep(0.0, 1.0, age) * smoothstep(0.0, 0.14, 1.0 - age)
+		vertices.append_array(PackedVector2Array([p - normal, p, p + normal]))
+		colors.append_array(PackedColorArray([Color.BLACK, Color(intensity, intensity * 0.14, intensity * 0.07), Color.BLACK]))
+		if i > 0:
+			var a := base + (i - 1) * 3
+			indices.append_array(PackedInt32Array([a, a + 3, a + 1, a + 1, a + 3, a + 4,
+				a + 1, a + 4, a + 2, a + 2, a + 4, a + 5]))
 
 
 # --- painters ---------------------------------------------------------------
