@@ -144,12 +144,12 @@ static func _make_cone(lamp_nx: float) -> ImageTexture:
 		for x in range(w):
 			var nx := (float(x) / float(w - 1)) * 2.0 - 1.0
 			var a := 0.0
-			for lamp in [-lamp_nx, lamp_nx]:
+			for lamp: float in [-lamp_nx, lamp_nx]:
 				# Beams stay almost parallel: each lights its own side of the lane.
-				var d := absf(nx - lamp * (1.0 - v * 0.25)) / halfw
-				if d < 1.0:
-					var prof := pow(1.0 - d, 0.9)
-					a = maxf(a, prof * (0.55 * reach + 0.65 * hot))
+				var d := (nx - lamp * (1.0 - v * 0.25)) / halfw
+				var prof := exp(-3.2 * d * d)
+				var beam := clampf(prof * (0.55 * reach + 0.58 * hot), 0.0, 1.0)
+				a += beam * (1.0 - a)
 			# Spill: a dim wide fan close to the bumper.
 			a += 0.12 * exp(-pow(v / 0.18, 2.0)) * clampf(1.0 - absf(nx), 0.0, 1.0)
 			# Fade in past the bumper, die out before the far end and never
@@ -273,7 +273,7 @@ func collect() -> void:
 		if light > 0.02:
 			_add(HEAD, hl, -PI * 0.5 + tilt, Color(1.0, 0.93, 0.80), light, 560.0, -2)
 			_add(HEAD, hr, -PI * 0.5 + tilt, Color(1.0, 0.93, 0.80), light, 560.0, -2)
-			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0).rotated(tilt), tilt * 0.6, Color(1.0, 0.94, 0.82), 1.35 * light, 620.0, 1000.0, true, -2,
+			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0).rotated(tilt), tilt, Color(1.0, 0.94, 0.82), 1.35 * light, 620.0, 1000.0, true, -2,
 				hl.distance_to(hr) / 620.0 * 2.0)
 		var braking: bool = g.braking and not g.overheated
 		var tl: Vector2 = _lp.tail[0]
@@ -554,37 +554,20 @@ func _update_trails(dt: float) -> void:
 			continue
 		var is_player := owner == -2
 		var id := -10 if is_player else _tid(g.cars[owner]) * 4
-		_push_trail(id + int(last_owner == owner), p, scroll, seen, maxp if is_player else TRAIL_POINTS, 1)
+		_push_trail(id + int(last_owner == owner), p, scroll, seen, maxp if is_player else TRAIL_POINTS)
 		last_owner = owner
-	if g.running and not g.demo:
-		for side in [-1.0, 1.0]:
-			_push_trail(-20 - int(side), Vector2(g.player_x + side * g.car_w * 0.27, g.player_y - g.car_h * 0.46), scroll, seen, maxp, 0, g.car_h)
-	for c in g.cars:
-		var cy := float(c.y)
-		if cy < -200.0 or cy > g.H + 200.0 or bool(c.get("rammed", false)):
-			continue
-		var id := _tid(c)
-		for side in [-1.0, 1.0]:
-			var x: float = float(c.x) + side * float(c.w) * 0.29
-			_push_trail(id * 4 + (2 if side < 0.0 else 3), Vector2(x, cy - float(c.h) * 0.46), scroll, seen, TRAIL_POINTS, 0, float(c.h))
 	for key in _trails.keys():
 		if not seen.has(key):
 			_trails.erase(key)
 
 
-# clear: a headlight trail would smear back across its own car, so the
-# white streak only shows where it has left the body (clear = body length).
-func _push_trail(key: int, p: Vector2, scroll: float, seen: Dictionary, maxp: int, kind: int, clear := 0.0) -> void:
+func _push_trail(key: int, p: Vector2, scroll: float, seen: Dictionary, maxp: int) -> void:
 	seen[key] = true
-	var tr: Dictionary = _trails.get(key, {})
-	if tr.is_empty():
-		tr = {"pts": PackedVector2Array(), "kind": kind, "clear": clear}
-		_trails[key] = tr
-	var pts: PackedVector2Array = tr.pts
+	var pts: PackedVector2Array = _trails.get(key, PackedVector2Array())
 	pts.append(Vector2(p.x, p.y - scroll))
 	while pts.size() > maxp:
 		pts.remove_at(0)
-	tr["pts"] = pts
+	_trails[key] = pts
 
 
 func paint_trails(ci: CanvasItem) -> void:
@@ -597,32 +580,9 @@ func paint_trails(ci: CanvasItem) -> void:
 	var vertices := PackedVector2Array()
 	var colors := PackedColorArray()
 	var indices := PackedInt32Array()
-	for key in _trails:
-		var tr: Dictionary = _trails[key]
-		var pts: PackedVector2Array = tr.pts
-		var n := pts.size()
-		if n < 3:
-			continue
-		if int(tr.kind) == 1:
+	for pts: PackedVector2Array in _trails.values():
+		if pts.size() >= 3:
 			_append_tail_ribbon(pts, scroll, light * boost, vertices, colors, indices)
-			continue
-		var line := PackedVector2Array()
-		var cols := PackedColorArray()
-		line.resize(n)
-		cols.resize(n)
-		var clear := float(tr.get("clear", 0.0))
-		var head_y := pts[n - 1].y + scroll
-		for i in range(n):
-			var k := float(i) / float(n - 1)  # 0 oldest, 1 at the lamp
-			line[i] = Vector2(pts[i].x, pts[i].y + scroll)
-			var a := k * k * 0.55 * light * boost
-			if clear > 0.0:
-				a = 0.4 * light * boost * (1.0 - k) * clampf((line[i].y - head_y - clear) / 40.0, 0.0, 1.0)
-			cols[i] = Color(a * 0.85, a * 0.80, a * 0.68, 1.0)
-		var length := line[0].distance_to(line[n - 1])
-		if length < 12.0:
-			continue
-		ci.draw_polyline_colors(line, cols, 3.5, true)
 	if not indices.is_empty():
 		RenderingServer.canvas_item_add_triangle_array(ci.get_canvas_item(), indices, vertices, colors)
 
