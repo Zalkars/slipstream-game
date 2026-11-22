@@ -361,16 +361,17 @@ func collect() -> void:
 		var barrier_head: float = g.roadworks_stop_y()
 		var tail_y: float = g.roadworks_tail_y()
 		# Blinkers on the STOP barrier across the closed lane.
-		if barrier_head > -60.0 and barrier_head < H + 60.0:
-			for u in [0.2, 0.8]:
-				_add(BEACON, Vector2(g._rw_x(u), barrier_head + 6.0), 0.0, Color(1.0, 0.22, 0.10), 0.8 * (0.4 + 0.6 * (0.5 + 0.5 * sin(float(g.t) * 9.0))), 140.0)
+		for y: float in [barrier_head, tail_y]:
+			if y > -60.0 and y < H + 60.0:
+				for u in [0.2, 0.8]:
+					_add(BEACON, Vector2(g._rw_x(u), y + 6.0), 0.0, Color(1.0, 0.22, 0.10), 0.8 * (0.4 + 0.6 * (0.5 + 0.5 * sin(float(g.t) * 9.0))), 140.0)
 		var inner_x: float = (g.road_x + g.lane_w) if g.closed_lane == 0 else (g.road_x + g.road_w - g.lane_w)
 		var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(float(g.t) * 14.0))
-		var by := floorf(maxf(-60.0, tail_y) / 110.0) * 110.0
-		while by < minf(H + 60.0, barrier_head):
-			if by >= tail_y:
-				_add(BEACON, Vector2(inner_x, by + 31.0), 0.0, Color(1.0, 0.62, 0.12), 0.7 * blink, 120.0)
-			by += 110.0
+		var by: float = g.roadworks_first_barrier_y(-60.0)
+		var last := minf(H + 60.0, barrier_head - Game.RW_BARRIER_SPACING * 0.5)
+		while by <= last:
+			_add(BEACON, Vector2(inner_x, by), 0.0, Color(1.0, 0.62, 0.12), 0.7 * blink, 120.0)
+			by += Game.RW_BARRIER_SPACING
 
 
 # Some lamps flicker and a few are dead. Deterministic per lamp, visual only.

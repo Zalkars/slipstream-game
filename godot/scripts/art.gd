@@ -934,6 +934,35 @@ static func nitro_can(ci: CanvasItem, p: Vector2, s: float, phase := 0.0) -> voi
 
 # --- scenery ----------------------------------------------------------------
 
+static var _works_barrier: ImageTexture
+
+
+static func works_barrier_texture() -> ImageTexture:
+	if _works_barrier == null:
+		var img := Image.create_empty(256, 64, false, Image.FORMAT_RGBA8)
+		var orange := Color("#ef6a26")
+		var reflector := Color("#eee6cc")
+		for y in range(64):
+			for x in range(256):
+				var p := Vector2(x, y)
+				if Rect2(8, 11, 242, 50).has_point(p):
+					img.set_pixel(x, y, Color(0.07, 0.04, 0.03, 0.32))
+				if not Rect2(2, 3, 242, 47).has_point(p):
+					continue
+				var color := orange if (x + y) % 76 < 44 else reflector
+				var shade := 1.06 - float(y) * 0.008
+				if y < 9 or (y > 32 and y < 36):
+					shade += 0.16
+				if y > 43 or x < 9 or x > 235:
+					shade *= 0.56
+				var wear := float((x * 73 + y * 151 + x * y * 13) % 43) / 42.0
+				var bolt := (p - Vector2(18, 24)).length_squared() < 17.0 or (p - Vector2(227, 24)).length_squared() < 17.0
+				img.set_pixel(x, y, Color("#544d47") if bolt else Color(color * (shade - wear * 0.13), 1.0))
+		img.generate_mipmaps()
+		_works_barrier = ImageTexture.create_from_image(img)
+	return _works_barrier
+
+
 static func tree(ci: CanvasItem, p: Vector2, s: float, tint := 0.0) -> void:
 	ci.draw_circle(p + Vector2(s * 0.22, s * 0.26), s * 0.72, Color(0, 0, 0, 0.16))
 	ci.draw_circle(p, s * 0.22, Color(0.30, 0.23, 0.16))

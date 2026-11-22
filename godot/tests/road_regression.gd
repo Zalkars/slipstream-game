@@ -230,6 +230,12 @@ func _first(game: Game, kind: String) -> Dictionary:
 
 
 func check_roadworks_collisions(game: Game) -> void:
+	_roadworks(game, 0)
+	game.road_event.y = float(game.road_event.lead) + Game.RW_ZONE_LEN * 0.5
+	var barrier_y := game.roadworks_first_barrier_y(-60.0)
+	game._update_road_events(0.0, 11.0)
+	check(is_equal_approx(game.roadworks_first_barrier_y(-60.0), barrier_y + 11.0),
+		"Visible side barriers move with the road and keep their spacing")
 	# Cone: points, small speed loss, no crash, knocked only once.
 	_roadworks(game, 0)
 	var cone := _first(game, "cone")

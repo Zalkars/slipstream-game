@@ -304,6 +304,7 @@ func _ready() -> void:
 	run_rng.seed = 1729
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
 	glow_tex = Fx.glow_tex()
+	Art.works_barrier_texture()
 	roadside_art = ROADSIDE_ART.new()
 	roadside_art.name = "RoadsideArt"
 	add_child(roadside_art)
@@ -2482,6 +2483,8 @@ const RW_CONES := 9
 const RW_CONE_PTS := 40
 const RW_SIGN_PTS := 75
 const RW_STOP_DEPTH := 34.0
+const RW_BARRIER_SPACING := 110.0
+const RW_BARRIER_HALF_LENGTH := 31.0
 
 
 static func roadworks_layout(closed: int, at_speed: float) -> Dictionary:
@@ -2519,6 +2522,11 @@ func roadworks_stop_y() -> float:
 
 func roadworks_tail_y() -> float:
 	return roadworks_stop_y() - float(road_event.get("zone_len", RW_ZONE_LEN))
+
+
+func roadworks_first_barrier_y(clip_top: float) -> float:
+	var first := roadworks_tail_y() + RW_BARRIER_SPACING
+	return first + maxf(0.0, ceilf((clip_top - first) / RW_BARRIER_SPACING)) * RW_BARRIER_SPACING
 
 
 func roadworks_taper_y() -> float:
@@ -3136,14 +3144,11 @@ func _draw_road_event_under() -> void:
 		var y1 := minf(H + 40.0, barrier_head)
 		if y1 > y0:
 			var lx := road_x + float(closed_lane) * lane_w
-			draw_rect(Rect2(lx + 4.0, y0, lane_w - 8.0, y1 - y0), Color(0.95, 0.48, 0.12, 0.18))
-			var step := 140.0
-			var sy: float = floor(y0 / step) * step
-			while sy < y1:
-				if sy >= tail_y and sy <= barrier_head - 40.0:
-					draw_line(Vector2(lx + 14.0, sy), Vector2(lx + lane_w - 14.0, sy + 52.0), Color(1.0, 0.62, 0.18, 0.35), 4.0)
-					draw_line(Vector2(lx + lane_w - 14.0, sy), Vector2(lx + 14.0, sy + 52.0), Color(1.0, 0.62, 0.18, 0.35), 4.0)
-				sy += step
+			draw_rect(Rect2(lx + 4.0, y0, lane_w - 8.0, y1 - y0), Color(0.37, 0.24, 0.14, 0.12))
+			var mid_y := (tail_y + barrier_head) * 0.5
+			_draw_excavation(Vector2(_rw_x(0.45), mid_y - 240.0), Vector2(lane_w * 0.30, 105.0), 0.0)
+			_draw_excavation(Vector2(_rw_x(0.48), mid_y + 35.0), Vector2(lane_w * 0.34, 151.0), 1.0)
+			_draw_excavation(Vector2(_rw_x(0.34), mid_y + 330.0), Vector2(lane_w * 0.22, 72.0), 2.0)
 		# Taper: a fading orange wedge on the asphalt under the cones.
 		var taper_y := roadworks_taper_y()
 		if taper_y > -40.0 and barrier_head < H + 40.0:
@@ -3152,6 +3157,28 @@ func _draw_road_event_under() -> void:
 			]), Color(0.95, 0.48, 0.12, 0.10))
 
 # --- road-works art (procedural, top-down, drawn on the objects pass) --------
+
+func _draw_excavation(p: Vector2, radius: Vector2, variant: float) -> void:
+	if p.y + radius.y < -35.0 or p.y - radius.y > H + 35.0:
+		return
+	var edge := PackedVector2Array()
+	var inside := PackedVector2Array()
+	for i in range(12):
+		var dir := Vector2.from_angle(TAU * float(i) / 12.0)
+		var cut := radius * dir * (0.91 + 0.09 * sin(float(i) * 5.2 + variant))
+		edge.append(p + cut)
+		inside.append(p + cut * Vector2(0.77, 0.91) + Vector2(2.0, 5.0))
+	draw_colored_polygon(edge, Color("#927456"))
+	draw_colored_polygon(inside, Color("#3b2d25"))
+	for i in range(5):
+		var y := p.y + radius.y * (-0.48 + float(i) * 0.23)
+		var x := p.x + sin(float(i) * 3.4 + variant) * radius.x * 0.26
+		draw_line(Vector2(x - radius.x * 0.3, y), Vector2(x + radius.x * 0.3, y - 12.0), Color("#564034"), 3.0, true)
+	for i in range(8):
+		var angle := float(i) * 2.4 + variant
+		var stone := p + Vector2.from_angle(angle) * radius * (0.88 + 0.10 * sin(angle * 2.7))
+		draw_circle(stone, 2.0 + float(i % 3), Color("#b29876"), true, -1.0, true)
+
 
 # (a) Roadside sign beyond the guard rail on the closed side.
 func _draw_roadworks_warning_sign(y: float) -> void:
@@ -3219,21 +3246,17 @@ func _draw_cone(pos: Vector2, rot: float, alpha: float, knocked: bool) -> void:
 
 
 # (d) Solid barrier with a STOP sign across the closed lane.
-func _draw_stop_barrier(y: float) -> void:
+func _draw_stop_barrier(y: float, show_stop := true) -> void:
 	if y < -80.0 or y > H + 80.0:
 		return
 	var x0 := minf(_rw_x(0.04), _rw_x(0.98))
 	var x1 := maxf(_rw_x(0.04), _rw_x(0.98))
-	draw_rect(Rect2(x0 + 4.0, y + 6.0, x1 - x0, RW_STOP_DEPTH), Color(0, 0, 0, 0.28))
-	draw_rect(Rect2(x0, y, x1 - x0, RW_STOP_DEPTH), Color(0.96, 0.96, 0.94))
-	var stripe := 22.0
-	var sx := x0
-	var k := 0
-	while sx < x1:
-		if k % 2 == 0:
-			draw_rect(Rect2(sx, y, minf(stripe, x1 - sx), RW_STOP_DEPTH), Color(0.86, 0.12, 0.10))
-		sx += stripe
-		k += 1
+	draw_texture_rect(Art.works_barrier_texture(), Rect2(x0, y, x1 - x0, RW_STOP_DEPTH), false)
+	var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 9.0))
+	for u in [0.2, 0.8]:
+		_glow(Vector2(_rw_x(u), y + 6.0), 26.0, Color(1.0, 0.22, 0.10, 0.55 * blink))
+	if not show_stop:
+		return
 	var c := Vector2((x0 + x1) * 0.5, y - 14.0)
 	var oct := PackedVector2Array()
 	for i in range(8):
@@ -3246,9 +3269,6 @@ func _draw_stop_barrier(y: float) -> void:
 	if _hud_font != null:
 		var tw := _hud_font.get_string_size("STOP", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15).x
 		draw_string(_hud_font, Vector2(c.x - tw * 0.5, c.y + 6.0), "STOP", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15, Color(0.98, 0.98, 0.96))
-	var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 9.0))
-	for u in [0.2, 0.8]:
-		_glow(Vector2(_rw_x(u), y + 6.0), 26.0, Color(1.0, 0.22, 0.10, 0.55 * blink))
 
 
 func _draw_road_event_over() -> void:
@@ -3317,16 +3337,13 @@ func _draw_road_event_over() -> void:
 			else:
 				_draw_arrow_sign(pos, rot, alpha, bool(o.hit))
 		_draw_stop_barrier(barrier_head)
-		# Barrier blocks along the closed stretch
-		var y0 := maxf(-60.0, tail_y)
-		var y1 := minf(H + 60.0, barrier_head)
-		if y1 > y0:
-			var step := 110.0
-			var by: float = floor(y0 / step) * step
-			var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 14.0))
-			while by < y1:
-				if by >= tail_y and by <= barrier_head - 40.0:
-					draw_rect(Rect2(inner_x - 8.0, by, 16.0, 62.0), Color(0.95, 0.46, 0.12))
-					draw_rect(Rect2(inner_x - 8.0, by + 18.0, 16.0, 22.0), Color(0.95, 0.95, 0.95))
-					_glow(Vector2(inner_x, by + 31.0), 22.0, Color(1.0, 0.65, 0.12, 0.42 * blink))
-				by += step
+		_draw_stop_barrier(tail_y, false)
+		var by := roadworks_first_barrier_y(-60.0)
+		var last := minf(H + 60.0, barrier_head - RW_BARRIER_SPACING * 0.5)
+		var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 14.0))
+		while by <= last:
+			draw_set_transform(Vector2(inner_x + _sx, by + _sy), PI * 0.5)
+			draw_texture_rect(Art.works_barrier_texture(), Rect2(-RW_BARRIER_HALF_LENGTH, -10.0, RW_BARRIER_HALF_LENGTH * 2.0, 20.0), false)
+			draw_set_transform(Vector2(_sx, _sy))
+			_glow(Vector2(inner_x, by), 22.0, Color(1.0, 0.65, 0.12, 0.42 * blink))
+			by += RW_BARRIER_SPACING
