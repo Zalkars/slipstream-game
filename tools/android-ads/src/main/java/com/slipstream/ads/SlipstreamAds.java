@@ -131,7 +131,6 @@ public final class SlipstreamAds extends GodotPlugin {
     private static final class BannerSlot {
         BannerAdView banner;
         FrameLayout container;
-        BannerAdSize size;
         // Height the screen gives the slot in pixels (the cut-out band over
         // it plus the banner); 0 while nothing is loaded.
         int loadedHeight;
@@ -188,7 +187,6 @@ public final class SlipstreamAds extends GodotPlugin {
             int barDp = widthDp > 728 ? 90 : 50;
             slot.zone = slot.inset + Math.round(barDp * density);
             BannerAdSize size = BannerAdSize.inline(activity, widthDp, barDp);
-            slot.size = size;
             slot.loadedHeight = 0;
             slot.banner = new BannerAdView(activity);
             slot.banner.setAdSize(size);
@@ -232,14 +230,17 @@ public final class SlipstreamAds extends GodotPlugin {
         ui(() -> {
             BannerSlot slot = slot(name);
             if (destroyed || slot.banner != banner || slot.container == null) return;
-            int measured = banner.getHeight();
-            if (measured <= 0 && attempt < 8) {
-                slot.container.postDelayed(() -> measureBanner(name, banner, attempt + 1), 50L);
+            if (!banner.isLaidOut() || banner.isLayoutRequested()
+                    || banner.getWidth() <= 0 || banner.getHeight() <= 0) {
+                if (attempt < 20) {
+                    slot.container.postDelayed(() -> measureBanner(name, banner, attempt + 1), 50L);
+                } else {
+                    destroyBanner(name);
+                    failed("banner" + name + "_load", "Banner view was not laid out");
+                }
                 return;
             }
-            if (measured <= 0 && slot.size != null) measured = slot.size.getHeightInPixels(getActivity());
-            if (measured <= 0) return;
-            int total = Math.min(slot.inset + measured, slot.zone);
+            int total = Math.min(slot.inset + banner.getHeight(), slot.zone);
             slot.loadedHeight = total;
             ViewGroup.LayoutParams lp = slot.container.getLayoutParams();
             if (lp != null && lp.height != total) {

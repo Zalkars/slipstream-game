@@ -86,6 +86,12 @@ func check_service_lifecycle() -> void:
 	check(native.banner_visible, "A banner wish made before the plugin attached reaches it")
 	check(native.reward_loads == 1 and native.reward_id == "demo-rewarded-yandex", "Initialization preloads the demo rewarded ad once")
 	check(native.banners_loaded == 1 and native.banner_id == "demo-banner-yandex", "The wanted banner loads the demo unit once")
+	service._loading["banner"] = service._now() - service.LOAD_TIMEOUT - 1.0
+	service._process(0.0)
+	check(not service._banner_requested and service.banner_height == 0, "An unmeasured banner times out without taking room")
+	service._retry_after["banner"] = 0.0
+	service._process(0.0)
+	check(native.banners_loaded == 2, "The visible slot retries after the load timeout")
 	service.preload_rewarded()
 	check(native.reward_loads == 1, "Concurrent rewarded preloads are deduplicated")
 	check(not service.can_show_rewarded() and not service.request_rewarded(), "Nothing is shown before an ad has loaded")
@@ -95,6 +101,7 @@ func check_service_lifecycle() -> void:
 	native.banner_slot_height_changed.emit("menu", 132)
 	await flush()
 	check(service.banner_height == 132, "The measured banner height is reported")
+	check(not service._loading.has("banner"), "A measured banner clears the pending timeout")
 	var finished := [null]
 	service.rewarded_finished.connect(func(e: bool): finished[0] = e)
 	check(service.request_rewarded() and native.rewards_shown == 1, "A rewarded ad is shown")

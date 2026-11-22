@@ -161,6 +161,7 @@ func _load_banner() -> void:
 	if not _can_load("banner") or not units.has("menu_banner"):
 		return
 	_banner_requested = true
+	_loading["banner"] = _now()
 	backend.call("loadBannerSlot", BANNER_SLOT, str(units["menu_banner"]))
 
 
@@ -183,6 +184,9 @@ static func px_to_design(viewport: Viewport, pixels: int) -> float:
 func _on_banner_height(slot_name: String, height: int) -> void:
 	if slot_name != BANNER_SLOT:
 		return
+	if height > 0:
+		_loading.erase("banner")
+		_banner_requested = true
 	_banner_native_height = maxi(0, height)
 	_banner_seen_height = maxi(_banner_seen_height, _banner_native_height)
 	_apply_banner_height()
@@ -254,7 +258,7 @@ func _on_failed(kind: String, message: String) -> void:
 	_retry_after[format] = _now() + RETRY_SECONDS
 	if format == "rewarded":
 		rewarded_ready = false
-	if kind == "banner" + BANNER_SLOT + "_load":
+	if kind == "banner" + BANNER_SLOT + "_load" or kind == "banner_load":
 		_loading.erase("banner")
 		_retry_after["banner"] = _now() + RETRY_SECONDS
 		_banner_requested = false
