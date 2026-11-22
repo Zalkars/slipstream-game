@@ -503,9 +503,11 @@ func paint_reflections(ci: CanvasItem) -> void:
 		var p: Vector2 = s.pos
 		match int(s.kind):
 			Lighting.HEAD:
-				# Headlights mirror far ahead of the car.
-				ci.draw_texture_rect(tex, Rect2(p.x - 14.0 + wob, p.y - 230.0, 28.0, 230.0), false,
+				# The bright end follows the lens, and the reflection fades up the road.
+				ci.draw_set_transform(p + Vector2(wob, 0.0), float(s.dir) - PI * 0.5)
+				ci.draw_texture_rect(tex, Rect2(-14.0, 0.0, 28.0, 230.0), false,
 					Color(col.r * e * 0.22, col.g * e * 0.22, col.b * e * 0.22, 1.0))
+				ci.draw_set_transform(Vector2.ZERO)
 			Lighting.TAIL, Lighting.BRAKE:
 				var f := 0.55 if int(s.kind) == Lighting.BRAKE else 0.32
 				ci.draw_texture_rect(tex, Rect2(p.x - 10.0 - wob, p.y + 6.0, 20.0, 170.0), false,

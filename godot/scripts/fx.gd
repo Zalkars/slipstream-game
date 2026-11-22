@@ -77,7 +77,7 @@ static func streak_tex(w := 32, h := 128) -> ImageTexture:
 	for y in range(h):
 		var v := float(y) / float(h - 1)
 		# Reflections are strongest close to what they reflect.
-		var along := pow(1.0 - v, 1.25)
+		var along := smoothstep(0.0, 0.13, v) * pow(1.0 - v, 1.65)
 		for x in range(w):
 			var dx := absf((float(x) - mid) / mid)
 			var across := pow(clampf(1.0 - dx, 0.0, 1.0), 1.6)
