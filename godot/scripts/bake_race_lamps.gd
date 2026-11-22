@@ -137,6 +137,10 @@ func _measure_3d(art, sil: String) -> Dictionary:
 		# tail lamps all sit at bumper / body height.
 		if absf(local.x) < 0.12 or absf(rel_z) < 0.55 or local.y > 1.8:
 			continue
+		# The truck also has rows of red/amber cargo markers. Only its
+		# bumper lenses drive headlights, brakes and turn signals.
+		if sil == "truck" and local.y > 1.05:
+			continue
 		var px: Vector2 = art._cam.unproject_position(world)
 		var n := Vector2((px.x - bb.position.x) / float(bb.size.x), (px.y - bb.position.y) / float(bb.size.y))
 		var wgt := maxf(aabb.size.x * aabb.size.y + aabb.size.x * aabb.size.z, 0.0001)
@@ -163,6 +167,19 @@ func _measure_3d(art, sil: String) -> Dictionary:
 	if out.has("tail") and not out.has("ind_r"):
 		var t: Array = out.tail
 		out["ind_r"] = [snappedf(maxf(0.04, float(t[0]) - 0.05), 0.001), t[1], snappedf(minf(0.96, float(t[2]) + 0.05), 0.001), t[3]]
+	if sil == "truck":
+		# The tall cab hides the bumper from the chase camera. Start the
+		# visible light at the cab silhouette, keeping the lens spacing.
+		for cat in ["head", "ind_f"]:
+			if not out.has(cat):
+				continue
+			var pair: Array = out[cat]
+			for i in [0, 2]:
+				var x := bb.position.x + clampi(roundi(float(pair[i]) * bb.size.x), 0, bb.size.x - 1)
+				for y in range(bb.position.y, bb.end.y):
+					if img.get_pixel(x, y).a > 0.5:
+						pair[i + 1] = snappedf(float(y - bb.position.y) / float(bb.size.y), 0.001)
+						break
 	return out
 
 

@@ -124,6 +124,11 @@ func check_lamp_table() -> void:
 	var out := {}
 	CarLamps.points({"head": [0.25, 0.0, 0.75, 0.0]}, Vector2(100, 200), Vector2(80, 160), 0.0, out)
 	check(out.head[0].is_equal_approx(Vector2(80, 120)) and out.head[1].is_equal_approx(Vector2(120, 120)), "Anchor maps to screen")
+	var truck: Dictionary = CarLamps.LAMPS.LAMPS_3D["truck"]
+	check(float(truck.head[1]) < 0.025 and float(truck.head[3]) < 0.025,
+		"Truck beams emerge ahead of the cab silhouette")
+	check(is_equal_approx(float(truck.ind_r[0]), float(truck.tail[0])),
+		"Truck rear indicators use the bumper cluster")
 
 
 func check_followup_render() -> void:
