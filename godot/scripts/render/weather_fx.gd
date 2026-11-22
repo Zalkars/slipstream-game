@@ -131,14 +131,20 @@ render_mode unshaded;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
 uniform bool refract = true;
 uniform vec3 glint = vec3(1.0);
+varying vec4 drop_tint;
+void vertex() {
+	drop_tint = COLOR;
+}
 void fragment() {
 	vec4 d = texture(TEXTURE, UV);
 	if (d.a < 0.01) { discard; }
-	vec2 n = d.rg * 2.0 - 1.0;
+	vec2 local_n = d.rg * 2.0 - 1.0;
+	vec2 down = normalize(drop_tint.gb * 2.0 - 1.0);
+	vec2 n = vec2(down.y, -down.x) * local_n.x + down * local_n.y;
 	vec3 base;
 	if (refract) {
 		// A drop is a tiny lens: it shows the scene upside down and pulled in.
-		vec2 off = n * 0.035 * COLOR.r;
+		vec2 off = n * 0.035 * drop_tint.r;
 		base = textureLod(screen_tex, SCREEN_UV - off, 1.0).rgb;
 		base = mix(base, base * 1.12 + 0.02, 0.5);
 	} else {
@@ -147,7 +153,7 @@ void fragment() {
 	float rim = smoothstep(0.55, 1.0, length(n));
 	float spec = pow(clamp(dot(n, normalize(vec2(-0.5, -0.7))), 0.0, 1.0), 6.0);
 	vec3 col = base * (1.0 - rim * 0.45) + glint * spec * 0.55;
-	float a = d.a * COLOR.a;
+	float a = d.a * drop_tint.a;
 	if (!refract) {
 		// Lens-sprite fallback: a dark rim and a highlight, no frame read.
 		col = glint * spec * 0.7 + vec3(0.05, 0.06, 0.07) * rim;
@@ -178,7 +184,9 @@ static var _streak_tex: ImageTexture
 
 # Visual-only particle pools.
 var mist: Array = []    # {p, v, life, max, size}
-var drops: Array = []   # screen drops {p, r, v, life, still}
+var drops: Array = []   # screen drops {p, r, v, life, age, trail, stick}
+const DROP_MAX_DRIFT := 0.28  # maximum lateral speed relative to vertical speed
+const DROP_RESPONSE := 3.4
 var _drop_spawn := 0.0
 var _last_over := {}
 
@@ -548,7 +556,7 @@ func _edge_x() -> float:
 func _spawn_drop(r: float, life: float) -> void:
 	var g = game
 	drops.append({"p": Vector2(_edge_x(), rng.randf_range(-10.0, g.H * 0.92)),
-		"r": r, "v": Vector2.ZERO, "life": life, "trail": 0.0,
+		"r": r, "v": Vector2.ZERO, "life": life, "age": 0.0, "trail": 0.0,
 		"stick": rng.randf_range(0.15, 0.9)})
 
 
@@ -580,26 +588,30 @@ func _update_drops(dt: float) -> void:
 					_burst_drops(3)
 	var wind_x: float = clampf(g.rain_vx / 900.0, -0.6, 0.6)
 	var half: float = g.W * 0.5
+	var approach := 1.0 - exp(-dt * DROP_RESPONSE)
 	for i in range(drops.size() - 1, -1, -1):
 		var d: Dictionary = drops[i]
 		d.life -= dt
+		d.age += dt
 		var r: float = d.r
 		# Downward speed grows with the drop's weight; small ones cling.
 		var heavy := clampf((r - 6.0) / 10.0, 0.0, 1.0)
-		var fall := lerpf(6.0 + 20.0 * (1.0 - float(d.stick)), 120.0 + r * 5.0, heavy) * (1.0 + fast * 0.6)
-		# Sideways drift at speed: outwards, plus a little of the crosswind.
-		var side := signf(float(d.p.x) - half)
-		var drift := (side * 26.0 + wind_x * 40.0) * fast * (0.4 + heavy * 0.6)
-		d.v = d.v.lerp(Vector2(drift, fall), minf(1.0, dt * 3.0))
+		var fall := lerpf(6.0 + 20.0 * (1.0 - float(d.stick)), 120.0 + r * 5.0, heavy) * (1.0 + fast * 0.32)
+		# Wind and air flowing across the glass bend the path gently.
+		var side := clampf((float(d.p.x) - half) / maxf(half * 0.45, 1.0), -1.0, 1.0)
+		var drift := (side * 19.0 * fast + wind_x * (5.0 + 20.0 * fast)) * (0.4 + heavy * 0.6)
+		var limit := fall * DROP_MAX_DRIFT
+		var velocity: Vector2 = d.v.lerp(Vector2(clampf(drift, -limit, limit), fall), approach)
+		d.v = velocity
+		d.p += velocity * dt
 		if heavy > 0.25:
 			d.trail += dt
-			if d.trail > 0.08 and drops.size() < _drop_cap() + 20:
+			if d.trail > 0.10 and velocity.y > 55.0 and drops.size() < _drop_cap() + 20:
 				d.trail = 0.0
-				drops.append({"p": d.p - Vector2(0.0, r * 0.7), "r": maxf(2.5, r * 0.30), "v": Vector2.ZERO,
-					"life": 1.1, "trail": 0.0, "stick": 1.0})
+				drops.append({"p": d.p - velocity.normalized() * r * 0.92, "r": maxf(2.5, r * 0.30),
+					"v": velocity * 0.06, "life": 1.1, "age": 0.0, "trail": 0.0, "stick": 1.0})
 				# The running drop loses a little water to every bead it leaves.
 				d.r = maxf(5.0, r * 0.985)
-		d.p += d.v * dt
 		if d.life <= 0.0 or d.p.y > g.H + 40.0 or d.p.x < -40.0 or d.p.x > g.W + 40.0:
 			drops.remove_at(i)
 	# Merging: drops that touch join into a heavier one that will run.
@@ -608,8 +620,12 @@ func _update_drops(dt: float) -> void:
 			var da: Dictionary = drops[a]
 			var db: Dictionary = drops[a - 1]
 			if da.p.distance_to(db.p) < (float(da.r) + float(db.r)) * 0.55:
-				db.r = minf(26.0, sqrt(float(da.r) * float(da.r) + float(db.r) * float(db.r)))
+				var area_a := float(da.r) * float(da.r)
+				var area_b := float(db.r) * float(db.r)
+				db.v = db.v.lerp(da.v, area_a / (area_a + area_b))
+				db.r = minf(26.0, sqrt(area_a + area_b))
 				db.life = maxf(float(db.life), float(da.life))
+				db.age = maxf(float(db.age), float(da.age))
 				drops.remove_at(a)
 
 
@@ -621,13 +637,15 @@ func paint_drops(ci: CanvasItem) -> void:
 	_drop_mat.set_shader_parameter("glint", Vector3(glint.r, glint.g, glint.b) * 1.2)
 	for d in drops:
 		var r: float = d.r
-		var stretch: Vector2 = Vector2(1.0, 1.0)
 		var v: Vector2 = d.v
-		if v.length() > 60.0:
-			stretch = Vector2(0.85, 1.0 + minf(v.length() / 400.0, 0.9))
-		var a := clampf(float(d.life) * 1.5, 0.0, 1.0)
+		var down := v.normalized() if v.length_squared() > 0.01 else Vector2.DOWN
+		var stretch := Vector2.ONE.lerp(Vector2(0.82, 1.80), smoothstep(12.0, 320.0, v.length()))
+		var a := smoothstep(0.0, 0.12, float(d.age)) * smoothstep(0.0, 0.60, float(d.life))
 		var size := Vector2(r, r) * stretch * 2.0
-		ci.draw_texture_rect(_drop_tex, Rect2(d.p - size * 0.5, size), false, Color(clampf(r / 12.0, 0.5, 2.0), 1.0, 1.0, a))
+		ci.draw_set_transform(d.p, Vector2.DOWN.angle_to(down))
+		ci.draw_texture_rect(_drop_tex, Rect2(-size * 0.5, size), false,
+			Color(clampf(r / 12.0, 0.5, 2.0), down.x * 0.5 + 0.5, down.y * 0.5 + 0.5, a))
+	ci.draw_set_transform(Vector2.ZERO)
 
 
 # --- lightning ----------------------------------------------------------------

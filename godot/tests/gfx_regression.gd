@@ -151,6 +151,8 @@ func check_followup_render() -> void:
 		wx.frame(1.0 / 60.0)
 		for d in wx.drops:
 			check(float(d.v.y) >= -0.001, "Screen drops must never move up")
+			check(absf(float(d.v.x)) <= float(d.v.y) * WeatherFx.DROP_MAX_DRIFT + 0.001,
+				"Screen drops must fall faster than they drift in a crosswind")
 			total += 1
 			if float(d.p.x) < game.W * 0.25 or float(d.p.x) > game.W * 0.75:
 				edge += 1
