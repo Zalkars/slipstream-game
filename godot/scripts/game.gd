@@ -246,6 +246,7 @@ var control_mode := "buttons"
 var free_lane := 3
 var free_t := 7.0
 var pickup_coins := 0
+var record_target := 0
 
 var swipe_start := Vector2.ZERO
 var swipe_used := true
@@ -722,6 +723,7 @@ func start_run() -> void:
 	duel_clock = 0.0
 	distance = 0.0
 	score = 0.0
+	record_target = 0
 	bonus = 0.0
 	near = 0
 	combo = 0
@@ -3088,28 +3090,45 @@ func _draw_ghost_car() -> void:
 		draw_string(_hud_font, Vector2(gx - tw * 0.5, gy - car_h * 0.62 - 2.0), tag, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.45, 0.94, 1.0, 0.95))
 
 
-func _draw_road_event_under() -> void:
-	# Ghost crash/finish line across highway
-	if running and not demo and str(challenge_config.get("type", "")) == "duel":
-		var end_sc := float(challenge_config.get("end_scroll", 0.0))
-		if end_sc > 40.0:
-			var fy := player_y - (end_sc - scroll)
-			if fy > -80.0 and fy < H + 80.0:
-				var sq := road_w / 16.0
-				for i in range(16):
-					var col := Color(0.36, 0.92, 1.0, 0.55) if i % 2 == 0 else Color(1.0, 0.85, 0.25, 0.45)
-					draw_rect(Rect2(road_x + float(i) * sq, fy - 7.0, sq, 14.0), col)
-				if _hud_font != null:
-					var lbl := "ФИНИШ СОПЕРНИКА"
-					var tw := _hud_font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 18).x
-					draw_string(_hud_font, Vector2(road_x + road_w * 0.5 - tw * 0.5, fy - 14.0), lbl, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 18, Color(0.45, 0.95, 1.0, 0.90))
+func _finish_marker_y() -> float:
+	if not running or demo:
+		return -10000.0
+	if str(challenge_config.get("type", "")) == "duel":
+		var end_scroll := float(challenge_config.get("end_scroll", 0.0))
+		if end_scroll > 40.0:
+			return player_y - (end_scroll - scroll)
+	elif record_target > 0:
+		# Scoring distance is in metres and bonus points move the target closer.
+		return player_y - (ceilf(float(record_target) - bonus) - distance) * 12.0
+	return -10000.0
 
+
+func _draw_road_marker(y: float, tint: Color, badge := "") -> void:
+	var fade := smoothstep(-55.0, 30.0, y) * (1.0 - smoothstep(H - 30.0, H + 55.0, y))
+	if fade <= 0.0:
+		return
+	var pulse := 0.85 + 0.15 * sin(t * 6.0)
+	if badge.is_empty():
+		draw_rect(Rect2(road_x, y - 4.0, road_w, 8.0), Color(tint, 0.22 * fade * pulse))
+		draw_line(Vector2(road_x, y), Vector2(road_x + road_w, y), Color(tint, 0.78 * fade * pulse), 3.0)
+		return
+	for x in [road_x - 16.0, road_x + road_w + 16.0]:
+		draw_circle(Vector2(x, y), 12.0, Color(0.14, 0.16, 0.18, fade))
+		draw_circle(Vector2(x, y), 6.0, Color(tint, fade * pulse))
+		_glow(Vector2(x, y), 32.0, Color(tint, 0.40 * fade * pulse))
+	if _hud_font != null:
+		var width := _hud_font.get_string_size(badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20).x
+		var left := road_x + (road_w - width) * 0.5
+		draw_rect(Rect2(left - 14.0, y - 42.0, width + 28.0, 32.0), Color(0.05, 0.07, 0.09, 0.90 * fade))
+		draw_string(_hud_font, Vector2(left, y - 19.0), badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20, Color(tint, fade))
+
+
+func _draw_road_event_under() -> void:
+	_draw_road_marker(_finish_marker_y(), Color("#5ddb75"))
 	if road_event_type == EVENT_RADAR:
 		var ry := float(road_event.get("y", -2000.0))
-		if ry > -60.0 and ry < H + 60.0:
-			var lcol := Color(0.34, 0.90, 1.0, 0.65) if str(road_event.get("mode", "fast")) == "fast" else Color(0.98, 0.70, 0.18, 0.70)
-			draw_rect(Rect2(road_x, ry - 4.0, road_w, 8.0), Color(lcol.r, lcol.g, lcol.b, 0.22))
-			draw_line(Vector2(road_x, ry), Vector2(road_x + road_w, ry), lcol, 3.0)
+		var tint := Color("#57ebff") if str(road_event.get("mode", "fast")) == "fast" else Color("#fab833")
+		_draw_road_marker(ry, tint)
 	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
 		var barrier_head := roadworks_stop_y()
 		var tail_y := roadworks_tail_y()
@@ -3264,21 +3283,17 @@ func _draw_road_event_over() -> void:
 			draw_rect(Rect2(gx - tw * 0.5 - 10.0, H - 78.0, tw + 20.0, 28.0), Color(0.04, 0.08, 0.12, 0.85))
 			draw_string(_hud_font, Vector2(gx - tw * 0.5, H - 58.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.45, 0.94, 1.0, 0.85))
 
+	var finish_y := _finish_marker_y()
+	var radar_y := float(road_event.get("y", -2000.0)) if road_event_type == EVENT_RADAR else -2000.0
+	if finish_y > -55.0 and finish_y < H + 55.0 and absf(finish_y - radar_y) > 46.0:
+		var badge := "ФИНИШ СОПЕРНИКА" if str(challenge_config.get("type", "")) == "duel" else "ЛИЧНЫЙ РЕКОРД"
+		_draw_road_marker(finish_y, Color("#5ddb75"), badge)
 	if road_event_type == EVENT_RADAR:
-		var ry := float(road_event.get("y", -2000.0))
 		var tgt := int(road_event.target_kmh)
 		var is_fast := str(road_event.get("mode", "fast")) == "fast"
-		var rcol := Color(0.34, 0.92, 1.0) if is_fast else Color(0.98, 0.72, 0.20)
-		if ry > -120.0 and ry < H + 120.0:
-			for sx in [road_x - 16.0, road_x + road_w + 16.0]:
-				draw_circle(Vector2(sx, ry), 14.0, Color(0.14, 0.16, 0.18))
-				draw_circle(Vector2(sx, ry), 8.0, rcol)
-				_glow(Vector2(sx, ry), 36.0, Color(rcol.r, rcol.g, rcol.b, 0.45))
-			if _hud_font != null:
-				var badge := ("РАДАР %d+ КМ/Ч" % tgt) if is_fast else ("ЛИМИТ ≤ %d КМ/Ч" % tgt)
-				var tw := _hud_font.get_string_size(badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20).x
-				draw_rect(Rect2(road_x + road_w * 0.5 - tw * 0.5 - 14.0, ry - 42.0, tw + 28.0, 32.0), Color(0.05, 0.07, 0.09, 0.90))
-				draw_string(_hud_font, Vector2(road_x + road_w * 0.5 - tw * 0.5, ry - 19.0), badge, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 20, rcol)
+		var rcol := Color("#57ebff") if is_fast else Color("#fab833")
+		var badge := ("РАДАР %d+ КМ/Ч" % tgt) if is_fast else ("ЛИМИТ ≤ %d КМ/Ч" % tgt)
+		_draw_road_marker(radar_y, rcol, badge)
 	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
 		var barrier_head := roadworks_stop_y()
 		var tail_y := roadworks_tail_y()

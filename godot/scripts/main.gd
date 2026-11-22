@@ -589,6 +589,7 @@ func start_game(force_tutorial := false) -> void:
 
 	game.start_run()
 	game.set_tutorial_mode(tutorial_active)
+	game.record_target = best + 1 if best > 0 and not tutorial_active and active_challenge.is_empty() else 0
 	_was_overheated = false
 	Sfx.set_paused(false)
 	Sfx.play_engine()
