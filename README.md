@@ -1,10 +1,10 @@
 # SLIPSTREAM
 
-**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.1**
+**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.2**
 
 [![Godot](https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org/)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](https://www.android.com/)
-[![APK](https://img.shields.io/badge/APK-0.7.1-e23b30)](../../releases/latest)
+[![APK](https://img.shields.io/badge/APK-Releases-e23b30)](../../releases/latest)
 
 [**Скачать APK**](../../releases/latest) · [Скриншоты](#скриншоты) · [Управление](#управление) · [Сборка](#сборка-apk)
 
@@ -16,7 +16,17 @@
 
 ---
 
-## Что нового в 0.7.1
+## Что нового в 0.7.2
+
+- Покрытия меняются реже, заплатки плавно переходят в основной асфальт.
+- Ограждения движутся вместе с дорогой, между ними видны раскопки. Над трассой изредка появляются переходы и порталы со знаками.
+- Полоска личного рекорда оформлена как радар, уведомления появляются в очереди у верхнего края.
+- У фур уточнены позиции фар, шлейфы и отражения света плавно затухают. Монеты и батарейки подсвечены ночью.
+- Капли вытягиваются по направлению движения. Android-баннер учитывает нативный размер и повторяет загрузку при тайм-ауте.
+
+[Заметки и параметры 0.7.2](docs/releases/0.7.2.md).
+
+## Что было в 0.7.1
 
 - **Фары точно на местах** у каждой машины в 3D и 2D, лучи по ширине фар, мягкие края,
   фары горят ещё до появления машины на экране.
@@ -92,20 +102,20 @@
 
 ## APK
 
-**`Slipstream-0.7.1.apk`** — готовый файл для телефона (52,0 МБ).
-Лежит в разделе [**Releases**](../../releases/latest).
+Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.2.apk`**.
+Опубликованные сборки доступны в разделе [**Releases**](../../releases/latest).
 
 | | |
 |---|---|
 | Пакет | `com.slipstream.game` |
-| Версия | 0.7.1 (versionCode 18) |
+| Версия | 0.7.2 (versionCode 19) |
 | Android | 7.0+ (minSdk 24), targetSdk 36 |
 | Архитектура | arm64-v8a (64-бит) |
 | Подпись | debug-ключом проекта; обновления должны быть подписаны тем же ключом |
 
 Установка:
 
-1. Скачай APK из Releases и перекинь на телефон (USB, Telegram «Избранное», Google Drive).
+1. Возьми APK из Releases или собери его локально и перекинь на телефон.
 2. Открой файл на телефоне. Если система спросит — разреши установку из этого источника.
 3. Play Protect может предупредить, что приложение неизвестное: это нормально для сборки
    вне Google Play, жми «Подробнее» → «Всё равно установить».
@@ -113,7 +123,7 @@
 Если подключён по USB с включённой отладкой:
 
 ```powershell
-adb install -r Slipstream-0.7.1.apk
+adb install -r Slipstream-0.7.2.apk
 ```
 
 ## Возможности
@@ -267,17 +277,15 @@ adb install -r Slipstream-0.7.1.apk
 
 ## Сборка APK
 
-Нужны: **Godot 4.7.2-stable** с Android export-шаблонами, **JDK 21**, **Android SDK**
-(build-tools 35.0.0, platforms/android-36, platform-tools). Gradle не используется —
-берётся готовый шаблон `android_release.apk`, путь к которому прописан в
-`godot/export_presets.cfg` (`custom_template/release`).
+Нужны **Godot 4.7.2-stable** с Android export-шаблонами, **JDK 21** и **Android SDK**
+(build-tools, platforms/android-36, platform-tools). Сборка использует Gradle и шаблон
+`android_source.zip`. Скрипт `build_apk.bat` подготавливает шаблон и подключает плагин рекламы.
 
 Шаблоны экспорта (220 МБ, в git не попадают) скачиваются один раз:
 
 ```powershell
 # https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz
-# распаковать tools/templates/ → android_release.apk и android_debug.apk
-New-Item -ItemType Directory -Force tools/templates | Out-Null
+# установи .tpz через Editor → Manage Export Templates
 ```
 
 Инструменты SDK подхватываются из переменных окружения (`ANDROID_HOME`, `JAVA_HOME`),
@@ -299,12 +307,13 @@ $env:JAVA_HOME    = "C:\path\to\jdk-21"
 
 $godot = "C:\path\to\Godot_v4.7.2-stable_win64_console.exe"
 
-# импорт ресурсов и глобальных классов
+# подготовка Android-шаблона и импорт ресурсов
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare_android_build.ps1 -GodotExe $godot
 & $godot --headless --path godot --import
 
 # релизная сборка (ключ задаётся в export_presets.cfg / диалоге экспорта)
 New-Item -ItemType Directory -Force build | Out-Null
-& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.1.apk"
+& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.2.apk"
 ```
 
 Путь экспорта передавай **сразу после** имени пресета и обязательно с расширением
@@ -314,13 +323,13 @@ New-Item -ItemType Directory -Force build | Out-Null
 
 ```powershell
 # пакет, версия, minSdk, arm64
-aapt2 dump badging Slipstream-0.7.1.apk
+aapt2 dump badging Slipstream-0.7.2.apk
 
 # подпись и схемы v1/v2/v3
-apksigner verify --verbose --print-certs Slipstream-0.7.1.apk
+apksigner verify --verbose --print-certs Slipstream-0.7.2.apk
 
 # выравнивание
-zipalign -c 4 Slipstream-0.7.1.apk
+zipalign -c 4 Slipstream-0.7.2.apk
 ```
 
 Иконки: `godot/icons/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` (адаптивная иконка).
@@ -378,6 +387,8 @@ Slipstream/
 
 ## История версий
 
+- **0.7.2** — [дорога, дорожные работы, рекорд, уведомления, свет, предметы, декор, капли и баннер](docs/releases/0.7.2.md).
+- **0.7.1** — [графика, трафик, звук и реклама в заезде](docs/releases/0.7.1.md).
 - **0.7.0** — настоящий 2D-свет с тенями, процедурный асфальт, дождь с лужами и каплями на экране, туман с рассеянием света, искры и следы шин, торможение по погоде, полностью новый звук, Рогатка, Хроно-щит, дуэли с призраком, реклама Яндекса, пресеты графики.
 - **0.6.0** — переработка моделей, дисков, арок, спойлеров, остекления и дворников; интегрированный кузов пикапа; 681 спрайт машин, грузовики и автобусы в 3D; новые обочины и здания; исправления управления, обучения, наград и зависимости от FPS.
 
