@@ -1,6 +1,6 @@
 # SLIPSTREAM
 
-**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.2**
+**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.3**
 
 [![Godot](https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org/)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](https://www.android.com/)
@@ -16,7 +16,17 @@
 
 ---
 
-## Что нового в 0.7.2
+## Что нового в 0.7.3
+
+- Сутки длятся 24 минуты, заезд продолжает время и погоду меню. Блэкаут бывает только в темноте.
+- Уведомления выводятся простым текстом под счётом, реже и без рутинных манёвров.
+- У автобуса исправлены фары. Покрытия меняются ещё втрое реже, швы бетонных плит стали мягче.
+- Фонари и переходы над трассой рисуются поверх машин. Перемотка возвращает дорожные работы вместе с дорогой.
+- Баннер стал тонкой полосой у верхнего края и обновляется каждые 45 секунд.
+
+[Заметки и параметры 0.7.3](docs/releases/0.7.3.md).
+
+## Что было в 0.7.2
 
 - Покрытия меняются реже, заплатки плавно переходят в основной асфальт.
 - Ограждения движутся вместе с дорогой, между ними видны раскопки. Над трассой изредка появляются переходы и порталы со знаками.
@@ -102,13 +112,13 @@
 
 ## APK
 
-Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.2.apk`**.
+Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.3.apk`**.
 Опубликованные сборки доступны в разделе [**Releases**](../../releases/latest).
 
 | | |
 |---|---|
 | Пакет | `com.slipstream.game` |
-| Версия | 0.7.2 (versionCode 19) |
+| Версия | 0.7.3 (versionCode 20) |
 | Android | 7.0+ (minSdk 24), targetSdk 36 |
 | Архитектура | arm64-v8a (64-бит) |
 | Подпись | debug-ключом проекта; обновления должны быть подписаны тем же ключом |
@@ -123,7 +133,7 @@
 Если подключён по USB с включённой отладкой:
 
 ```powershell
-adb install -r Slipstream-0.7.2.apk
+adb install -r Slipstream-0.7.3.apk
 ```
 
 ## Возможности
@@ -313,7 +323,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare_android_build.
 
 # релизная сборка (ключ задаётся в export_presets.cfg / диалоге экспорта)
 New-Item -ItemType Directory -Force build | Out-Null
-& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.2.apk"
+& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.3.apk"
 ```
 
 Путь экспорта передавай **сразу после** имени пресета и обязательно с расширением
@@ -323,13 +333,13 @@ New-Item -ItemType Directory -Force build | Out-Null
 
 ```powershell
 # пакет, версия, minSdk, arm64
-aapt2 dump badging Slipstream-0.7.2.apk
+aapt2 dump badging Slipstream-0.7.3.apk
 
 # подпись и схемы v1/v2/v3
-apksigner verify --verbose --print-certs Slipstream-0.7.2.apk
+apksigner verify --verbose --print-certs Slipstream-0.7.3.apk
 
 # выравнивание
-zipalign -c 4 Slipstream-0.7.2.apk
+zipalign -c 4 Slipstream-0.7.3.apk
 ```
 
 Иконки: `godot/icons/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` (адаптивная иконка).
@@ -387,6 +397,7 @@ Slipstream/
 
 ## История версий
 
+- **0.7.3** — [время суток, уведомления, фары автобуса, асфальт, фонари, перемотка и баннер](docs/releases/0.7.3.md).
 - **0.7.2** — [дорога, дорожные работы, рекорд, уведомления, свет, предметы, декор, капли и баннер](docs/releases/0.7.2.md).
 - **0.7.1** — [графика, трафик, звук и реклама в заезде](docs/releases/0.7.1.md).
 - **0.7.0** — настоящий 2D-свет с тенями, процедурный асфальт, дождь с лужами и каплями на экране, туман с рассеянием света, искры и следы шин, торможение по погоде, полностью новый звук, Рогатка, Хроно-щит, дуэли с призраком, реклама Яндекса, пресеты графики.
