@@ -6,13 +6,14 @@ extends RefCounted
 
 const MAGIC_0 := 0x53  # 'S'
 const MAGIC_1 := 0x4C  # 'L'
-# The format version doubles as the physics version the run was recorded
-# with: SLIP1 codes come from 0.7.0 (dry grip only) and are still accepted -
-# the challenger then races with the 0.7.0 physics; 0.8.0 writes SLIP2.
-const VERSION := 2
+# The version also selects simulation rules. SLIP1 uses dry grip, SLIP2
+# adds wet grip, and SLIP3 introduces separate seeded weather scheduling.
+const VERSION := 3
+const WEATHER_VERSION := 3
 const LEGACY_VERSION := 1
-const PREFIX := "SLIP2-"
-const PREFIXES := ["SLIP2-", "SLIP1-"]
+const PREFIX := "SLIP3-"
+const PREFIXES := [PREFIX, "SLIP2-", "SLIP1-"]
+const WEATHER := preload("res://scripts/weather_schedule.gd")
 const BASE_STEP_MS := 200
 const MAX_SAMPLES := 900
 const MAX_DECOMPRESSED := 65536
@@ -163,7 +164,7 @@ static func extract_code(text: String) -> String:
 static func decode(raw_text: String) -> Dictionary:
 	var code := extract_code(raw_text)
 	if code.is_empty():
-		return {"ok": false, "error": "Код вызова SLIP2-... не найден"}
+		return {"ok": false, "error": "Код вызова SLIP… не найден"}
 	var payload := code.substr(PREFIX.length())
 	var compressed := _b64url_decode(payload)
 	if compressed.is_empty():
@@ -318,8 +319,7 @@ static func daily_challenge(date_dict: Dictionary = {}) -> Dictionary:
 	var car_idx := rng.randi_range(0, Cars.LIST.size() - 1)
 	var tod_choices := [0.15, 0.42, 0.68, 0.90]
 	var tod := float(tod_choices[rng.randi_range(0, tod_choices.size() - 1)])
-	var weather_choices := [0, 1, 2, 3, 4]
-	var weather := int(weather_choices[rng.randi_range(0, weather_choices.size() - 1)])
+	var weather := WEATHER.pick(rng.randi_range(0, 99))
 	var car := Cars.get_car(car_idx)
 	var speed_k := float(car.top) / 1150.0
 	var bronze := int(round(6500.0 * speed_k / 500.0)) * 500

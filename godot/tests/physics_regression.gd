@@ -25,9 +25,10 @@ func run() -> void:
 	check_fps_independence(game)
 	check_determinism(game)
 	check_legacy_physics(game)
+	check_weather_schedule(game)
 	check_render_keeps_run_rng(game)
 	check_fog_banks()
-	print("[physics] grip table, puddles, wet braking, FPS independence, determinism, legacy SLIP1, render RNG isolation, fog banks: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
+	print("[physics] grip table, puddles, wet braking, FPS independence, deterministic and legacy weather, render RNG isolation, fog banks: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
 
 
@@ -131,10 +132,54 @@ func check_legacy_physics(game: Game) -> void:
 	game.challenge_config = {"type": "duel", "seed": 7, "car_index": 0, "tod": 0.2, "weather": 3, "physics": 1, "samples": [], "end_scroll": 0.0}
 	game.start_run()
 	check(game.physics_version == 1, "SLIP1 duels race with physics 1")
+	game.challenge_config["physics"] = 2
+	game.start_run()
+	check(game.physics_version == 2 and game.weather_timer == 55.0 and game.fog_amount > 0.0,
+		"SLIP2 duels retain the old storm profile and opening interval")
+	var expected := RandomNumberGenerator.new()
+	expected.state = game.run_rng.state
+	var pool := [Game.WEATHER_RAIN, Game.WEATHER_RAIN, Game.WEATHER_CLOUDY]
+	var next: int = pool[expected.randi() % pool.size()]
+	var duration := expected.randf_range(55.0, 88.0) if next == Game.WEATHER_RAIN else expected.randf_range(65.0, 105.0)
+	game._next_weather()
+	check(game.weather_state == next and game.weather_timer == duration and game.run_rng.state == expected.state,
+		"SLIP2 duels preserve the old weather sequence and RNG draws")
 	game.challenge_config = {}
 	game.start_run()
 	check(game.physics_version == Game.PHYSICS_VERSION, "Normal runs use the current physics")
 	check(int(game.build_challenge_payload("X").get("physics", 0)) == Game.PHYSICS_VERSION, "Shared codes carry the physics version")
+
+
+func check_weather_schedule(game: Game) -> void:
+	var counts := [0, 0, 0, 0, 0]
+	for roll in range(100):
+		counts[Game.WEATHER.pick(roll)] += 1
+	check(counts == [75, 15, 5, 1, 4], "Clear and cloudy weather dominate, with separate rain, storm and fog odds")
+	var sequences: Array = []
+	for tod in [0.2, 0.72]:
+		game.challenge_config = {"type": "daily", "seed": 441, "tod": tod, "weather": Game.WEATHER_CLEAR}
+		game.start_run()
+		var traffic_rng := game.run_rng.state
+		var sequence: Array = []
+		for i in range(500):
+			game._next_weather()
+			sequence.append([game.weather_state, game.weather_timer])
+		check(game.run_rng.state == traffic_rng, "Weather rolls leave the traffic RNG alone")
+		check(sequence.any(func(entry: Array) -> bool: return entry[0] == Game.WEATHER_RAIN)
+			and sequence.any(func(entry: Array) -> bool: return entry[0] == Game.WEATHER_FOG),
+			"Both rain and fog occur at every time of day")
+		sequences.append(sequence)
+	check(sequences[0] == sequences[1], "The weather sequence does not depend on the time of day")
+	game._snap_challenge_weather(0.72, Game.WEATHER_CLOUDY)
+	check(game.rain_amount == 0.0 and game.fog_fx.density_now() == 0.0, "Cloudy nights have no drizzle or fog")
+	game._snap_challenge_weather(0.2, Game.WEATHER_RAIN)
+	check(game.rain_amount > 0.0 and game.fog_fx.density_now() == 0.0, "Rain does not spawn fog")
+	game._snap_challenge_weather(0.2, Game.WEATHER_FOG)
+	check(game.rain_amount == 0.0 and game.fog_fx.density_now() > 0.0, "Fog does not start rain")
+	game.challenge_config = {}
+	game.start_run(true)
+	check(game.get_night_factor() == 0.0 and game.weather_state == Game.WEATHER_CLEAR,
+		"Driver training starts with a clear day")
 
 
 # Rendering frames (rain, sparks, fog, drops) must never draw from run_rng.

@@ -35,9 +35,7 @@ const EVENT_RADAR := 1
 const EVENT_ROADWORKS := 2
 const EVENT_BLACKOUT := 3
 const BRAKE_MULT := 0.42
-# 0.8.0 weather braking physics. Version 1 = 0.7.0 behaviour (dry grip
-# everywhere); SLIP1 challenge codes replay with it, SLIP2 and new runs use 2.
-const PHYSICS_VERSION := 2
+const PHYSICS_VERSION := ChallengeCodec.VERSION
 const MU_DRY := 1.0
 const MU_WET := 0.70
 const MU_PUDDLE := 0.50
@@ -65,11 +63,12 @@ const BATTERY_PICKUP := preload("res://art/roadside/pickup_battery.svg")
 const PICKUP_GLOW := 0.34
 const OVERHEAD_SPACING := 36000.0
 const DAY_LENGTH := 360.0
-const WEATHER_CLEAR := 0
-const WEATHER_CLOUDY := 1
-const WEATHER_RAIN := 2
-const WEATHER_STORM := 3
-const WEATHER_FOG := 4
+const WEATHER := ChallengeCodec.WEATHER
+const WEATHER_CLEAR := WEATHER.CLEAR
+const WEATHER_CLOUDY := WEATHER.CLOUDY
+const WEATHER_RAIN := WEATHER.RAIN
+const WEATHER_STORM := WEATHER.STORM
+const WEATHER_FOG := WEATHER.FOG
 # t, ambient r/g/b, night factor. One full day takes DAY_LENGTH seconds.
 const SKY_KEYS := [
 	[0.00, 1.00, 1.00, 1.00, 0.00],
@@ -153,8 +152,9 @@ var aquaplane_t := 0.0      # seconds of aquaplaning left
 var overheated := false
 var slip := 0.0
 var time_of_day := 0.15
-var weather_state := 0
-var weather_timer := 45.0
+var weather_state := WEATHER_CLEAR
+var weather_timer := 90.0
+var _weather_rng := RandomNumberGenerator.new()
 var rain_amount := 0.0
 var fog_amount := 0.0
 var cloud_amount := 0.05
@@ -710,10 +710,11 @@ func _snap_challenge_weather(tod: float, w_state: int) -> void:
 	lightning_next = 7.0
 
 
-func start_run() -> void:
+func start_run(training := false) -> void:
 	_fx_emission_t = 0.0
 	reset_swipe()
 	_layout()
+	physics_version = clampi(int(challenge_config.get("physics", PHYSICS_VERSION)), 1, PHYSICS_VERSION)
 	if not challenge_config.is_empty():
 		car_index = clampi(int(challenge_config.get("car_index", car_index)), 0, Cars.LIST.size() - 1)
 		active_run_seed = int(challenge_config.get("seed", 1))
@@ -722,7 +723,15 @@ func start_run() -> void:
 		_snap_challenge_weather(float(challenge_config.get("tod", 0.15)), int(challenge_config.get("weather", WEATHER_CLEAR)))
 	else:
 		active_run_seed = (randi() & 0x7FFFFFFF) | 1
+		if training:
+			_snap_challenge_weather(0.15, WEATHER_CLEAR)
+		else:
+			_snap_challenge_weather(randf(), WEATHER.pick(randi_range(0, 99)))
 	run_rng.seed = active_run_seed
+	if uses_random_weather():
+		_weather_rng.seed = active_run_seed ^ 0x57454154
+		var duration: Vector2 = WEATHER.DURATION[weather_state]
+		weather_timer = _weather_rng.randf_range(duration.x, duration.y)
 	start_tod = time_of_day
 	start_weather = weather_state
 
@@ -749,7 +758,6 @@ func start_run() -> void:
 	brake_heat = 0.0
 	overheated = false
 	slip = 0.0
-	physics_version = clampi(int(challenge_config.get("physics", PHYSICS_VERSION)), 1, PHYSICS_VERSION)
 	grip_mu = 1.0
 	puddle_depth = 0.0
 	aquaplane_t = 0.0
@@ -850,6 +858,7 @@ func start_demo() -> void:
 	crashed = false
 	running = false
 	demo = true
+	physics_version = PHYSICS_VERSION
 	paused = false
 	boosting = false
 	braking = false
@@ -1471,7 +1480,18 @@ func _update_weather(dt: float) -> void:
 	lightning = maxf(0.0, lightning - dt * 3.6)
 
 
+func uses_random_weather() -> bool:
+	return physics_version >= ChallengeCodec.WEATHER_VERSION
+
+
 func _next_weather() -> void:
+	if uses_random_weather():
+		var roll := randi_range(0, 99) if demo else _weather_rng.randi_range(0, 99)
+		weather_state = WEATHER.pick(roll)
+		var duration: Vector2 = WEATHER.DURATION[weather_state]
+		weather_timer = randf_range(duration.x, duration.y) if demo else _weather_rng.randf_range(duration.x, duration.y)
+		return
+	# Old duel codes share the weather draws with the traffic RNG.
 	var pool: Array = []
 	match weather_state:
 		WEATHER_CLEAR:
@@ -1499,13 +1519,14 @@ func _next_weather() -> void:
 
 
 func _weather_targets() -> Array:
+	var legacy := not uses_random_weather()
 	match weather_state:
 		WEATHER_CLOUDY:
-			return [0.06, 0.08, 0.58, 0.0]
+			return [0.06, 0.08, 0.58, 0.0] if legacy else [0.0, 0.0, 0.58, 0.0]
 		WEATHER_RAIN:
-			return [0.58, 0.26, 0.84, 0.0]
+			return [0.58, 0.26 if legacy else 0.0, 0.84, 0.0]
 		WEATHER_STORM:
-			return [1.0, 0.38, 0.96, 1.0]
+			return [1.0, 0.38 if legacy else 0.0, 0.96, 1.0]
 		WEATHER_FOG:
 			return [0.0, 0.82, 0.32, 0.0]
 		_:

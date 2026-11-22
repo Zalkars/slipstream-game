@@ -237,7 +237,7 @@ func check_challenge_codec_and_determinism(game: Game) -> void:
 		"samples": samples,
 	}
 	var code := ChallengeCodec.encode(payload)
-	check(code.begins_with("SLIP2-") and code.length() < 900, "Encoded marathon ghost must stay compact: len=%d" % code.length())
+	check(code.begins_with(ChallengeCodec.PREFIX) and code.length() < 900, "Encoded marathon ghost must stay compact: len=%d" % code.length())
 	var msg := ChallengeCodec.format_share_message(payload, code, false)
 	var decoded := ChallengeCodec.decode(msg)
 	check(bool(decoded.get("ok", false)), "Codec must extract and decode code from Telegram message")
@@ -247,9 +247,13 @@ func check_challenge_codec_and_determinism(game: Game) -> void:
 	check(not bool(gs.finished) and float(gs.scroll) > 0.0, "Ghost sampler must interpolate active trace")
 	var gs_end := ChallengeCodec.sample_ghost(decoded, 300.0)
 	check(bool(gs_end.finished), "Ghost sampler must report finished past end_time")
-	check(int(decoded.get("physics", 0)) == 2, "New codes carry physics version 2")
-	# 0.7.0 codes stay playable, with the physics they were recorded under.
+	check(int(decoded.get("physics", 0)) == ChallengeCodec.VERSION, "New codes carry the current simulation version")
 	var legacy_payload := payload.duplicate()
+	legacy_payload["physics"] = 2
+	var slip2 := ChallengeCodec.encode(legacy_payload)
+	var slip2_decoded := ChallengeCodec.decode(slip2)
+	check(slip2.begins_with("SLIP2-") and bool(slip2_decoded.get("ok", false)) and int(slip2_decoded.get("physics", 0)) == 2,
+		"SLIP2 codes retain the previous simulation version")
 	legacy_payload["physics"] = 1
 	var legacy := ChallengeCodec.encode(legacy_payload)
 	check(legacy.begins_with("SLIP1-"), "Legacy physics must encode as SLIP1")

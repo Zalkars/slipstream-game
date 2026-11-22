@@ -207,6 +207,8 @@ static func bank_at(run_seed: int, v: float) -> float:
 func density_now() -> float:
 	var g = game
 	var f: float = g.fog_amount
+	if g.uses_random_weather():
+		return clampf(f * 0.95, 0.0, 1.0)
 	# Dawn: a thin ground haze that burns off as the sun climbs.
 	var tod: float = g.time_of_day
 	var dawn := exp(-pow(fposmod(tod - 0.97 + 0.5, 1.0) - 0.5, 2.0) / 0.004)

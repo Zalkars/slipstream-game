@@ -585,7 +585,7 @@ func start_game(force_tutorial := false) -> void:
 		if tutorial_panel != null:
 			tutorial_panel.visible = false
 
-	game.start_run()
+	game.start_run(tutorial_active)
 	game.set_tutorial_mode(tutorial_active)
 	game.record_target = best + 1 if best > 0 and not tutorial_active and active_challenge.is_empty() else 0
 	_was_overheated = false
@@ -2709,7 +2709,7 @@ func _build_challenges() -> void:
 	name_row.add_child(ch_name_input)
 
 	ch_code_input = LineEdit.new()
-	ch_code_input.placeholder_text = "Вставь код SLIP1-... или текст вызова"
+	ch_code_input.placeholder_text = "Вставь код или текст вызова"
 	ch_code_input.custom_minimum_size = Vector2(0, 56)
 	ch_code_input.add_theme_font_override("font", font_ui)
 	ch_code_input.add_theme_font_size_override("font_size", 20)
