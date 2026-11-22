@@ -163,7 +163,7 @@ func _surfaces(game, n: int, lv: int, tag: String) -> void:
 			game._snap_challenge_weather(0.12, 0)
 			game.cars.clear()
 			game.spawn_t = 999.0
-			game.scroll = (float(k) + half) * Asphalt.SEG_LEN
+			game.scroll = (float(k) + half) * Asphalt.surface_segment_length()
 			for i in range(6):
 				game._rewind_invuln = 999.0
 				game.time_of_day = 0.12

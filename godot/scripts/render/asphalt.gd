@@ -18,8 +18,8 @@ extends RefCounted
 # Road coordinate v = scroll - screen_y grows with the distance driven.
 
 const TILE := 256
-# Surface types last ~600 m of road and fade into the next over ~125 m.
-const SEG_LEN := 7200.0
+# Surface types last ~1800 m of road and fade into the next over ~125 m.
+const SEG_LEN := 21600.0
 const SEG_BLEND := 1500.0
 # The aggregate texture: 512 texels over 256 canvas px = one texel per device
 # pixel on a 1440-wide phone, so the asphalt is never magnified (blurred).
@@ -40,7 +40,7 @@ uniform float wetness = 0.0;
 uniform float sun = 1.0;
 uniform float detail_level = 2.0;
 uniform float normal_strength = 1.0;
-uniform float seg_len = 1800.0;
+uniform float seg_len = 21600.0;
 uniform float seed = 0.0;
 
 varying vec2 world;
@@ -255,7 +255,15 @@ func _init(p_game) -> void:
 	material.set_shader_parameter("detail", _detail)
 	material.set_shader_parameter("detail_n", _detail_n)
 	material.set_shader_parameter("grain_tex", _grain)
-	material.set_shader_parameter("seg_len", SEG_LEN)
+	_apply_surface_spacing()
+
+
+static func surface_segment_length() -> float:
+	return maxf(SEG_BLEND * 2.0, float(ProjectSettings.get_setting("slipstream/road/surface_segment_length", SEG_LEN)))
+
+
+func _apply_surface_spacing() -> void:
+	material.set_shader_parameter("seg_len", surface_segment_length())
 	material.set_shader_parameter("seg_blend", SEG_BLEND)
 
 
@@ -274,8 +282,7 @@ func apply_params(p: Dictionary) -> void:
 	material.set_shader_parameter("detail", _detail)
 	material.set_shader_parameter("detail_n", _detail_n)
 	material.set_shader_parameter("grain_tex", _grain)
-	material.set_shader_parameter("seg_len", SEG_LEN)
-	material.set_shader_parameter("seg_blend", SEG_BLEND)
+	_apply_surface_spacing()
 	material.set_shader_parameter("detail_level", float(p.get("asphalt_detail", 1)))
 
 
