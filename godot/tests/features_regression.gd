@@ -276,6 +276,19 @@ func check_main_duel_and_daily_rewards() -> void:
 	add_child(main)
 	main.game.set_process(false)
 
+	main.start_game()
+	main._show_event_banner("ПЕРВОЕ", "СОБЫТИЕ", Color.WHITE)
+	main._show_event_banner("ВТОРОЕ", "СОБЫТИЕ", Color.WHITE)
+	main._show_event_banner("ВТОРОЕ", "СОБЫТИЕ", Color.WHITE)
+	check(main.event_banner_title.text == "ПЕРВОЕ" and main._event_banner_queue.size() == 1,
+		"An active notification is preserved and duplicate pending notifications are merged")
+	main._update_event_banner(main.EVENT_BANNER_TIME)
+	check(main.event_banner_title.text == "ВТОРОЕ" and main.event_banner.visible,
+		"Pending notification appears after the first expires")
+	main.start_game()
+	check(not main.event_banner.visible and main._event_banner_queue.is_empty(),
+		"A new race clears active and pending notifications")
+
 	# Daily challenge grants bronze/silver/gold once per day
 	main._sync_daily_date()
 	var daily := ChallengeCodec.daily_challenge()

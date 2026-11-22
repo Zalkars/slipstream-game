@@ -34,7 +34,13 @@ var challenge_hud_label: Label
 var event_banner: PanelContainer
 var event_banner_title: Label
 var event_banner_sub: Label
+const EVENT_BANNER_TIME := 2.3
+const EVENT_BANNER_ENTER := 0.22
+const EVENT_BANNER_EXIT := 0.30
+const EVENT_BANNER_LIMIT := 5
+const EVENT_BANNER_X := 342.0
 var _event_banner_t := 0.0
+var _event_banner_queue: Array[Dictionary] = []
 var brake_heat_bar: ProgressBar
 var brake_heat_fill: StyleBoxFlat
 var brake_heat_mark: ColorRect
@@ -258,14 +264,7 @@ func _process(delta: float) -> void:
 			_decline_revive()
 
 	if _event_banner_t > 0.0 and in_game and not paused:
-		_event_banner_t = maxf(0.0, _event_banner_t - delta)
-		if event_banner != null:
-			if _event_banner_t <= 0.0:
-				event_banner.visible = false
-			elif _event_banner_t < 0.35:
-				event_banner.modulate.a = _event_banner_t / 0.35
-			else:
-				event_banner.modulate.a = 1.0
+		_update_event_banner(delta)
 
 	if _hint_t > 0.0 and in_game and not paused:
 		_hint_t = maxf(0.0, _hint_t - delta)
@@ -439,6 +438,7 @@ func _hide_screens() -> void:
 func show_menu() -> void:
 	_reset_driving_input()
 	_close_revive()
+	_clear_event_banners()
 	tutorial_active = false
 	if tutorial_panel != null:
 		tutorial_panel.visible = false
@@ -552,9 +552,7 @@ func start_game(force_tutorial := false) -> void:
 	confirm_panel.visible = false
 	if exit_panel != null:
 		exit_panel.visible = false
-	if event_banner != null:
-		event_banner.visible = false
-	_event_banner_t = 0.0
+	_clear_event_banners()
 	if challenge_hud_panel != null:
 		challenge_hud_panel.visible = not active_challenge.is_empty() and not force_tutorial
 	hud.visible = true
@@ -862,12 +860,52 @@ func _on_hud(score: int, kmh: int, nitro: float, combo: int, run_coins: int, boo
 func _show_event_banner(title: String, sub: String, col: Color) -> void:
 	if event_banner == null or not in_game or tutorial_active:
 		return
-	event_banner_title.text = title
-	event_banner_title.add_theme_color_override("font_color", col)
-	event_banner_sub.text = sub
-	event_banner.modulate.a = 1.0
+	if _event_banner_t > 0.0 and event_banner_title.text == title and event_banner_sub.text == sub:
+		return
+	if _event_banner_queue.any(func(entry: Dictionary) -> bool: return entry.title == title and entry.sub == sub):
+		return
+	if _event_banner_queue.size() >= EVENT_BANNER_LIMIT:
+		_event_banner_queue.pop_front()
+	_event_banner_queue.append({"title": title, "sub": sub, "color": col})
+	if _event_banner_t <= 0.0:
+		_next_event_banner()
+
+
+func _next_event_banner() -> void:
+	if _event_banner_queue.is_empty():
+		event_banner.visible = false
+		return
+	var entry: Dictionary = _event_banner_queue.pop_front()
+	event_banner_title.text = entry.title
+	event_banner_sub.text = entry.sub
+	event_banner_title.add_theme_color_override("font_color", entry.color)
+	var panel := event_banner.get_theme_stylebox("panel") as StyleBoxFlat
+	panel.border_color = Color(entry.color, 0.65)
+	event_banner.reset_size()
+	event_banner.size.x = 244.0
+	event_banner.position.x = EVENT_BANNER_X + 12.0
+	event_banner.modulate.a = 0.0
 	event_banner.visible = true
-	_event_banner_t = 2.3
+	_event_banner_t = EVENT_BANNER_TIME
+
+
+func _update_event_banner(delta: float) -> void:
+	_event_banner_t = maxf(0.0, _event_banner_t - delta)
+	if _event_banner_t <= 0.0:
+		_next_event_banner()
+		return
+	var appear := smoothstep(0.0, EVENT_BANNER_ENTER, EVENT_BANNER_TIME - _event_banner_t)
+	var disappear := smoothstep(0.0, EVENT_BANNER_EXIT, _event_banner_t)
+	var weight := appear * disappear
+	event_banner.position.x = EVENT_BANNER_X + (1.0 - weight) * 12.0
+	event_banner.modulate.a = weight
+
+
+func _clear_event_banners() -> void:
+	_event_banner_queue.clear()
+	_event_banner_t = 0.0
+	if event_banner != null:
+		event_banner.visible = false
 
 
 func _on_slingshot_ready() -> void:
@@ -1645,19 +1683,19 @@ func _build_hud() -> void:
 	event_banner = PanelContainer.new()
 	event_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var eb_sb := StyleBoxFlat.new()
-	eb_sb.bg_color = Color(0.05, 0.07, 0.10, 0.88)
-	eb_sb.set_corner_radius_all(16)
+	eb_sb.bg_color = Color(0.05, 0.07, 0.10, 0.93)
+	eb_sb.set_corner_radius_all(9)
 	eb_sb.border_width_left = 1
-	eb_sb.border_width_right = 1
+	eb_sb.border_width_right = 3
 	eb_sb.border_width_top = 1
 	eb_sb.border_width_bottom = 1
 	eb_sb.border_color = Color(1.0, 1.0, 1.0, 0.18)
-	eb_sb.content_margin_left = 18
-	eb_sb.content_margin_right = 18
-	eb_sb.content_margin_top = 8
-	eb_sb.content_margin_bottom = 8
+	eb_sb.content_margin_left = 10
+	eb_sb.content_margin_right = 10
+	eb_sb.content_margin_top = 5
+	eb_sb.content_margin_bottom = 5
 	event_banner.add_theme_stylebox_override("panel", eb_sb)
-	_place(event_banner, 80, 304, 560, 74)
+	_place(event_banner, EVENT_BANNER_X, 35, 244, 52)
 	event_banner.visible = false
 	hud.add_child(event_banner)
 
@@ -1665,9 +1703,11 @@ func _build_hud() -> void:
 	eb_vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	eb_vb.add_theme_constant_override("separation", 0)
 	event_banner.add_child(eb_vb)
-	event_banner_title = _label("", 24, amber, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
+	event_banner_title = _label("", 18, amber, font_bold)
+	event_banner_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	eb_vb.add_child(event_banner_title)
-	event_banner_sub = _label("", 18, Color(0.86, 0.90, 0.94), font_ui, HORIZONTAL_ALIGNMENT_CENTER)
+	event_banner_sub = _label("", 15, Color(0.86, 0.90, 0.94), font_ui)
+	event_banner_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	eb_vb.add_child(event_banner_sub)
 
 	var bot := _vgrad(Color(0.02, 0.025, 0.03, 0.0), Color(0.02, 0.025, 0.03, 0.14), Color(0.02, 0.025, 0.03, 0.46))
