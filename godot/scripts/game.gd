@@ -63,6 +63,7 @@ const ROADSIDE_ART := preload("res://scripts/roadside_art.gd")
 const COIN_PICKUP := preload("res://art/roadside/pickup_coin.svg")
 const BATTERY_PICKUP := preload("res://art/roadside/pickup_battery.svg")
 const PICKUP_GLOW := 0.34
+const OVERHEAD_SPACING := 36000.0
 const DAY_LENGTH := 360.0
 const WEATHER_CLEAR := 0
 const WEATHER_CLOUDY := 1
@@ -140,6 +141,7 @@ var particles: Array = []
 var _fx_emission_t := 0.0
 var decor: Array = []
 var roadside_art: Node
+var overhead_spacing := OVERHEAD_SPACING
 var _nitro_cooldown := 0.0
 
 # Brake temperature, slipstream, weather, day/night and tutorial rewind.
@@ -308,6 +310,9 @@ func _ready() -> void:
 	grass_tex = _noise_tex(128, Color(0.400, 0.500, 0.295), 0.042, 23)
 	glow_tex = Fx.glow_tex()
 	Art.works_barrier_texture()
+	overhead_spacing = float(ProjectSettings.get_setting("slipstream/road/overhead_spacing", OVERHEAD_SPACING))
+	if overhead_spacing > 0.0:
+		overhead_spacing = maxf(6000.0, overhead_spacing)
 	roadside_art = ROADSIDE_ART.new()
 	roadside_art.name = "RoadsideArt"
 	add_child(roadside_art)
@@ -2727,6 +2732,7 @@ func _draw() -> void:
 	_draw_rails()
 	_draw_cloud_shadows()
 	_draw_scenery()
+	_draw_overhead_decor()
 	_draw_road_event_under()
 	_draw_cars()
 	_draw_items()
@@ -2873,6 +2879,20 @@ func _draw_scenery() -> void:
 					Art.tree(self, p, 41.0 * size, d.tint)
 				elif kind == 1:
 					Art.bush(self, p, 34.0 * size)
+
+func _draw_overhead_decor() -> void:
+	if overhead_spacing <= 0.0:
+		return
+	var first := maxi(0, floori((scroll - H - 80.0) / overhead_spacing))
+	var last := floori((scroll + 80.0) / overhead_spacing)
+	for section in range(first, last + 1):
+		# Stable along the route, with no simulation RNG or collision objects.
+		var roll := hash(Vector2i(section, active_run_seed % 2147483647)) & 0xFFFF
+		var offset := lerpf(0.20, 0.80, float(roll) / 65535.0)
+		var y := scroll - (float(section) + offset) * overhead_spacing
+		if y >= -80.0 and y <= H + 80.0:
+			Art.overhead_decor(self, Rect2(road_x - 40.0, y, road_w + 80.0, 0.0), roll % 3, _hud_font)
+
 
 func _draw_items() -> void:
 	for it in items:

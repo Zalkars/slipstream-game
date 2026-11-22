@@ -892,6 +892,50 @@ static func pickup(ci: CanvasItem, center: Vector2, w: float, h: float, body: Co
 
 # --- scenery ----------------------------------------------------------------
 
+static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font) -> void:
+	var left := span.position.x
+	var right := span.end.x
+	var y := span.position.y
+	var w := span.size.x
+	var mid := (left + right) * 0.5
+	var beam := Color("#657581")
+	var height := 16.0
+	if variant == 1:
+		beam = Color("#8a8276")
+		height = 32.0
+	elif variant == 2:
+		beam = Color("#546e78")
+		height = 22.0
+	ci.draw_colored_polygon(PackedVector2Array([
+		Vector2(left, y + 8.0), Vector2(right, y + 8.0),
+		Vector2(right + 21.0, y + height + 20.0), Vector2(left + 21.0, y + height + 20.0)
+	]), Color(0.06, 0.07, 0.09, 0.22))
+	for x in [left, right]:
+		ci.draw_rect(Rect2(x - 11.0, y - 10.0, 22.0, height + 22.0), beam.darkened(0.42))
+		ci.draw_rect(Rect2(x - 7.0, y - 6.0, 14.0, height + 14.0), beam.lightened(0.2))
+	ci.draw_rect(Rect2(left, y, w, height), beam)
+	if variant == 1:
+		ci.draw_rect(Rect2(left + 10.0, y + 6.0, w - 20.0, height - 12.0), Color("#385963"))
+		ci.draw_line(Vector2(left + 10.0, y + 10.0), Vector2(right - 10.0, y + 10.0), Color("#77969a"), 3.0)
+	elif variant == 2:
+		ci.draw_line(Vector2(left, y + 8.0), Vector2(right, y + 8.0), Color("#abb6a8"), 2.0)
+	ci.draw_line(Vector2(left, y + 2.0), Vector2(right, y + 2.0), beam.lightened(0.34), 2.0)
+	ci.draw_line(Vector2(left, y + height - 2.0), Vector2(right, y + height - 2.0), beam.darkened(0.45), 3.0)
+	for i in range(12):
+		var x := left + float(i) * w / 12.0
+		var end_x := x + (w / 12.0 if variant == 0 else 0.0)
+		ci.draw_line(Vector2(x, y + 4.0), Vector2(end_x, y + height - 4.0), beam.darkened(0.32), 2.0)
+	if font != null:
+		var sign := ["М8    ↑", "ПЕШЕХОДНЫЙ ПЕРЕХОД", "СЕВЕР    ↑"][variant] as String
+		var sign_color := [Color("#173950"), Color("#3d484e"), Color("#245b49")][variant] as Color
+		var tw := font.get_string_size(sign, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 16).x
+		var face := Rect2(mid - tw * 0.5 - 12.0, y + height * 0.5 - 12.0, tw + 24.0, 24.0)
+		ci.draw_rect(face.grow(2.0), Color("#abb8b9"))
+		ci.draw_rect(face, sign_color)
+		ci.draw_string(font, Vector2(mid - tw * 0.5, face.position.y + 17.0), sign,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 16, Color("#edf0de"))
+
+
 static var _works_barrier: ImageTexture
 
 

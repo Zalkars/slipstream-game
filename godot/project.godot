@@ -47,3 +47,4 @@ environment/defaults/default_clear_color=Color(0.06, 0.07, 0.08, 1)
 [slipstream]
 
 road/surface_segment_length=21600.0
+road/overhead_spacing=36000.0
