@@ -890,48 +890,6 @@ static func pickup(ci: CanvasItem, center: Vector2, w: float, h: float, body: Co
 	rr(ci, Rect2(r.end.x - w * 0.230, r.position.y + h * 0.958, w * 0.165, h * 0.020), p_tail, w * 0.015)
 
 
-# --- pickups ----------------------------------------------------------------
-
-static func coin(ci: CanvasItem, p: Vector2, rad: float, phase := 0.0) -> void:
-	var glow := 0.5 + 0.5 * sin(phase * 4.0)
-	ci.draw_circle(p + Vector2(rad * 0.14, rad * 0.34), rad * 1.02, Color(0, 0, 0, 0.22))
-	ci.draw_circle(p, rad * 1.45, Color(0.96, 0.72, 0.20, 0.08 + glow * 0.05))
-	ci.draw_circle(p, rad, Color(0.80, 0.57, 0.10))
-	ci.draw_circle(p, rad * 0.84, Color(0.97, 0.78, 0.24))
-	ci.draw_circle(p - Vector2(rad * 0.20, rad * 0.24), rad * 0.33, Color(1.0, 0.93, 0.66, 0.55))
-	ci.draw_arc(p, rad * 0.62, 0.0, TAU, 26, Color(0.70, 0.48, 0.07, 0.75), maxf(1.0, rad * 0.10), true)
-	var s := rad * 0.36
-	ci.draw_colored_polygon(
-		PackedVector2Array([
-			p + Vector2(0.0, -s), p + Vector2(s * 0.34, 0.0),
-			p + Vector2(0.0, s), p + Vector2(-s * 0.34, 0.0),
-		]),
-		Color(0.62, 0.42, 0.05, 0.85)
-	)
-
-
-static func nitro_can(ci: CanvasItem, p: Vector2, s: float, phase := 0.0) -> void:
-	var glow := 0.5 + 0.5 * sin(phase * 4.0)
-	ci.draw_circle(p + Vector2(s * 0.12, s * 0.30), s * 0.62, Color(0, 0, 0, 0.22))
-	ci.draw_circle(p, s * 0.95, Color(0.30, 0.72, 1.0, 0.08 + glow * 0.07))
-	var w := s * 0.66
-	var h := s * 1.30
-	var r := Rect2(p.x - w * 0.5, p.y - h * 0.5, w, h)
-	rr(ci, r, Color(0.08, 0.38, 0.60), w * 0.30, Color(0.52, 0.84, 0.98, 0.80), 2)
-	rr(ci, Rect2(r.position.x + w * 0.16, r.position.y + h * 0.09, w * 0.17, h * 0.82), Color(1, 1, 1, 0.16), w * 0.08)
-	rr(ci, Rect2(r.position.x + w * 0.08, r.position.y - h * 0.04, w * 0.84, h * 0.13), Color(0.76, 0.81, 0.85), 3)
-	rr(ci, Rect2(r.position.x + w * 0.08, r.end.y - h * 0.09, w * 0.84, h * 0.13), Color(0.76, 0.81, 0.85), 3)
-	var g := s * 0.40
-	ci.draw_colored_polygon(
-		PackedVector2Array([
-			p + Vector2(g * 0.10, -g * 0.82), p + Vector2(-g * 0.44, g * 0.10),
-			p + Vector2(-g * 0.04, g * 0.10), p + Vector2(-g * 0.16, g * 0.86),
-			p + Vector2(g * 0.46, -g * 0.14), p + Vector2(g * 0.06, -g * 0.14),
-		]),
-		Color(0.94, 0.98, 1.0, 0.95)
-	)
-
-
 # --- scenery ----------------------------------------------------------------
 
 static var _works_barrier: ImageTexture

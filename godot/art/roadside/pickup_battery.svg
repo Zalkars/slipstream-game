@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="128" viewBox="0 0 80 128">
+  <defs>
+    <linearGradient id="metal" x2="1" y2=".25">
+      <stop stop-color="#3b566b"/><stop offset=".3" stop-color="#d5eef5"/>
+      <stop offset=".65" stop-color="#91adc1"/><stop offset="1" stop-color="#3d566e"/>
+    </linearGradient>
+    <linearGradient id="cell" x2="1" y2=".16">
+      <stop stop-color="#10364b"/><stop offset=".33" stop-color="#2189aa"/>
+      <stop offset=".7" stop-color="#185d83"/><stop offset="1" stop-color="#10203a"/>
+    </linearGradient>
+  </defs>
+  <rect x="11" y="16" width="65" height="108" rx="18" fill="#05131c" opacity=".3"/>
+  <rect x="29" y="5" width="22" height="14" rx="4" fill="url(#metal)" stroke="#182f44" stroke-width="2"/>
+  <rect x="7" y="15" width="66" height="105" rx="16" fill="url(#metal)" stroke="#152b3c" stroke-width="3"/>
+  <path d="M9 38h62v57H9Z" fill="url(#cell)"/>
+  <path d="M12 39h56m-56 54h56" stroke="#9cebf3" stroke-width="2" opacity=".65"/>
+  <path d="M18 29v11m0 57v9m44-73v79" fill="none" stroke="#d5ffff" stroke-width="3" opacity=".35"/>
+  <path d="M44 44 27 70h12l-4 16 19-25H42Z" fill="#d8fcff" stroke="#70deef" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M27 103h26m-22 6h18" stroke="#25627b" stroke-width="3" stroke-linecap="round"/>
+</svg>

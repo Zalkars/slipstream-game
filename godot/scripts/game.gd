@@ -60,6 +60,9 @@ const CUTIN_MAX_GAP := 230.0
 const ROAD_CYCLE := 3600.0
 const DECOR_CYCLE := 7800.0
 const ROADSIDE_ART := preload("res://scripts/roadside_art.gd")
+const COIN_PICKUP := preload("res://art/roadside/pickup_coin.svg")
+const BATTERY_PICKUP := preload("res://art/roadside/pickup_battery.svg")
+const PICKUP_GLOW := 0.34
 const DAY_LENGTH := 360.0
 const WEATHER_CLEAR := 0
 const WEATHER_CLOUDY := 1
@@ -343,6 +346,7 @@ func _setup_render() -> void:
 	contact_fx.setup(self, render_stack)
 	render_stack.add_system(contact_fx)
 	render_stack.overlay_painters.insert(0, paint_haze)
+	render_stack.emissive_painters.append(_paint_pickup_glow)
 	render_stack.finish_setup()
 	render_stack.apply_preset(gfx_level, gfx_target_fps)
 
@@ -2873,10 +2877,27 @@ func _draw_scenery() -> void:
 func _draw_items() -> void:
 	for it in items:
 		var p := Vector2(float(it.x), float(it.y))
-		if int(it.kind) == 0:
-			Art.coin(self, p, 17.0, float(it.phase))
-		else:
-			Art.nitro_can(self, p, 30.0, float(it.phase))
+		var coin := int(it.kind) == 0
+		var size := Vector2(42.0, 42.0) if coin else Vector2(29.0, 46.4)
+		draw_texture_rect(COIN_PICKUP if coin else BATTERY_PICKUP, Rect2(p - size * 0.5, size), false)
+
+
+func _paint_pickup_glow(ci: CanvasItem) -> void:
+	if items.is_empty():
+		return
+	var darkness := smoothstep(0.16, 0.84, maxf(get_night_factor(), blackout_amount))
+	if darkness <= 0.0:
+		return
+	for it in items:
+		var p := Vector2(float(it.x), float(it.y))
+		if p.y < -48.0 or p.y > H + 48.0:
+			continue
+		var coin := int(it.kind) == 0
+		var size := Vector2(68.0, 68.0) if coin else Vector2(52.0, 78.0)
+		var tint := Color("#ffbd58") if coin else Color("#62dbff")
+		var pulse := 0.86 + 0.14 * sin(float(it.phase) * 4.0)
+		ci.draw_texture_rect(glow_tex, Rect2(p - size * 0.5, size), false,
+			Color(tint, PICKUP_GLOW * darkness * pulse))
 
 
 func _draw_speed_streaks() -> void:
