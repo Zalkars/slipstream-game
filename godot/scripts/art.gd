@@ -15,6 +15,7 @@ const PART_BODY := 2
 # offset of a point one unit above the road, and the shadow strength 0..1.
 static var sun := Vector2(0.34, 0.52)
 static var sun_alpha := 1.0
+static var sun_softness := 0.0
 
 
 static func sun_offset(height: float) -> Vector2:
@@ -23,9 +24,15 @@ static func sun_offset(height: float) -> Vector2:
 
 # Ground shadow of a thin vertical post of the given height.
 static func post_shadow(ci: CanvasItem, base: Vector2, height: float, width: float, strength := 0.22) -> void:
+	shadow_line(ci, base, base + sun_offset(height), width, strength)
+
+
+static func shadow_line(ci: CanvasItem, from: Vector2, to: Vector2, width: float, strength: float) -> void:
 	if sun_alpha <= 0.01:
 		return
-	ci.draw_line(base, base + sun * height, Color(0, 0, 0, strength * sun_alpha), width, true)
+	var alpha := strength * sun_alpha
+	ci.draw_line(from, to, Color(0.01, 0.025, 0.045, alpha * 0.34), width + 2.0 + sun_softness * 5.0, true)
+	ci.draw_line(from, to, Color(0.01, 0.025, 0.045, alpha * 0.68), maxf(1.0, width - sun_softness * 1.4), true)
 
 
 # Ground shadow of a flat shape held at the given height above the road.
@@ -37,7 +44,43 @@ static func lifted_shadow(ci: CanvasItem, poly: PackedVector2Array, height: floa
 	moved.resize(poly.size())
 	for i in range(poly.size()):
 		moved[i] = poly[i] + off
-	ci.draw_colored_polygon(moved, Color(0, 0, 0, strength * sun_alpha))
+	shadow_shape(ci, moved, strength, 1.0 + height * 0.08)
+
+
+static func rect_shadow(ci: CanvasItem, rect: Rect2, height: float, strength := 0.22) -> void:
+	lifted_shadow(ci, PackedVector2Array([
+		rect.position, Vector2(rect.end.x, rect.position.y),
+		rect.end, Vector2(rect.position.x, rect.end.y),
+	]), height, strength)
+
+
+# Feather a convex silhouette on the ground without a blur pass.
+static func shadow_shape(ci: CanvasItem, points: PackedVector2Array, strength: float, softness: float) -> void:
+	if sun_alpha <= 0.01:
+		return
+	var center := Vector2.ZERO
+	for p: Vector2 in points:
+		center += p
+	center /= float(points.size())
+	var feather := 1.0 + softness * (0.35 + sun_softness)
+	var first_edge_normal := (points[1] - points[0]).orthogonal()
+	var outward := -1.0 if first_edge_normal.dot(center - points[0]) > 0.0 else 1.0
+	var outer := PackedVector2Array()
+	for i in range(points.size()):
+		var prev := points[posmod(i - 1, points.size())]
+		var p := points[i]
+		var next := points[(i + 1) % points.size()]
+		var a := (p - prev).normalized().orthogonal() * outward
+		var b := (next - p).normalized().orthogonal() * outward
+		var miter := (a + b).normalized()
+		outer.append(p + miter * (feather / maxf(0.3, miter.dot(a))))
+	var color := Color(0.01, 0.025, 0.045, sun_alpha * strength)
+	var clear := Color(color, 0.0)
+	var colors := PackedColorArray([color, color, clear, clear])
+	ci.draw_colored_polygon(points, color)
+	for i in range(points.size()):
+		var next := (i + 1) % points.size()
+		ci.draw_polygon(PackedVector2Array([points[i], points[next], outer[next], outer[i]]), colors)
 
 
 static func _sb(color: Color, radius: int, border_color: Color, border_w: int) -> StyleBoxFlat:
@@ -926,6 +969,10 @@ static func pickup(ci: CanvasItem, center: Vector2, w: float, h: float, body: Co
 
 # --- scenery ----------------------------------------------------------------
 
+static func overhead_depth(variant: int) -> float:
+	return [16.0, 58.0, 22.0][variant]
+
+
 static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font, part := PART_ALL) -> void:
 	var left := span.position.x
 	var right := span.end.x
@@ -933,21 +980,17 @@ static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font
 	var w := span.size.x
 	var mid := (left + right) * 0.5
 	var beam := Color("#657581")
-	var height := 16.0
+	var height := overhead_depth(variant)
 	var lift := 64.0
 	if variant == 1:
 		beam = Color("#8a8276")
-		height = 58.0
 		lift = 56.0
 	elif variant == 2:
 		beam = Color("#546e78")
-		height = 22.0
 	if part != PART_BODY:
 		# Soft occlusion straight below, then the sun-cast structure.
 		ci.draw_rect(Rect2(left, y - 4.0, w, height + 8.0), Color(0.04, 0.05, 0.07, 0.07))
-		lifted_shadow(ci, PackedVector2Array([
-			Vector2(left, y), Vector2(right, y), Vector2(right, y + height), Vector2(left, y + height)
-		]), lift, 0.26)
+		rect_shadow(ci, Rect2(left, y, w, height), lift, 0.30)
 		for x in [left, right]:
 			post_shadow(ci, Vector2(x, y + height * 0.5), lift, 18.0 if variant == 1 else 14.0, 0.24)
 	if part == PART_SHADOW:
@@ -1079,10 +1122,11 @@ static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm
 		# The pole stands at base; the arm and head hang at its top.
 		ci.draw_circle(base + Vector2(1, 2), 9.0 * s, Color(0, 0, 0, 0.14))
 		if sun_alpha > 0.01:
-			var off := sun * 66.0 * s
-			var col := Color(0, 0, 0, 0.21 * sun_alpha)
-			ci.draw_polyline(PackedVector2Array([base, base + off, Vector2(lamp_x, base.y) + off]), col, 5.0 * s, true)
-			rr(ci, Rect2(Vector2(lamp_x - 14.0 * s, base.y - 6.0 * s) + off, Vector2(28.0 * s, 12.0 * s)), col, 4)
+			var lift := 66.0 * s
+			var off := sun_offset(lift)
+			post_shadow(ci, base, lift, 5.0 * s, 0.25)
+			shadow_line(ci, base + off, Vector2(lamp_x, base.y) + off, 5.0 * s, 0.24)
+			rect_shadow(ci, Rect2(lamp_x - 14.0 * s, base.y - 6.0 * s, 28.0 * s, 12.0 * s), lift, 0.25)
 	if part == PART_SHADOW:
 		return
 	ci.draw_circle(base, 8.0 * s, Color(0.44, 0.45, 0.43))
@@ -1102,9 +1146,9 @@ static func road_sign(ci: CanvasItem, p: Vector2, side: float) -> void:
 		post_shadow(ci, ground, 30.0, 4.0, 0.24)
 		var lo := ground + sun * 30.0
 		var hi := ground + sun * 54.0
-		ci.draw_colored_polygon(PackedVector2Array([
+		shadow_shape(ci, PackedVector2Array([
 			lo + Vector2(-15, 0), lo + Vector2(15, 0), hi + Vector2(15, 0), hi + Vector2(-15, 0)
-		]), Color(0, 0, 0, 0.22 * sun_alpha))
+		]), 0.23, 2.0)
 	ci.draw_rect(Rect2(p.x - 2, p.y, 4, 26), Color(0.35, 0.36, 0.36))
 	rr(ci, Rect2(p.x - 15, p.y - 22, 30, 24), Color(0.12, 0.28, 0.48), 4, Color(0.88, 0.90, 0.92), 2)
 	var dir := 1.0 if side > 0 else -1.0

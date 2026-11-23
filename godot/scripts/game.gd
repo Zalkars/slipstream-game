@@ -27,6 +27,7 @@ const DEMO_SPEED := 620.0
 const NITRO_SEG := 1.0 / 3.0
 const RACE_ART := preload("res://scripts/race_art.gd")
 const BOOST_TIME := 1.6
+const NITRO_DOUBLE_TAP := 0.30
 const SLINGSHOT_TIME := 0.85
 const SLINGSHOT_MULT := 1.32
 const FX_EMISSION_STEP := 1.0 / 60.0
@@ -128,6 +129,7 @@ var combo := 0
 var combo_t := 0.0
 var nitro := NITRO_SEG
 var boosting := false
+var full_nitro := false
 var boost_t := 0.0
 var braking := false
 var lane := 1
@@ -150,6 +152,8 @@ var decor: Array = []
 var roadside_art: Node
 var overhead_spacing := OVERHEAD_SPACING
 var _nitro_cooldown := 0.0
+var _nitro_double_tap := 0.0
+var _drive_response := 1.0
 
 # Brake temperature, slipstream, weather, day/night and tutorial rewind.
 var brake_heat := 0.0
@@ -203,10 +207,10 @@ var challenge_config: Dictionary = {}
 var duel_clock := 0.0
 var ghost_rec: Array = []
 var _ghost_rec_t := 0.0
+var _ghost_step_ms := ChallengeCodec.BASE_STEP_MS
 var _duel_passed_crash := false
 var _duel_beaten_score := false
 var _ghost_art: Dictionary = {}
-var _ghost_sprite: Dictionary = {}
 var _ghost_state: Dictionary = {}
 
 # Per-car unique perks, Slingshot Draft, Chrono-Shield, Road Events, Traffic Signals.
@@ -254,11 +258,15 @@ var player_wing := false
 var player_stripe_col := Color("#f0ede4")
 var player_silhouette := "sedan"
 # Settings toggle: 3D sprites for the race, or the original painted art.
+var _prefer_3d_cars := true
+var _duel_3d := false
 var use_3d_cars := true:
+	get:
+		return _prefer_3d_cars or _duel_3d
 	set(value):
-		use_3d_cars = value
+		_prefer_3d_cars = value
 		if race_art != null:
-			race_art.set_enabled(value)
+			race_art.set_enabled(use_3d_cars)
 var race_art: Node
 var _player_art: Dictionary = {}
 
@@ -371,6 +379,7 @@ func _setup_render() -> void:
 	render_stack.add_system(contact_fx)
 	render_stack.overlay_painters.insert(0, paint_haze)
 	render_stack.emissive_painters.append(_paint_pickup_glow)
+	render_stack.emissive_painters.append(_paint_cone_reflectors)
 	render_stack.finish_setup()
 	render_stack.apply_preset(gfx_level, gfx_target_fps)
 
@@ -729,6 +738,7 @@ func _apply_car() -> void:
 	player_wing = bool(car.wing)
 	player_stripe_col = Color(str(car.stripe_color))
 	player_silhouette = str(car.get("silhouette", "sedan"))
+	_drive_response = float(car.grow) / 340.0
 	car_perk = str(car.get("perk_id", "compact"))
 	max_nitro = (4.0 / 3.0) if car_perk == "extra_tank" else 1.0
 	coin_mult = 1.35 if car_perk == "taxi_magnet" else 1.0
@@ -787,6 +797,7 @@ func _restore_world_clock() -> void:
 func start_run(training := false) -> void:
 	_fx_emission_t = 0.0
 	reset_swipe()
+	_set_duel_art(str(challenge_config.get("type", "")) == "duel")
 	_layout()
 	physics_version = clampi(int(challenge_config.get("physics", PHYSICS_VERSION)), 1, PHYSICS_VERSION)
 	if not challenge_config.is_empty():
@@ -829,15 +840,15 @@ func start_run(training := false) -> void:
 	score_pops.clear()
 	_rw_streak = 0
 	_rw_streak_t = 0.0
-	_undo_dir = 0
-	_undo_t = 0.0
 	near = 0
 	combo = 0
 	combo_t = 0.0
 	nitro = (NITRO_SEG * 2.0) if car_perk == "extra_tank" else NITRO_SEG
 	boosting = false
+	full_nitro = false
 	boost_t = 0.0
 	_nitro_cooldown = 0.0
+	_nitro_double_tap = 0.0
 	ram_charges = 0
 	hyperdrive_active = false
 	_puddle_cd = 0.0
@@ -895,23 +906,15 @@ func start_run(training := false) -> void:
 
 	ghost_rec.clear()
 	_ghost_rec_t = 0.0
+	_ghost_step_ms = ChallengeCodec.BASE_STEP_MS
 	_duel_passed_crash = false
 	_duel_beaten_score = false
 	_ghost_state.clear()
-	_ghost_art.clear()
-	_ghost_sprite.clear()
+	_ghost_art = {}
 	if str(challenge_config.get("type", "")) == "duel":
-		var rcar := Cars.get_car(int(challenge_config.get("car_index", 0)))
-		_ghost_art = {
-			"kind": 0,
-			"silhouette": str(rcar.get("silhouette", "sedan")),
-			"color": Color(str(rcar.color)),
-			"stripe": bool(rcar.stripe),
-			"stripe_color": Color(str(rcar.stripe_color)),
-		}
-		if use_3d_cars and race_art != null:
-			_ghost_sprite = race_art.take(_ghost_art)
-	_record_ghost_sample(true)
+		_ghost_art = Cars.get_car(car_index).duplicate()
+		_ghost_state = ChallengeCodec.sample_ghost(challenge_config, 0.0)
+	_record_ghost_sample()
 
 	hud_changed.emit(0, gauge_kmh(speed, base_speed, top_speed), nitro, 0, 0, false)
 	status_changed.emit(slip, brake_heat, overheated)
@@ -932,7 +935,14 @@ func set_tutorial_mode(on: bool) -> void:
 		rewind_frames.append(_snapshot_state())
 
 
+func _set_duel_art(enabled: bool) -> void:
+	_duel_3d = enabled
+	if race_art != null:
+		race_art.set_enabled(use_3d_cars)
+
+
 func start_demo() -> void:
+	_set_duel_art(false)
 	_fx_emission_t = 0.0
 	reset_swipe()
 	_apply_car()
@@ -949,6 +959,8 @@ func start_demo() -> void:
 	_restore_world_clock()
 	paused = false
 	boosting = false
+	full_nitro = false
+	clear_nitro_tap()
 	braking = false
 	boost_t = 0.0
 	shake = 0.0
@@ -980,6 +992,8 @@ func stop_run() -> void:
 	running = false
 	demo = false
 	boosting = false
+	full_nitro = false
+	clear_nitro_tap()
 	braking = false
 
 
@@ -988,32 +1002,12 @@ func move_lane(dir: int) -> void:
 		return
 	var old_lane := lane
 	lane = clampi(lane + dir, 0, LANES - 1)
-	_undo_dir = 0
 	if lane != old_lane:
-		_undo_dir = lane - old_lane
-		_undo_t = LANE_UNDO_WINDOW
 		_cutin_window = CUTIN_WINDOW * cutin_window_mult
 		_cutin_lane = lane
 		if slingshot_charge >= 0.99 and not tutorial_mode:
 			_fire_slingshot(lane - old_lane)
 		lane_changed.emit(lane)
-
-
-# Two-zone controls turn on touch-down; when the second thumb lands right
-# after (a brake chord) the turn it started is taken back.
-const LANE_UNDO_WINDOW := 0.16
-var _undo_dir := 0
-var _undo_t := 0.0
-
-
-func undo_lane(dir: int) -> void:
-	if not running or crashed or _undo_dir != dir or _undo_t <= 0.0:
-		return
-	_undo_dir = 0
-	_undo_t = 0.0
-	lane = clampi(lane - dir, 0, LANES - 1)
-	_cutin_window = 0.0
-	lane_changed.emit(lane)
 
 
 func _fire_slingshot(dir: int) -> void:
@@ -1059,9 +1053,23 @@ func set_braking(on: bool) -> void:
 		brake_state_changed.emit(braking)
 
 
-func tap_nitro() -> bool:
+func clear_nitro_tap() -> void:
+	_nitro_double_tap = 0.0
+
+
+func tap_nitro(allow_full := true) -> bool:
 	if not running or paused or crashed:
 		return false
+	var can_chain := allow_full and not tutorial_mode and physics_version >= 5
+	if can_chain and boost_t > 0.0 and _nitro_double_tap > 0.0 and nitro > 0.002:
+		# The first charge is already burning. Extend it by the remaining
+		# fuel, including a partially filled segment.
+		boost_t += BOOST_TIME * nitro / NITRO_SEG
+		nitro = 0.0
+		full_nitro = true
+		clear_nitro_tap()
+		nitro_boosted.emit()
+		return true
 	if boost_t > 0.0 or _nitro_cooldown > 0.0:
 		return false
 	if nitro < NITRO_SEG - 0.002:
@@ -1069,7 +1077,9 @@ func tap_nitro() -> bool:
 	nitro = maxf(0.0, nitro - NITRO_SEG)
 	boost_t = BOOST_TIME
 	boosting = true
+	full_nitro = false
 	_nitro_cooldown = 0.35
+	_nitro_double_tap = NITRO_DOUBLE_TAP if can_chain else 0.0
 	if car_perk == "ram_nitro":
 		ram_charges = 1
 	nitro_boosted.emit()
@@ -1133,7 +1143,7 @@ func _try_swipe(pos: Vector2) -> void:
 		if d.y > 0.0:
 			set_braking(true)
 		else:
-			if tap_nitro():
+			if tap_nitro(false):
 				Sfx.boost_burst()
 
 
@@ -1400,6 +1410,7 @@ func _snapshot_state() -> Dictionary:
 		"braking": braking,
 		"boost_t": boost_t,
 		"boosting": boosting,
+		"full_nitro": full_nitro,
 		"spawn_t": spawn_t,
 		"item_t": item_t,
 		"free_lane": free_lane,
@@ -1451,6 +1462,7 @@ func _apply_snapshot(s: Dictionary) -> void:
 	braking = bool(s.braking)
 	boost_t = float(s.boost_t)
 	boosting = bool(s.boosting)
+	full_nitro = bool(s.get("full_nitro", false))
 	spawn_t = float(s.spawn_t)
 	item_t = float(s.item_t)
 	free_lane = int(s.free_lane)
@@ -1477,6 +1489,8 @@ func _begin_rewind() -> void:
 	crashed = true
 	running = false
 	boosting = false
+	full_nitro = false
+	clear_nitro_tap()
 	braking = false
 	boost_t = 0.0
 	shake = 26.0
@@ -1502,11 +1516,7 @@ func _tick_rewind(dt: float) -> void:
 	if not rewinding:
 		return
 	if not tutorial_mode and not demo:
-		duel_clock += dt
-		_ghost_rec_t += dt
-		if _ghost_rec_t >= 0.20:
-			_ghost_rec_t -= 0.20
-			_record_ghost_sample(false)
+		_advance_ghost_recording(dt)
 		_update_ghost_duel()
 	shake = maxf(0.0, shake - dt * 38.0)
 	flash = maxf(0.0, flash - dt * 2.0)
@@ -1524,6 +1534,8 @@ func _finish_rewind() -> void:
 	crashed = false
 	running = true
 	boosting = false
+	full_nitro = false
+	clear_nitro_tap()
 	braking = false
 	boost_t = 0.0
 	slingshot_t = 0.0
@@ -1728,12 +1740,15 @@ func _tick(dt: float) -> void:
 
 	if _nitro_cooldown > 0.0:
 		_nitro_cooldown = maxf(0.0, _nitro_cooldown - dt)
+	if _nitro_double_tap > 0.0:
+		_nitro_double_tap = maxf(0.0, _nitro_double_tap - dt)
 
 	if boost_t > 0.0:
 		boost_t -= dt
-		if boost_t <= 0.0:
+		if boost_t <= 0.00001:
 			boost_t = 0.0
 			boosting = false
+			full_nitro = false
 			_nitro_cooldown = 0.35
 
 	if boost_t <= 0.0:
@@ -1775,6 +1790,11 @@ func _tick(dt: float) -> void:
 		_update_grip(dt)
 		if braking and not overheated:
 			k *= lerpf(1.0, grip_mu, BRAKE_GRIP_WEIGHT)
+		elif physics_version >= 5 and want > speed and not boosting and slingshot_t <= 0.0 and not tutorial_mode:
+			# Engine power builds speed more slowly than the brakes shed it.
+			# Preserve pace when cruising, and allow the better cars to recover faster.
+			k = lerpf(2.4, 1.06, smoothstep(30.0, 200.0, want - speed))
+			k *= _drive_response * lerpf(1.0, grip_mu, 0.30)
 		# Exact exponential approach: the same speed curve at any frame rate.
 		speed = lerpf(speed, want, 1.0 - exp(-dt * k))
 	else:
@@ -1806,8 +1826,6 @@ func _tick(dt: float) -> void:
 		player_x = lerpf(player_x, target_x, minf(1.0, dt * handle_k))
 		player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * 0.0022, -0.10, 0.10), minf(1.0, dt * 9.0 * (2.5 if time_scale < 0.5 else 1.0)))
 
-	if _undo_t > 0.0:
-		_undo_t -= dt
 	_update_score_pops(dt)
 	if combo_t > 0.0:
 		combo_t -= dt
@@ -1830,15 +1848,10 @@ func _tick(dt: float) -> void:
 		item_t = _rfr(1.7, 3.1)
 
 	if not tutorial_mode:
-		duel_clock += dt
-		_ghost_rec_t += dt
-		if _ghost_rec_t >= 0.20:
-			_ghost_rec_t -= 0.20
-			_record_ghost_sample(false)
+		_advance_ghost_recording(dt)
 		_update_road_events(dt, travel)
 		_update_traffic_signals(dt)
 		_check_offroad_puddles()
-		_update_ghost_duel()
 
 	_update_rear_spawning(dt, ref)
 	_move_traffic(dt, speed, ref, false)
@@ -1855,6 +1868,7 @@ func _tick(dt: float) -> void:
 	if mult > 1 and not tutorial_mode:
 		bonus += dist_delta * float(mult - 1)
 	score = floor(distance) + float(bonus)
+	_update_ghost_duel()
 	hud_changed.emit(int(score), gauge_kmh(speed, base_speed, top_speed), nitro, combo, _coins_total(), boosting)
 	status_changed.emit(slip, brake_heat, overheated)
 	_emit_challenge_hud()
@@ -2286,11 +2300,13 @@ func _crash(allow_shield := true) -> void:
 		chrono_shield_triggered.emit()
 		_begin_rewind()
 		return
-	_record_ghost_sample(true)
+	_record_ghost_sample()
 	_revive_eligible = allow_shield
 	crashed = true
 	running = false
 	boosting = false
+	full_nitro = false
+	clear_nitro_tap()
 	braking = false
 	boost_t = 0.0
 	slingshot_t = 0.0
@@ -2388,6 +2404,8 @@ func revive() -> bool:
 		return false
 	_revive_used = true
 	_revive_eligible = false
+	if ghost_rec.size() > 1:
+		ghost_rec.pop_back() # Drop the temporary finish sample before resuming.
 	rewinding = true
 	_rewind_step_t = 0.0
 	rewind_started.emit()
@@ -2895,10 +2913,24 @@ func _end_road_event() -> void:
 	road_event_t = _rfr(20.0, 29.0)
 
 
-func _record_ghost_sample(force := false) -> void:
+func _advance_ghost_recording(dt: float) -> void:
+	duel_clock += dt
+	_ghost_rec_t += dt
+	var period := float(_ghost_step_ms) / 1000.0
+	if _ghost_rec_t + 0.000001 >= period:
+		_ghost_rec_t = maxf(0.0, _ghost_rec_t - period)
+		_record_ghost_sample()
+		# Keep the first and latest regular samples at exact grid positions.
+		if ghost_rec.size() == ChallengeCodec.MAX_SAMPLES + 1 and _ghost_step_ms < 32000:
+			var reduced: Array = []
+			for i in range(0, ghost_rec.size(), 2):
+				reduced.append(ghost_rec[i])
+			ghost_rec = reduced
+			_ghost_step_ms *= 2
+
+
+func _record_ghost_sample() -> void:
 	if tutorial_mode or demo:
-		return
-	if not force and ghost_rec.size() >= 3600:
 		return
 	var flags := 0
 	if braking and not overheated:
@@ -2909,6 +2941,8 @@ func _record_ghost_sample(force := false) -> void:
 		flags |= 4
 	if rewinding:
 		flags |= 8
+	if full_nitro:
+		flags |= 16
 	var x_norm := clampf((player_x - road_x) / maxf(1.0, road_w), 0.0, 1.0)
 	ghost_rec.append({
 		"scroll": scroll,
@@ -2927,7 +2961,7 @@ func _update_ghost_duel() -> void:
 		Sfx.record()
 		duel_milestone.emit("crash_passed")
 	var rival_score := int(challenge_config.get("score", 0))
-	if not _duel_beaten_score and rival_score > 0 and int(floor(distance) + float(bonus)) > rival_score:
+	if not _duel_beaten_score and int(score) > rival_score:
 		_duel_beaten_score = true
 		Sfx.duel_win()
 		duel_milestone.emit("score_beaten")
@@ -2967,7 +3001,7 @@ func build_challenge_payload(player_name: String) -> Dictionary:
 		"near": near,
 		"tod": start_tod,
 		"weather": start_weather,
-		"step_ms": ChallengeCodec.BASE_STEP_MS,
+		"step_ms": _ghost_step_ms,
 		"end_time": duel_clock,
 		"name": player_name,
 		"samples": ghost_rec,
@@ -2989,6 +3023,8 @@ func _draw() -> void:
 	_draw_road_event_under()
 	_draw_items()
 	_draw_cars()
+	if road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
+		_draw_roadworks_props()
 	_draw_overhead_lamps()
 	_draw_overhead_decor(Art.PART_BODY)
 	_draw_speed_streaks()
@@ -3044,8 +3080,9 @@ func get_sky_ambient() -> Color:
 # at night. Clouds, rain and fog soften and then remove the shadows.
 const SUNRISE_TOD := -0.05
 const SUNSET_TOD := 0.565
-const SUN_MAX_ELEVATION := 1.05
+const SUN_MAX_ELEVATION := 1.10
 var sun_is_moon := false
+var _sun_screen := Vector2.ZERO
 
 
 static func sun_state(tod: float) -> Dictionary:
@@ -3055,15 +3092,19 @@ static func sun_state(tod: float) -> Dictionary:
 	var arc := day
 	if moon:
 		arc = (fposmod(tod - SUNRISE_TOD, 1.0) - day_len) / (1.0 - day_len)
-	var lift := sin(clampf(arc, 0.0, 1.0) * PI)
-	var elevation := maxf(0.06, lift * SUN_MAX_ELEVATION)
-	var length := clampf(1.0 / tan(elevation), 0.55, 2.3)
-	var dir := Vector2(-cos(arc * PI), 0.46).normalized()
-	var strength := smoothstep(0.0, 0.16, lift) * lerpf(1.0, 0.62, inverse_lerp(0.55, 2.3, length))
+	var azimuth := cos(arc * PI)
+	var lift := sin(arc * PI)
+	var elevation := asin(lift * sin(SUN_MAX_ELEVATION))
+	# Soften the horizon limit to keep shadows shrinking continuously.
+	var length := 1.0 / sqrt(pow(tan(elevation), 2.0) + 0.10)
+	var dir := Vector2(-azimuth, lerpf(0.30, 0.86, lift)).normalized()
+	var strength := smoothstep(0.0, 0.23, lift) * lerpf(0.52, 1.0, lift)
 	if moon:
-		strength *= 0.30
-		length = minf(length, 1.4)
-	return {"offset": dir * length, "strength": strength, "moon": moon, "arc": arc}
+		strength *= 0.24
+		length *= 0.63
+	var screen := Vector2(0.5 + 0.81 * azimuth, -0.27 + 0.43 * pow(absf(azimuth), 4.0))
+	return {"offset": dir * length, "strength": strength, "moon": moon,
+		"softness": 1.0 - lift, "screen": screen}
 
 
 func update_sun() -> void:
@@ -3075,8 +3116,10 @@ func update_sun() -> void:
 	else:
 		strength *= 1.0 - get_night_factor() * 0.85
 	sun_is_moon = bool(s.moon)
+	_sun_screen = s.screen
 	Art.sun = s.offset
 	Art.sun_alpha = clampf(strength, 0.0, 1.0)
+	Art.sun_softness = clampf(float(s.softness) * 0.64 + overcast * 0.65 + (0.2 if sun_is_moon else 0.0), 0.0, 1.0)
 
 
 func get_night_factor() -> float:
@@ -3193,17 +3236,26 @@ func _draw_overhead_lamps(part := Art.PART_BODY) -> void:
 
 
 func _draw_overhead_decor(part: int) -> void:
+	var margin := 80.0 + (64.0 * absf(Art.sun.y) if part == Art.PART_SHADOW else 0.0)
+	for prop in _overhead_spans(margin):
+		Art.overhead_decor(self, Rect2(road_x - 40.0, prop.x, road_w + 80.0, 0.0), int(prop.y), _hud_font, part)
+
+
+# Entries are the deck's screen y and its art variant.
+func _overhead_spans(margin: float) -> PackedVector2Array:
+	var spans := PackedVector2Array()
 	if overhead_spacing <= 0.0:
-		return
-	var first := maxi(0, floori((scroll - H - 80.0) / overhead_spacing))
-	var last := floori((scroll + 80.0) / overhead_spacing)
+		return spans
+	var first := maxi(0, floori((scroll - H - margin) / overhead_spacing))
+	var last := floori((scroll + margin) / overhead_spacing)
 	for section in range(first, last + 1):
 		# Stable along the route, with no simulation RNG or collision objects.
 		var roll := hash(Vector2i(section, active_run_seed % 2147483647)) & 0xFFFF
 		var offset := lerpf(0.20, 0.80, float(roll) / 65535.0)
 		var y := scroll - (float(section) + offset) * overhead_spacing
-		if y >= -80.0 and y <= H + 80.0:
-			Art.overhead_decor(self, Rect2(road_x - 40.0, y, road_w + 80.0, 0.0), roll % 3, _hud_font, part)
+		if y >= -margin and y <= H + margin:
+			spans.append(Vector2(y, roll % 3))
+	return spans
 
 
 func _draw_items() -> void:
@@ -3217,7 +3269,11 @@ func _draw_items() -> void:
 		var r := 18.0 if coin else 16.0
 		_glow(p + Vector2(0.0, 4.0), r * 1.1, Color(0, 0, 0, 0.16), Vector2(1.0, 0.62 if coin else 1.1))
 		if sun_a > 0.01:
-			_glow(p + Art.sun_offset(22.0), r * 1.2, Color(0, 0, 0, 0.30 * sun_a), Vector2(1.0, 0.7 if coin else 1.25))
+			if coin:
+				var spread := Vector2(1.1, 0.86) * (1.0 + Art.sun_softness * 0.32)
+				_glow(p + Art.sun_offset(20.0), 20.0, Color(0.01, 0.025, 0.045, 0.48 * sun_a), spread)
+			else:
+				Art.rect_shadow(self, Rect2(p - Vector2(9.5, 14.5), Vector2(19.0, 29.0)), 29.0, 0.34)
 	for it in items:
 		var p := Vector2(float(it.x), float(it.y))
 		var coin := int(it.kind) == 0
@@ -3241,6 +3297,42 @@ func _paint_pickup_glow(ci: CanvasItem) -> void:
 		var pulse := 0.86 + 0.14 * sin(float(it.phase) * 4.0)
 		ci.draw_texture_rect(glow_tex, Rect2(p - size * 0.5, size), false,
 			Color(tint, PICKUP_GLOW * darkness * pulse))
+
+
+func _paint_cone_reflectors(ci: CanvasItem) -> void:
+	if road_event_type != EVENT_ROADWORKS:
+		return
+	var darkness := smoothstep(0.12, 0.85, maxf(get_night_factor(), blackout_amount))
+	if darkness <= 0.0:
+		return
+	var reach := 1.0 - fog_amount * 0.4
+	var spans := _overhead_spans(80.0)
+	for cone in road_event.get("objs", []):
+		if str(cone.kind) != "cone" or bool(cone.hit):
+			continue
+		var pos := roadworks_object_pos(cone)
+		if pos.y < -40.0 or pos.y > H + 40.0:
+			continue
+		var under_span := false
+		for span in spans:
+			if pos.y >= span.x - 12.0 and pos.y <= span.x + Art.overhead_depth(int(span.y)) + 14.0:
+				under_span = true
+				break
+		if under_span:
+			continue
+		var beam := 0.0
+		if running and not demo:
+			var local := (pos - Vector2(player_x, player_y)).rotated(-player_tilt)
+			var forward := -local.y - car_h * 0.40
+			var width := 35.0 + forward * 0.22
+			if forward > 0.0:
+				beam = (1.0 - smoothstep(90.0, 580.0, forward)) * (
+					1.0 - smoothstep(width * 0.35, width, absf(local.x)))
+		var reflection := darkness * reach * lerpf(0.30, 0.77, beam)
+		ci.draw_texture_rect(glow_tex, Rect2(pos - Vector2(19.0, 19.0), Vector2(38.0, 38.0)),
+			false, Color(1.0, 0.36, 0.09, reflection * 0.32))
+		ci.draw_arc(pos, 8.0, 0.0, TAU, 20, Color(1.0, 0.88, 0.67, reflection), 3.5, true)
+		ci.draw_arc(pos, 11.5, PI * 0.05, PI * 0.95, 12, Color(1.0, 0.37, 0.10, reflection * 0.42), 2.0, true)
 
 
 func _draw_speed_streaks() -> void:
@@ -3268,8 +3360,6 @@ func _draw_rewind_fx() -> void:
 # --- atmospheric water ------------------------------------------------------
 
 func _draw_cars() -> void:
-	if running and not demo and str(challenge_config.get("type", "")) == "duel" and not _ghost_state.is_empty():
-		_draw_ghost_car()
 	var list := cars.duplicate()
 	list.sort_custom(func(a, b): return float(a.y) < float(b.y))
 	var player_drawn := false
@@ -3330,10 +3420,12 @@ func _draw_player() -> void:
 	if slingshot_t > 0.0:
 		_glow(Vector2(0.0, car_h * 0.36), car_w * 0.72, Color(0.36, 0.92, 1.0, 0.30 * (slingshot_t / SLINGSHOT_TIME)), Vector2(0.8, 1.4))
 	if boosting:
+		var outer_flame := Color("#a852ff") if full_nitro else Color("#ff8c2e")
+		var inner_flame := Color("#e4c5ff") if full_nitro else Color("#ffd873")
 		for side in [-1, 1]:
 			var fx: float = float(side) * car_w * 0.23
-			draw_circle(Vector2(fx, car_h * 0.50), car_w * 0.11, Color(1.0, 0.55, 0.18, 0.35))
-			draw_circle(Vector2(fx, car_h * 0.54), car_w * 0.07, Color(1.0, 0.85, 0.45, 0.45))
+			draw_circle(Vector2(fx, car_h * 0.50), car_w * (0.15 if full_nitro else 0.11), Color(outer_flame, 0.40))
+			draw_circle(Vector2(fx, car_h * 0.54), car_w * 0.07, Color(inner_flame, 0.52))
 	var sprite := _race_sprite(_player_art)
 	if sprite.is_empty():
 		Art.car(self, Vector2.ZERO, car_w, car_h, player_color, {
@@ -3401,11 +3493,10 @@ func paint_haze(ci: CanvasItem) -> void:
 	# The sun itself stays off screen; its warm glare drifts along the edge
 	# it shines from, opposite the shadows.
 	if not sun_is_moon and Art.sun_alpha > 0.03 and glow_tex != null:
-		var away := -Art.sun.normalized()
-		var sp := Vector2(W * 0.5, H * 0.42) + away * Vector2(W * 0.95, H * 0.62)
-		var sun_low := clampf((Art.sun.length() - 0.55) / 1.75, 0.0, 1.0)
-		var glare := Color(1.0 * lit.r, lerpf(0.94, 0.70, sun_low) * lit.g, lerpf(0.82, 0.46, sun_low) * lit.b, 0.13 * Art.sun_alpha)
-		var rad := 760.0 + sun_low * 160.0
+		var sp := _sun_screen * Vector2(W, H)
+		var sun_low := smoothstep(0.85, 2.8, Art.sun.length())
+		var glare := Color(lit.r, lerpf(0.97, 0.70, sun_low) * lit.g, lerpf(0.87, 0.47, sun_low) * lit.b, 0.24 * Art.sun_alpha)
+		var rad := minf(H * 0.65, W * 1.32) + sun_low * 105.0
 		ci.draw_texture_rect(glow_tex, Rect2(sp - Vector2(rad, rad), Vector2(rad, rad) * 2.0), false, glare)
 
 	var vig := 0.13 + night * 0.12 + storm_amount * 0.08
@@ -3447,33 +3538,46 @@ func _draw_rear_hazards() -> void:
 			draw_colored_polygon(pts, col)
 			draw_circle(Vector2(cx, alert_y + 12.0), 3.0, col)
 
-func _draw_ghost_car() -> void:
+func paint_duel_ghost(ci: CanvasItem) -> void:
+	if not running or demo or _ghost_art.is_empty() or _ghost_state.is_empty():
+		return
+	var finish := float(challenge_config.get("end_time", 0.0))
+	var opacity := 1.0 - smoothstep(0.4, 2.0, duel_clock - finish) if _ghost_state.finished else 1.0
+	if opacity <= 0.0:
+		return
 	var gx := road_x + float(_ghost_state.get("x_norm", 0.5)) * road_w
 	var g_scroll := float(_ghost_state.get("scroll", 0.0))
 	var gy := player_y - (g_scroll - scroll)
 	if gy < -260.0 or gy > H + 260.0:
 		return
-	var ghost_col := Color(0.32, 0.88, 0.98, 0.55)
-	_glow(Vector2(gx, gy), car_h * 0.60, Color(0.30, 0.86, 0.96, 0.16), Vector2(0.65, 1.08))
-	if not _ghost_sprite.is_empty() and race_art != null:
-		race_art.draw(self, Vector2(gx, gy), car_w, car_h, _ghost_sprite, Color(0.75, 0.96, 1.0, 0.50))
-	else:
-		Art.car(self, Vector2(gx, gy), car_w, car_h, Color(0.28, 0.78, 0.92, 0.55), {
-			"player": false,
-			"stripe": bool(_ghost_art.get("stripe", false)),
-			"wing": false,
-			"stripe_color": Color(0.85, 0.98, 1.0, 0.55),
-			"silhouette": str(_ghost_art.get("silhouette", "sedan")),
-			"details": false,
-		})
-	draw_rect(Rect2(gx - car_w * 0.46, gy - car_h * 0.48, car_w * 0.92, car_h * 0.96), ghost_col, false, 2.0)
+	var sprite := _race_sprite(_ghost_art)
+	if sprite.is_empty():
+		return
+	var pos := Vector2(gx, gy)
+	var yaw := clampf(float(_ghost_state.get("steer", 0.0)) * 2.4, -0.15, 0.15)
+	ci.draw_set_transform(pos, yaw)
+	var glow_size := Vector2(car_w * 1.24, car_h * 1.12)
+	ci.draw_texture_rect(glow_tex, Rect2(-glow_size * 0.5, glow_size), false,
+		Color(0.25, 0.82, 1.0, 0.28 * opacity))
+	race_art.draw(ci, Vector2.ZERO, car_w, car_h, sprite, Color(0.68, 0.92, 1.0, 0.82 * opacity))
+	if bool(_ghost_state.get("braking", false)):
+		var points := {}
+		var box := CarLamps.draw_box(sprite, car_w, car_h)
+		CarLamps.points(CarLamps.anchors(_ghost_art, sprite, true), Vector2.ZERO, box, 0.0, points)
+		for light_pos: Vector2 in points.tail:
+			ci.draw_circle(light_pos, 3.0, Color(1.0, 0.21, 0.16, 0.85 * opacity), true, -1.0, true)
 	if bool(_ghost_state.get("boosting", false)):
-		_glow(Vector2(gx, gy + car_h * 0.52), car_w * 0.34, Color(0.36, 0.90, 1.0, 0.50))
+		var flame := Color("#bd80ff") if bool(_ghost_state.get("full_nitro", false)) else Color("#5ce6ff")
+		ci.draw_texture_rect(glow_tex, Rect2(-car_w * 0.34, car_h * 0.30, car_w * 0.68, car_h * 0.48),
+			false, Color(flame, 0.65 * opacity))
+	ci.draw_set_transform(Vector2.ZERO)
 	var tag := str(challenge_config.get("name", "ДРУГ"))
 	if _hud_font != null:
 		var tw := _hud_font.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
-		draw_rect(Rect2(gx - tw * 0.5 - 8.0, gy - car_h * 0.62 - 20.0, tw + 16.0, 24.0), Color(0.04, 0.08, 0.12, 0.80))
-		draw_string(_hud_font, Vector2(gx - tw * 0.5, gy - car_h * 0.62 - 2.0), tag, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.45, 0.94, 1.0, 0.95))
+		ci.draw_rect(Rect2(gx - tw * 0.5 - 8.0, gy - car_h * 0.62 - 20.0, tw + 16.0, 24.0),
+			Color(0.04, 0.08, 0.12, 0.85 * opacity))
+		ci.draw_string(_hud_font, Vector2(gx - tw * 0.5, gy - car_h * 0.62 - 2.0), tag,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color(0.60, 0.94, 1.0, opacity))
 
 
 func _finish_marker_y() -> float:
@@ -3538,6 +3642,43 @@ func _draw_road_event_under() -> void:
 			draw_colored_polygon(PackedVector2Array([
 				Vector2(_rw_x(0.05), taper_y), Vector2(_rw_x(0.05), barrier_head), Vector2(_rw_x(0.98), barrier_head),
 			]), Color(0.95, 0.48, 0.12, 0.10))
+		_draw_roadworks_shadows(barrier_head)
+
+
+func _roadworks_sign_x() -> float:
+	var x := road_x - 72.0 if closed_lane == 0 else road_x + road_w + 72.0
+	return clampf(x, 50.0, W - 50.0)
+
+
+func _draw_roadworks_shadows(stop_y: float) -> void:
+	if Art.sun_alpha <= 0.01:
+		return
+	var margin := 95.0 + 87.0 * absf(Art.sun.y)
+	var sign_y := float(road_event.get("y", -9999.0))
+	if sign_y >= -margin and sign_y <= H + margin:
+		var sign_foot := Vector2(_roadworks_sign_x(), sign_y + 46.0)
+		Art.post_shadow(self, sign_foot, 70.0, 5.0)
+		var lower := sign_foot + Art.sun_offset(36.0)
+		Art.shadow_shape(self, PackedVector2Array([lower + Vector2(-43.0, 0.0),
+			lower + Vector2(43.0, 0.0), sign_foot + Art.sun_offset(87.0)]), 0.30, 4.5)
+	for obj in road_event.get("objs", []):
+		if bool(obj.hit):
+			continue
+		var pos := roadworks_object_pos(obj)
+		if pos.y < -margin or pos.y > H + margin:
+			continue
+		if str(obj.kind) == "cone":
+			var side := Art.sun.normalized().orthogonal() * 11.0
+			Art.shadow_shape(self, PackedVector2Array([pos - side, pos + side, pos + Art.sun_offset(25.0)]), 0.29, 2.0)
+		else:
+			Art.rect_shadow(self, Rect2(pos - Vector2(49.0, 8.0), Vector2(98.0, 17.0)), 39.0, 0.30)
+			for dx in [-39.0, 39.0]:
+				Art.post_shadow(self, pos + Vector2(dx, 9.0), 39.0, 5.0)
+	if stop_y >= -margin and stop_y <= H + margin:
+		var center := Vector2(_rw_x(0.51), stop_y + 12.0)
+		Art.rect_shadow(self, Rect2(center - Vector2(lane_w * 0.45, 8.0), Vector2(lane_w * 0.90, 23.0)), 29.0, 0.29)
+		var sign_shadow := center + Art.sun_offset(55.0)
+		_glow(sign_shadow, 29.0, Color(0.01, 0.025, 0.045, Art.sun_alpha * 0.45), Vector2(1.0, 0.6))
 
 # --- road-works art (procedural, top-down, drawn on the objects pass) --------
 
@@ -3640,12 +3781,10 @@ func _pit_shape(c: Vector2, r: Vector2, seed_v: float, jag: float) -> PackedVect
 func _draw_roadworks_warning_sign(y: float) -> void:
 	if y < -120.0 or y > H + 120.0:
 		return
-	var x := road_x - 72.0 if closed_lane == 0 else road_x + road_w + 72.0
-	x = clampf(x, 50.0, W - 50.0)
+	var x := _roadworks_sign_x()
 	# Drawn at 1.3x around its post.
 	draw_set_transform(Vector2(_sx, _sy) + Vector2(x, y) * (1.0 - 1.3), 0.0, Vector2(1.3, 1.3))
 	draw_rect(Rect2(x - 3.0, y - 4.0, 6.0, 46.0), Color(0.30, 0.32, 0.34))
-	draw_rect(Rect2(x - 38.0, y - 2.0, 80.0, 70.0), Color(0, 0, 0, 0.22))
 	var tri := PackedVector2Array([Vector2(x, y - 44.0), Vector2(x + 38.0, y + 22.0), Vector2(x - 38.0, y + 22.0)])
 	draw_colored_polygon(tri, Color(0.96, 0.96, 0.94))
 	var tri_in := PackedVector2Array([Vector2(x, y - 34.0), Vector2(x + 29.0, y + 16.0), Vector2(x - 29.0, y + 16.0)])
@@ -3695,10 +3834,6 @@ func _draw_cone(pos: Vector2, rot: float, alpha: float, knocked: bool) -> void:
 		draw_set_transform(Vector2(_sx, _sy))
 		return
 	draw_circle(pos + Vector2(1.0, 2.0), 15.0, Color(0, 0, 0, 0.16))
-	if Art.sun_alpha > 0.01:
-		var tip := pos + Art.sun_offset(26.0)
-		draw_colored_polygon(PackedVector2Array([pos + Vector2(-12, 0).rotated(Art.sun.angle() + PI * 0.5), tip,
-			pos + Vector2(12, 0).rotated(Art.sun.angle() + PI * 0.5)]), Color(0, 0, 0, 0.26 * Art.sun_alpha))
 	draw_rect(Rect2(pos.x - 14.0, pos.y - 14.0, 28.0, 28.0), Color(0.90, 0.36, 0.08))
 	draw_circle(pos, 12.0, Color(0.98, 0.46, 0.10))
 	draw_arc(pos, 8.0, 0.0, TAU, 18, Color(0.97, 0.97, 0.95), 3.5)
@@ -3747,7 +3882,7 @@ func _draw_road_event_over() -> void:
 			draw_polyline(pts, Color(1.0, 0.70, 0.16, alpha), 3.0, true)
 
 	# Off-screen Ghost indicator
-	if running and not demo and str(challenge_config.get("type", "")) == "duel" and not _ghost_state.is_empty():
+	if running and not demo and not _ghost_state.is_empty() and not bool(_ghost_state.finished):
 		var gx := road_x + float(_ghost_state.get("x_norm", 0.5)) * road_w
 		var g_scroll := float(_ghost_state.get("scroll", 0.0))
 		var gy := player_y - (g_scroll - scroll)
@@ -3774,36 +3909,38 @@ func _draw_road_event_over() -> void:
 		var rcol := Color("#57ebff") if is_fast else Color("#fab833")
 		var badge := ("РАДАР %d+ КМ/Ч" % tgt) if is_fast else ("ЛИМИТ ≤ %d КМ/Ч" % tgt)
 		_draw_road_marker(radar_y, rcol, badge)
-	elif road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
-		var barrier_head := roadworks_stop_y()
-		var tail_y := roadworks_tail_y()
-		var inner_x := _rw_x(1.0)
-		_draw_roadworks_warning_sign(float(road_event.get("y", -9999.0)))
-		for o in road_event.get("objs", []):
-			var pos := roadworks_object_pos(o)
-			var rot := 0.0
-			var alpha := 1.0
-			if bool(o.hit):
-				var kt := float(o.get("t", 0.0))
-				if kt > 0.9:
-					continue
-				pos += Vector2(float(o.get("kx", 0.0)), float(o.get("ky", 0.0)))
-				rot = float(o.get("rot", 0.0))
-				alpha = clampf(1.0 - (kt - 0.5) / 0.4, 0.0, 1.0)
-			if pos.y < -80.0 or pos.y > H + 80.0:
+
+
+func _draw_roadworks_props() -> void:
+	var barrier_head := roadworks_stop_y()
+	var tail_y := roadworks_tail_y()
+	var inner_x := _rw_x(1.0)
+	_draw_roadworks_warning_sign(float(road_event.get("y", -9999.0)))
+	for o in road_event.get("objs", []):
+		var pos := roadworks_object_pos(o)
+		var rot := 0.0
+		var alpha := 1.0
+		if bool(o.hit):
+			var kt := float(o.get("t", 0.0))
+			if kt > 0.9:
 				continue
-			if str(o.kind) == "cone":
-				_draw_cone(pos, rot, alpha, bool(o.hit))
-			else:
-				_draw_arrow_sign(pos, rot, alpha, bool(o.hit))
-		_draw_stop_barrier(barrier_head)
-		_draw_stop_barrier(tail_y, false)
-		var by := roadworks_first_barrier_y(-60.0)
-		var last := minf(H + 60.0, barrier_head - RW_BARRIER_SPACING * 0.5)
-		var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 14.0))
-		while by <= last:
-			draw_set_transform(Vector2(inner_x + _sx, by + _sy), PI * 0.5)
-			draw_texture_rect(Art.works_barrier_texture(), Rect2(-RW_BARRIER_HALF_LENGTH, -10.0, RW_BARRIER_HALF_LENGTH * 2.0, 20.0), false)
-			draw_set_transform(Vector2(_sx, _sy))
-			_glow(Vector2(inner_x, by), 22.0, Color(1.0, 0.65, 0.12, 0.42 * blink))
-			by += RW_BARRIER_SPACING
+			pos += Vector2(float(o.get("kx", 0.0)), float(o.get("ky", 0.0)))
+			rot = float(o.get("rot", 0.0))
+			alpha = clampf(1.0 - (kt - 0.5) / 0.4, 0.0, 1.0)
+		if pos.y < -80.0 or pos.y > H + 80.0:
+			continue
+		if str(o.kind) == "cone":
+			_draw_cone(pos, rot, alpha, bool(o.hit))
+		else:
+			_draw_arrow_sign(pos, rot, alpha, bool(o.hit))
+	_draw_stop_barrier(barrier_head)
+	_draw_stop_barrier(tail_y, false)
+	var by := roadworks_first_barrier_y(-60.0)
+	var last := minf(H + 60.0, barrier_head - RW_BARRIER_SPACING * 0.5)
+	var blink := 0.4 + 0.6 * (0.5 + 0.5 * sin(t * 14.0))
+	while by <= last:
+		draw_set_transform(Vector2(inner_x + _sx, by + _sy), PI * 0.5)
+		draw_texture_rect(Art.works_barrier_texture(), Rect2(-RW_BARRIER_HALF_LENGTH, -10.0, RW_BARRIER_HALF_LENGTH * 2.0, 20.0), false)
+		draw_set_transform(Vector2(_sx, _sy))
+		_glow(Vector2(inner_x, by), 22.0, Color(1.0, 0.65, 0.12, 0.42 * blink))
+		by += RW_BARRIER_SPACING

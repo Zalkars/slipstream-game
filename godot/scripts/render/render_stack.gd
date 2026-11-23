@@ -43,6 +43,7 @@ var road_strips: Array = []
 var decal_layer: DrawLayer
 var puddle_layer: DrawLayer
 var road_glow_layer: DrawLayer
+var duel_ghost_layer: DrawLayer
 var particle_layer: DrawLayer
 var emissive_layer: DrawLayer
 var air_layer: DrawLayer
@@ -88,6 +89,8 @@ func setup(p_game) -> void:
 	puddle_layer = _layer("Puddles", -14, _paint_list.bind(puddle_painters), MASK_ROAD)
 	road_glow_layer = _layer("RoadGlow", -12, _paint_list.bind(road_glow_painters), MASK_ROAD)
 	road_glow_layer.material = DrawLayer.unshaded_material(CanvasItemMaterial.BLEND_MODE_ADD)
+	duel_ghost_layer = _layer("DuelGhost", -1, game.paint_duel_ghost, 0)
+	duel_ghost_layer.material = DrawLayer.unshaded_material()
 	particle_layer = _layer("Particles", 4, _paint_list.bind(particle_painters), MASK_AIR)
 	emissive_layer = _layer("Emissive", 8, _paint_list.bind(emissive_painters), MASK_OBJECTS)
 	emissive_layer.material = DrawLayer.unshaded_material(CanvasItemMaterial.BLEND_MODE_ADD)
@@ -194,7 +197,7 @@ func frame(delta: float) -> void:
 	bloom.frame(Vector2(game.W, game.H), bloom_on)
 	bloom.composite.position = position
 	for l in [ground_layer, road_layer, decal_layer, puddle_layer, road_glow_layer,
-			particle_layer, emissive_layer, air_layer, overlay_layer]:
+			duel_ghost_layer, particle_layer, emissive_layer, air_layer, overlay_layer]:
 		l.queue_redraw()
 	for st in road_strips:
 		st.queue_redraw()

@@ -4,6 +4,8 @@
     <application>
         <meta-data android:name="org.godotengine.plugin.v2.SlipstreamAds"
             android:value="com.slipstream.ads.SlipstreamAds" />
+        <meta-data android:name="org.godotengine.plugin.v2.SlipstreamChallenges"
+            android:value="com.slipstream.ads.SlipstreamChallenges" />
         <meta-data android:name="com.yandex.mobile.ads.AUTOMATIC_SDK_INITIALIZATION"
             android:value="false" />
     </application>

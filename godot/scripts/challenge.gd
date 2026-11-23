@@ -9,15 +9,22 @@ const MAGIC_1 := 0x4C  # 'L'
 # The version also selects simulation rules. SLIP1 uses dry grip, SLIP2
 # adds wet grip, SLIP3 introduces separate seeded weather scheduling and
 # SLIP4 a livelier forecast-based weather schedule and quicker steering.
-const VERSION := 4
+# SLIP5 adds measured throttle recovery, full nitro, and signed ghost movement.
+const VERSION := 5
+const SIGNED_TRACE_VERSION := 5
 const WEATHER_VERSION := 3
 const LEGACY_VERSION := 1
-const PREFIX := "SLIP4-"
-const PREFIXES := [PREFIX, "SLIP3-", "SLIP2-", "SLIP1-"]
+const PREFIX := "SLIP5-"
+const PREFIXES := [PREFIX, "SLIP4-", "SLIP3-", "SLIP2-", "SLIP1-"]
 const WEATHER := preload("res://scripts/weather_schedule.gd")
 const BASE_STEP_MS := 200
 const MAX_SAMPLES := 900
 const MAX_DECOMPRESSED := 65536
+const MAX_CODE_LENGTH := 16384
+const MAX_INPUT_LENGTH := MAX_CODE_LENGTH + 512
+const DAILY_REWARDS := [100, 200, 350]
+const DUEL_WIN_REWARD := 150
+const RUSTORE_URL := "https://www.rustore.ru/catalog/app/com.slipstream.game"
 
 
 static func _crc16(bytes: PackedByteArray, length: int) -> int:
@@ -68,40 +75,36 @@ static func _decode_u32(buf: PackedByteArray, off: int) -> int:
 
 
 static func sanitize_name(name_str: String) -> String:
-	var cleaned := name_str.strip_edges()
+	var cleaned := name_str.replace("\n", " ").replace("\r", " ").replace("\t", " ").strip_edges()
 	if cleaned.is_empty():
 		return "ГОНЩИК"
-	if cleaned.length() > 12:
-		cleaned = cleaned.left(12)
-	return cleaned
+	return cleaned.left(12)
 
 
 static func encode(data: Dictionary) -> String:
 	var samples_in: Array = data.get("samples", [])
 	var step_ms := int(data.get("step_ms", BASE_STEP_MS))
-	var packed_samples: Array = samples_in.duplicate()
-	while packed_samples.size() > MAX_SAMPLES and step_ms < 6400:
-		var reduced: Array = []
-		for i in range(0, packed_samples.size(), 2):
-			reduced.append(packed_samples[i])
-		if packed_samples.size() % 2 == 0 and not packed_samples.is_empty():
-			reduced[reduced.size() - 1] = packed_samples.back()
-		packed_samples = reduced
+	var stride := 1
+	while samples_in.size() - 1 > (MAX_SAMPLES - 1) * stride and step_ms < 32000:
+		stride *= 2
 		step_ms *= 2
+	var packed_samples: Array = []
+	for i in range(0, samples_in.size() - 1, stride):
+		packed_samples.append(samples_in[i])
+	if not samples_in.is_empty():
+		packed_samples.append(samples_in.back())
 
 	var name_bytes := sanitize_name(str(data.get("name", "ГОНЩИК"))).to_utf8_buffer()
-	if name_bytes.size() > 36:
-		name_bytes = name_bytes.slice(0, 36)
-
 	var header_len := 25 + name_bytes.size()
-	var count := mini(packed_samples.size(), 65535)
-	var total_len := header_len + count * 4 + 2
+	var ver := clampi(int(data.get("physics", VERSION)), LEGACY_VERSION, VERSION)
+	var signed_trace := ver >= SIGNED_TRACE_VERSION
+	var sample_size := 6 if signed_trace else 4
+	var total_len := header_len + packed_samples.size() * sample_size + 2
 	var raw := PackedByteArray()
 	raw.resize(total_len)
 
 	raw[0] = MAGIC_0
 	raw[1] = MAGIC_1
-	var ver := clampi(int(data.get("physics", VERSION)), LEGACY_VERSION, VERSION)
 	raw[2] = ver
 	_encode_u32(raw, 3, int(data.get("seed", 1)) & 0x7FFFFFFF)
 	raw[7] = clampi(int(data.get("car_index", 0)), 0, 255)
@@ -117,17 +120,21 @@ static func encode(data: Dictionary) -> String:
 		raw[25 + i] = name_bytes[i]
 
 	var prev_scroll := 0
-	for i in range(count):
+	for i in range(packed_samples.size()):
 		var s: Dictionary = packed_samples[i]
 		var sc := maxi(0, int(round(float(s.get("scroll", 0.0)))))
-		var d_sc := clampi(sc - prev_scroll, 0, 65535)
-		prev_scroll += d_sc
 		var x_byte := clampi(int(round(clampf(float(s.get("x_norm", 0.5)), 0.0, 1.0) * 255.0)), 0, 255)
 		var flags := int(s.get("flags", 0)) & 0xFF
-		var off := header_len + i * 4
-		_encode_u16(raw, off, d_sc)
-		raw[off + 2] = x_byte
-		raw[off + 3] = flags
+		var off := header_len + i * sample_size
+		if signed_trace:
+			_encode_u32(raw, off, sc - prev_scroll)
+			prev_scroll = sc
+		else:
+			var delta := clampi(sc - prev_scroll, 0, 65535)
+			_encode_u16(raw, off, delta)
+			prev_scroll += delta
+		raw[off + sample_size - 2] = x_byte
+		raw[off + sample_size - 1] = flags
 
 	var crc := _crc16(raw, total_len - 2)
 	_encode_u16(raw, total_len - 2, crc)
@@ -137,17 +144,19 @@ static func encode(data: Dictionary) -> String:
 
 
 static func extract_code(text: String) -> String:
+	if text.length() > MAX_INPUT_LENGTH:
+		return ""
 	var idx := -1
 	var prefix := ""
 	for pf: String in PREFIXES:
-		idx = text.find(pf)
-		if idx >= 0:
+		var found := text.find(pf)
+		if found >= 0 and (idx < 0 or found < idx):
+			idx = found
 			prefix = pf
-			break
 	if idx < 0:
 		return ""
-	var out := prefix
-	for i in range(idx + prefix.length(), text.length()):
+	var end := idx + prefix.length()
+	for i in range(end, mini(text.length(), idx + MAX_CODE_LENGTH + 1)):
 		var ch := text[i]
 		var code_pt := ch.unicode_at(0)
 		var ok := (
@@ -158,8 +167,9 @@ static func extract_code(text: String) -> String:
 		)
 		if not ok:
 			break
-		out += ch
-	return out if out.length() > prefix.length() + 8 else ""
+		end = i + 1
+	var length := end - idx
+	return text.substr(idx, length) if length > prefix.length() + 8 and length <= MAX_CODE_LENGTH else ""
 
 
 static func decode(raw_text: String) -> Dictionary:
@@ -170,6 +180,7 @@ static func decode(raw_text: String) -> Dictionary:
 	var compressed := _b64url_decode(payload)
 	if compressed.is_empty():
 		return {"ok": false, "error": "Повреждённый код вызова"}
+	code = code.left(PREFIX.length()) + _b64url_encode(compressed)
 	var raw := compressed.decompress_dynamic(MAX_DECOMPRESSED, FileAccess.COMPRESSION_DEFLATE)
 	if raw.size() < 27:
 		return {"ok": false, "error": "Неверный формат кода"}
@@ -183,8 +194,12 @@ static func decode(raw_text: String) -> Dictionary:
 
 	var name_len := int(raw[24])
 	var header_len := 25 + name_len
-	if header_len > body_len or (body_len - header_len) % 4 != 0:
+	var signed_trace := ver >= SIGNED_TRACE_VERSION
+	var sample_size := 6 if signed_trace else 4
+	if name_len > 48 or header_len > body_len or (body_len - header_len) % sample_size != 0:
 		return {"ok": false, "error": "Повреждённые данные траектории"}
+	if raw[7] >= Cars.LIST.size() or raw[19] > 4:
+		return {"ok": false, "error": "В коде неизвестная машина или погода"}
 
 	var name_str := "ГОНЩИК"
 	if name_len > 0:
@@ -192,14 +207,22 @@ static func decode(raw_text: String) -> Dictionary:
 
 	var step_ms := _decode_u16(raw, 20)
 	var step_sec := maxf(0.05, float(step_ms) / 1000.0)
-	var sample_count := int((body_len - header_len) / 4)
+	var sample_count := int((body_len - header_len) / sample_size)
+	if sample_count == 0:
+		return {"ok": false, "error": "В коде нет записи заезда"}
 	var samples: Array = []
 	var cur_scroll := 0.0
 	for i in range(sample_count):
-		var off := header_len + i * 4
-		cur_scroll += float(_decode_u16(raw, off))
-		var x_norm := float(raw[off + 2]) / 255.0
-		var flags := int(raw[off + 3])
+		var off := header_len + i * sample_size
+		if signed_trace:
+			var delta := _decode_u32(raw, off)
+			cur_scroll += float(delta if delta < 0x80000000 else delta - 0x100000000)
+			if cur_scroll < 0.0:
+				return {"ok": false, "error": "Повреждённые данные траектории"}
+		else:
+			cur_scroll += float(_decode_u16(raw, off))
+		var x_norm := float(raw[off + sample_size - 2]) / 255.0
+		var flags := int(raw[off + sample_size - 1])
 		samples.append({
 			"scroll": cur_scroll,
 			"x_norm": x_norm,
@@ -215,7 +238,7 @@ static func decode(raw_text: String) -> Dictionary:
 		"ok": true,
 		"type": "duel",
 		"code": code,
-		"id": code_id(code),
+		"id": code_id(_b64url_encode(raw)) if signed_trace else code_id(code),
 		"seed": _decode_u32(raw, 3),
 		"physics": ver,
 		"car_index": clampi(int(raw[7]), 0, Cars.LIST.size() - 1),
@@ -264,14 +287,22 @@ static func sample_ghost(data: Dictionary, duel_time: float) -> Dictionary:
 	var i0 := int(floor(f_idx))
 	var i1 := mini(i0 + 1, samples.size() - 1)
 	var frac := f_idx - float(i0)
+	if int(data.get("physics", LEGACY_VERSION)) >= SIGNED_TRACE_VERSION and samples.size() > 1:
+		var final_start := float(samples.size() - 2) * step_sec
+		if duel_time >= final_start:
+			i0 = samples.size() - 2
+			i1 = samples.size() - 1
+			frac = clampf((duel_time - final_start) / maxf(0.01, end_time - final_start), 0.0, 1.0)
 	var s0: Dictionary = samples[i0]
 	var s1: Dictionary = samples[i1]
 	var flags := int(s0.flags)
 	return {
 		"scroll": lerpf(float(s0.scroll), float(s1.scroll), frac),
 		"x_norm": lerpf(float(s0.x_norm), float(s1.x_norm), frac),
+		"steer": float(s1.x_norm) - float(s0.x_norm),
 		"braking": (flags & 1) != 0,
 		"boosting": (flags & 2) != 0,
+		"full_nitro": (flags & 16) != 0,
 		"slingshot": (flags & 4) != 0,
 		"rewinding": (flags & 8) != 0,
 		"finished": false,
@@ -348,7 +379,17 @@ static func format_share_message(data: Dictionary, code: String, is_rematch := f
 	var dist := int(data.get("distance", 0))
 	var w_lbl := weather_label(int(data.get("weather", 0))).to_lower()
 	var t_lbl := time_label(float(data.get("tod", 0.15))).to_lower()
-	var head := "Реванш в SLIPSTREAM!" if is_rematch else "Вызов в SLIPSTREAM!"
-	return "%s Я набрал %d очк. (%d м) на %s (%s, %s). Скопируй это сообщение и жми «ПРИНЯТЬ ВЫЗОВ»:\n%s" % [
-		head, score, dist, str(car.name), t_lbl, w_lbl, code
+	var head := "Реванш в SLIPSTREAM 🏁" if is_rematch else "Вызов в SLIPSTREAM 🏁"
+	var action := "Сохрани вложение и выбери «Открыть файл заезда» в разделе «Вызовы → Дуэли с друзьями»."
+	if code.begins_with("SLIP"):
+		action = "Вставь этот текст в «Вызовы → Дуэли с друзьями»."
+	return "%s\n\n%s очк. · %s м · %s\n%s, %s\n\nКод вызова\n%s\n\n%s\n\nСкачать SLIPSTREAM в RuStore\n%s" % [
+		head, _format_number(score), _format_number(dist), str(car.name), t_lbl.capitalize(), w_lbl, code, action, RUSTORE_URL,
 	]
+
+
+static func _format_number(value: int) -> String:
+	var digits := str(value)
+	for i in range(digits.length() - 3, 0, -3):
+		digits = digits.insert(i, " ")
+	return digits

@@ -2,6 +2,19 @@ extends Node
 
 var failures := 0
 
+
+class ShareSheet extends RefCounted:
+	var filename := ""
+	var document := ""
+	var invitation := ""
+
+	func shareReplay(name: String, content: String, text: String) -> bool:
+		filename = name
+		document = content
+		invitation = text
+		return true
+
+
 func check(ok: bool, message: String) -> void:
 	if not ok:
 		failures += 1
@@ -240,6 +253,15 @@ func check_challenge_codec_and_determinism(game: Game) -> void:
 	var code := ChallengeCodec.encode(payload)
 	check(code.begins_with(ChallengeCodec.PREFIX) and code.length() < 900, "Encoded marathon ghost must stay compact: len=%d" % code.length())
 	var msg := ChallengeCodec.format_share_message(payload, code, false)
+	check(msg.ends_with("\n\nСкачать SLIPSTREAM в RuStore\n" + ChallengeCodec.RUSTORE_URL),
+		"The share message ends with a separated RuStore link")
+	var short := ChallengeFiles.short_code(code)
+	var short_msg := ChallengeCodec.format_share_message(payload, short, true)
+	check(short.length() == 8 and not short_msg.contains(code)
+		and ChallengeFiles.extract_code(short_msg) == short
+		and ChallengeFiles.extract_code(short_msg.replace("\n", " ")) == short
+		and ChallengeFiles.normalize_code(short.to_lower()) == short,
+		"A short invite parses from both a multiline message and a single-line paste")
 	var decoded := ChallengeCodec.decode(msg)
 	check(bool(decoded.get("ok", false)), "Codec must extract and decode code from Telegram message")
 	check(int(decoded.seed) == 445566 and int(decoded.car_index) == 6 and int(decoded.score) == 54321, "Decoded metadata must match")
@@ -266,6 +288,22 @@ func check_challenge_codec_and_determinism(game: Game) -> void:
 	check(not bool(bad.get("ok", false)), "Invalid challenge payload must be rejected")
 	var missing := ChallengeCodec.decode("hello world without code")
 	check(not bool(missing.get("ok", false)), "Message without SLIP1 code must be rejected")
+	var rewind := ChallengeCodec.decode(ChallengeCodec.encode({
+		"name": "🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁",
+		"end_time": 0.5,
+		"samples": [
+			{"scroll": 0, "x_norm": 0.3, "flags": 0},
+			{"scroll": 240, "x_norm": 0.35, "flags": 8},
+			{"scroll": 90, "x_norm": 0.35, "flags": 8},
+			{"scroll": 132, "x_norm": 0.4, "flags": 0},
+		],
+	}))
+	check(bool(rewind.ok) and str(rewind.name).length() == 12 and float(rewind.samples[2].scroll) == 90,
+		"SLIP5 preserves rewinds and a full Unicode nickname")
+	check(float(ChallengeCodec.sample_ghost(rewind, 0.45).scroll) > 105.0,
+		"The final segment interpolates to the actual end time")
+	legacy_payload["physics"] = 4
+	check(bool(ChallengeCodec.decode(ChallengeCodec.encode(legacy_payload)).ok), "SLIP4 remains playable")
 
 	var d1 := ChallengeCodec.daily_challenge({"year": 2026, "month": 11, "day": 19})
 	var d2 := ChallengeCodec.daily_challenge({"year": 2026, "month": 11, "day": 20})
@@ -322,6 +360,11 @@ func check_day_night(game: Game) -> void:
 	check(Vector2(dawn.offset).x < -0.3 and Vector2(dusk.offset).x > 0.3, "Shadows point away from a rising and a setting sun")
 	check(Vector2(noon.offset).length() < Vector2(dawn.offset).length() and float(noon.strength) > 0.8, "Noon shadows are short and strong")
 	check(bool(midnight.moon) and float(midnight.strength) < 0.35, "Night shadows are faint moon shadows")
+	var bounds := Rect2(Vector2.ZERO, Vector2.ONE)
+	for i in range(129):
+		var fraction := float(i) / 128.0
+		var state := Game.sun_state(lerpf(Game.SUNRISE_TOD, Game.SUNSET_TOD, fraction))
+		check(not bounds.has_point(state.screen), "The sun stays outside the road viewport at every hour")
 	game.time_of_day = 0.26
 	game._snap_challenge_weather(0.26, Game.WEATHER_STORM)
 	game.update_sun()
@@ -361,6 +404,25 @@ func check_main_duel_and_daily_rewards() -> void:
 	check(not main.event_banner.visible and main._event_banner_queue.is_empty(),
 		"A new race clears active and pending notifications")
 
+	main.control_mode = "buttons"
+	main.start_game()
+	main.pad_left._update_touch(1, true)
+	main.zones_pad._process(0.035)
+	main.pad_right._update_touch(2, true)
+	check(main.game.braking and main.game.lane == 1, "Both dedicated steering buttons brake without turning")
+	main.brake_btn._update_touch(3, true)
+	main.pad_left._update_touch(1, false)
+	main.pad_right._update_touch(2, false)
+	check(main.game.braking, "The brake pedal remains held when a chord is released")
+	main.brake_btn._update_touch(3, false)
+	check(not main.game.braking and main.game.lane == 1, "Releasing both brake sources leaves steering unchanged")
+
+	main.show_garage()
+	main._select_garage_slot(1)
+	check(main.g_race.disabled and main.g_stage.car.id == 1, "Garage previews the selected locked model")
+	main._garage_action()
+	check(not main.g_race.disabled and main.owned.has(1) and main.selected == 1, "Buying a car unlocks its race action")
+
 	# Daily challenge grants bronze/silver/gold once per day
 	main._sync_daily_date()
 	var daily := ChallengeCodec.daily_challenge()
@@ -382,6 +444,10 @@ func check_main_duel_and_daily_rewards() -> void:
 	main.game.distance = 0.0
 	main.game.finish_run()
 	check(main.coins == coins_after_first, "Daily challenge must not double-pay claimed tiers")
+	main._sync_daily_date("2000-01-01")
+	main._sync_daily_date(str(daily.date_key))
+	check(main.daily_tier == 2 and main.daily_best == int(daily.silver) + 100,
+		"Returning to a previously played day restores its record and claimed rewards")
 
 	# Duel victory awards +150 once per code_id
 	var duel := {"type": "duel", "id": "testduel123", "seed": 12345, "car_index": 0, "score": 1000, "distance": 500, "tod": 0.15, "weather": 0, "name": "БОБ", "end_scroll": 6000.0, "samples": [{"scroll": 0.0, "x_norm": 0.375, "flags": 0}]}
@@ -399,5 +465,52 @@ func check_main_duel_and_daily_rewards() -> void:
 	main.game.distance = 0.0
 	main.game.finish_run()
 	check(main.coins == cb2, "Repeating already-beaten duel must not double-pay +150")
+	main.show_challenges()
+	main._select_challenge_tab(1)
+	check(not main.ch_tabs[0].button_pressed and main.ch_tabs[1].button_pressed,
+		"Exactly the selected challenge tab is active")
+	var imported := ChallengeCodec.encode(duel)
+	var short := ChallengeFiles.short_code(imported)
+	var replay_path := "res://tests/.offline-replay-%d.slipstream" % Time.get_ticks_usec()
+	check(ChallengeFiles.write(replay_path, imported) == OK, "Challenge writes a portable replay file")
+	main._on_challenge_code_edited("A2CD6X90" if short != "A2CD6X90" else "ABCD1234")
+	main._import_challenge_file(replay_path)
+	check(main.ch_accept_btn.disabled and main.incoming_challenge_code.is_empty(), "An unrelated attachment cannot load the requested challenge")
+	main._on_challenge_code_edited(ChallengeCodec.format_share_message(duel, short))
+	check(main.ch_accept_btn.disabled, "A short invite waits for its replay file")
+	main._import_challenge_file(replay_path)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(replay_path))
+	check(not main.ch_accept_btn.disabled and main.incoming_challenge_code == imported and main.ch_code_input.text == short,
+		"Opening an attachment loads its 3D replay without a network")
+	main._on_challenge_code_edited(ChallengeCodec.format_share_message(duel, imported))
+	check(not main.ch_accept_btn.disabled and main.incoming_challenge_code == imported, "Full codes continue to import offline")
+	main._start_duel_challenge()
+	var expected: Dictionary = main.game.race_art.take(Cars.get_car(0))
+	check(main.game.use_3d_cars and not expected.is_empty(), "Duels use baked 3D even with the normal 2D preference")
+	for replay in range(3):
+		main.start_game()
+		check(main.game._race_sprite(main.game._ghost_art) == expected and not expected.is_empty(),
+			"Restarting a duel must retain the shared model on attempt %d" % replay)
+	main.game.score = 1500
+	main.game.finish_run()
+	var outgoing: String = main.last_challenge_code
+	check(bool(ChallengeCodec.decode(outgoing).ok), "A finished duel provides a valid rematch code")
+	main.show_challenges()
+	var share := ShareSheet.new()
+	main._native_challenges = share
+	main._share_challenge(main.ch_share_btn)
+	var outgoing_short := ChallengeFiles.short_code(outgoing)
+	check(share.filename == ChallengeFiles.filename(outgoing_short)
+		and share.document == ChallengeFiles.contents(outgoing)
+		and ChallengeFiles.extract_code(share.invitation) == outgoing_short
+		and share.invitation.ends_with(ChallengeCodec.RUSTORE_URL)
+		and not share.invitation.contains(outgoing),
+		"The Android sharesheet receives the short invite and a separate full replay attachment")
+	main._on_challenge_code_edited("повреждённый текст")
+	check(main.ch_accept_btn.disabled and main.incoming_challenge_code == imported and main.last_challenge_code == outgoing,
+		"Invalid input cannot launch a race or overwrite a saved challenge")
+	main._on_challenge_code_edited("")
+	check(main.incoming_challenge_code.is_empty() and not main.game.use_3d_cars,
+		"Clearing an import keeps the regular 2D preference outside the duel")
 
 	main.free()

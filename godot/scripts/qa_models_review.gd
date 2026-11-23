@@ -278,8 +278,6 @@ func _garage_sheet() -> void:
 		stage.car = Cars.get_car(i)
 		stage.size = Vector2(616, 600)
 		vp.add_child(stage)
-		stage.set_process(false)
-		stage.set_time(1.7)
 		var box: AABB = stage._model.bounds()
 		for corner in range(8):
 			var screen: Vector2 = stage._cam.unproject_position(box.get_endpoint(corner))

@@ -6,8 +6,10 @@ extends Control
 
 signal pressed
 signal held_changed(on: bool)
+signal steering_contact(down: bool, canceled: bool)
 
 var kind := "left"
+var chord_steering := false
 var label_font: Font
 var _down := false
 var _touches: Dictionary = {}
@@ -28,12 +30,14 @@ func reset() -> void:
 	_down = false
 	if kind == "brake" and was:
 		held_changed.emit(false)
+	elif chord_steering and was:
+		steering_contact.emit(false, true)
 	queue_redraw()
 
 
 func _process(delta: float) -> void:
 	_pulse += delta
-	if kind != "brake" and _down:
+	if kind != "brake" and not chord_steering and _down:
 		_repeat -= delta
 		if _repeat <= 0.0:
 			pressed.emit()
@@ -95,23 +99,27 @@ func _press() -> void:
 	_repeat = 0.28
 	if kind == "brake":
 		held_changed.emit(true)
+	elif chord_steering:
+		steering_contact.emit(true, false)
 	else:
 		pressed.emit()
 	queue_redraw()
 
 
-func _release() -> void:
+func _release(canceled := false) -> void:
 	if not _down:
 		return
 	_down = false
 	if kind == "brake":
 		held_changed.emit(false)
+	elif chord_steering:
+		steering_contact.emit(false, canceled)
 	queue_redraw()
 
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		_update_touch(event.index, event.pressed and not event.canceled)
+		_update_touch(event.index, event.pressed and not event.canceled, event.canceled)
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
@@ -120,14 +128,14 @@ func _gui_input(event: InputEvent) -> void:
 		accept_event()
 
 
-func _update_touch(id: int, down: bool) -> void:
+func _update_touch(id: int, down: bool, canceled := false) -> void:
 	if down:
 		_touches[id] = true
 		_press()
 	else:
 		_touches.erase(id)
 		if _touches.is_empty():
-			_release()
+			_release(canceled)
 
 
 func _notification(what: int) -> void:

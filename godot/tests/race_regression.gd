@@ -3,7 +3,6 @@ extends Node
 var failures := 0
 var turns := 0
 var boosts := 0
-var undos := 0
 
 func check(ok: bool, message: String) -> void:
 	if not ok:
@@ -33,21 +32,34 @@ func run() -> void:
 	zones.lane_left.connect(func(): turns += 1; game.move_lane(-1))
 	zones.lane_right.connect(func(): turns += 1; game.move_lane(1))
 	zones.brake_changed.connect(game.set_braking)
-	zones.lane_undo.connect(func(side: int): undos += 1; game.undo_lane(side))
 	var initial_nitro := game.nitro
 	for i in range(4):
 		touch(zones, 0, true)
 		touch(zones, 0, false)
 	check(turns == 4 and game.nitro == initial_nitro and not game.boosting, "Fast steering taps must not spend nitro")
 	var lane_before := game.lane
+	game.player_x = game._lane_x(lane_before)
+	var x_before := game.player_x
+	var speed_before := game.speed
+	game.slingshot_charge = 1.0
 	touch(zones, 0, true, Vector2(680, 40))
-	check(turns == 5 and game.lane == lane_before + 1, "A zone turns on touch-down, without a buffer delay")
+	zones._process(0.035)
+	game._tick(0.035)
+	check(turns == 4 and game.lane == lane_before and game.player_x == x_before,
+		"A first thumb inside the chord window must not move the car")
 	touch(zones, 1, true)
-	check(game.braking and undos == 1 and game.lane == lane_before, "A brake chord takes back the turn of its first thumb")
+	check(game.braking and game.slingshot_t == 0.0 and game.lane == lane_before,
+		"The second thumb brakes on contact without starting a turn or slingshot")
+	game._tick(0.016)
+	check(game.speed < speed_before and game.player_x == x_before, "Braking slows the car without lateral movement")
 	touch(zones, 1, false)
 	zones._process(0.4)
 	touch(zones, 0, false, Vector2(680, 40))
-	check(not game.braking and turns == 5 and game.lane == lane_before, "Brake release must not steer")
+	check(not game.braking and turns == 4 and game.lane == lane_before, "Brake release must not steer")
+	touch(zones, 0, true, Vector2(680, 40))
+	zones._process(ZonesPad.CHORD_WINDOW + 0.01)
+	check(turns == 5 and game.lane == lane_before + 1, "A single held direction still steers")
+	touch(zones, 0, false, Vector2(680, 40))
 
 	var button := NitroButton.new()
 	add_child(button)
@@ -235,7 +247,7 @@ func check_controls_and_tutorial(game: Game, zones: ZonesPad, button: NitroButto
 	touch(zones, 8, true, Vector2(680, 40))
 	touch(zones, 8, false, Vector2(680, 40), true)
 	zones._process(0.5)
-	check(game.lane == lane0 and zones.touches.is_empty(), "A canceled zone tap takes its turn back")
+	check(game.lane == lane0 and zones.touches.is_empty(), "A canceled zone tap never commits a turn")
 	touch(zones, 8, true, Vector2(680, 40))
 	touch(zones, 9, true)
 	touch(zones, 9, false, Vector2(40, 40), true)

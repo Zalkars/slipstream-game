@@ -16,6 +16,8 @@ android {
 
 dependencies {
     compileOnly files('../../godot/android/build/libs/debug/godot-lib.template_debug.aar')
+    // FileProvider is bundled by the Godot Android app template.
+    compileOnly 'androidx.core:core:1.13.1'
     implementation 'com.yandex.android:mobileads:8.6.0'
 }
 

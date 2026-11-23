@@ -23,12 +23,14 @@ func run() -> void:
 	check_puddle_grip(game)
 	check_braking_by_weather(game)
 	check_fps_independence(game)
+	check_acceleration_recovery(game)
+	check_full_nitro(game)
 	check_determinism(game)
 	check_legacy_physics(game)
 	check_weather_schedule(game)
 	check_render_keeps_run_rng(game)
 	check_fog_banks()
-	print("[physics] grip table, puddles, wet braking, FPS independence, deterministic and legacy weather, render RNG isolation, fog banks: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
+	print("[physics] grip, braking and recovery, full nitro, legacy physics, deterministic weather, render RNG isolation, fog: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
 
 
@@ -105,6 +107,52 @@ func check_fps_independence(game: Game) -> void:
 	for v in speeds:
 		check(absf(float(v) - float(speeds[1])) < float(speeds[1]) * 0.01, "Wet braking must not depend on FPS: %s" % str(speeds))
 	print("[physics] wet braking at 30/60/120/144 FPS: ", speeds)
+
+
+func _recover_speed(game: Game, fps: int, version: int) -> float:
+	var slow := _brake_test(game, 0.0, 60)
+	game.physics_version = version
+	for i in range(fps / 2):
+		game._tick(1.0 / float(fps))
+	return (game.speed - slow) / (game.top_speed - slow)
+
+
+func check_acceleration_recovery(game: Game) -> void:
+	var legacy := _recover_speed(game, 60, 4)
+	var current := _recover_speed(game, 60, ChallengeCodec.VERSION)
+	check(current > 0.28 and current < legacy - 0.19, "Throttle must recover smoothly after a hard brake")
+	for fps in [30, 120, 144]:
+		check(absf(_recover_speed(game, fps, ChallengeCodec.VERSION) - current) < 0.02,
+			"Throttle recovery should be consistent at %d FPS" % fps)
+	print("[physics] fraction of lost speed regained in 0.5 s: %.2f legacy, %.2f current" % [legacy, current])
+
+
+func check_full_nitro(game: Game) -> void:
+	_prepare(game, 0.0)
+	game.nitro = 1.0
+	check(game.tap_nitro() and is_equal_approx(game.nitro, 2.0 * Game.NITRO_SEG) and not game.full_nitro,
+		"A first tap immediately spends one charge")
+	for i in range(10):
+		game._tick(0.02)
+	check(game.tap_nitro() and game.full_nitro and is_zero_approx(game.nitro)
+		and is_equal_approx(game.boost_t, 3.0 * Game.BOOST_TIME - 0.20),
+		"A second tap extends the ongoing boost by all remaining fuel")
+	check(not game.tap_nitro(), "A third tap does not extend an empty tank")
+	for i in range(230):
+		game._tick(0.02)
+	check(not game.boosting and not game.full_nitro, "Full nitro ends when the extended duration expires")
+	_prepare(game, 0.0)
+	game.nitro = 1.0
+	game.tap_nitro()
+	for i in range(20):
+		game._tick(0.02)
+	check(not game.tap_nitro() and not game.full_nitro and game.nitro > 0.66,
+		"A late tap cannot spend the reserved charges")
+	_prepare(game, 0.0)
+	game.physics_version = 4
+	game.nitro = 1.0
+	game.tap_nitro()
+	check(not game.tap_nitro() and game.nitro > 0.66, "SLIP4 duels retain single-charge boosts")
 
 
 func _scripted_run(game: Game, seed_val: int) -> Dictionary:

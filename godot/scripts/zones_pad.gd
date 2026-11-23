@@ -7,12 +7,12 @@ extends Control
 
 signal lane_left
 signal lane_right
-# The turn started by the first thumb of a brake chord is taken back.
-signal lane_undo(side: int)
 signal brake_changed(on: bool)
 
-# A second thumb landing this soon after a turn makes it a brake chord.
-const CHORD_WINDOW := 0.12
+# Wait briefly before committing a held direction. A released tap commits
+# immediately, and a second direction starts braking on contact.
+const CHORD_WINDOW := 0.08
+const NO_CONTACT := -999
 
 var font_bold: Font
 var font_ui: Font
@@ -20,20 +20,16 @@ var accent := Color("#e23b30")
 var amber := Color("#f2b134")
 
 var touches := {}
-var _braking_touch_ids := {}
 var _suppressed_touch_ids := {}
 
 var _left_down := false
 var _right_down := false
 var _braking := false
 
-var _recent_turn_side := 0 # -1 left, +1 right, 0 none
-var _recent_turn_timer := 0.0
-var _recent_turn_id := -999
-
-var _brake_release_cooldown := 0.0
-var _repeat_left := 0.0
-var _repeat_right := 0.0
+var _pending_id := NO_CONTACT
+var _pending_time := 0.0
+var _held_side := 0
+var _repeat_time := 0.0
 
 var _anim_left := 0.0
 var _anim_right := 0.0
@@ -48,14 +44,12 @@ func _ready() -> void:
 
 func reset() -> void:
 	touches.clear()
-	_braking_touch_ids.clear()
 	_suppressed_touch_ids.clear()
 	_left_down = false
 	_right_down = false
-	_clear_recent_turn()
-	_brake_release_cooldown = 0.0
-	_repeat_left = 0.0
-	_repeat_right = 0.0
+	_pending_id = NO_CONTACT
+	_held_side = 0
+	_repeat_time = 0.0
 	if _braking:
 		_braking = false
 		brake_changed.emit(false)
@@ -67,193 +61,89 @@ func reset() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		var idx: int = event.index
-		if event.pressed and not event.canceled:
-			touches[idx] = event.position
-			_on_touch_down(idx, event.position)
-		else:
-			if event.canceled:
-				if idx == _recent_turn_id:
-					_undo_recent_turn()
-			else:
-				_on_touch_up(idx)
-			touches.erase(idx)
-			_braking_touch_ids.erase(idx)
-			_suppressed_touch_ids.erase(idx)
-			_evaluate_touches()
+		set_contact(event.index, _side_at(event.position.x), event.pressed and not event.canceled, event.canceled)
 		accept_event()
 	elif event is InputEventScreenDrag:
 		var idx: int = event.index
-		if touches.has(idx):
-			touches[idx] = event.position
+		var side := _side_at(event.position.x)
+		if touches.has(idx) and touches[idx] != side:
+			touches[idx] = side
+			_suppressed_touch_ids[idx] = true
+			if _pending_id == idx:
+				_pending_id = NO_CONTACT
 			_evaluate_touches()
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
 			return
-		var idx := -1
-		if event.pressed:
-			touches[idx] = event.position
-			_on_touch_down(idx, event.position)
-		else:
-			_on_touch_up(idx)
-			touches.erase(idx)
-			_braking_touch_ids.erase(idx)
-			_suppressed_touch_ids.erase(idx)
-			_evaluate_touches()
+		set_contact(-1, _side_at(event.position.x), event.pressed)
 		accept_event()
 
 
-func _on_touch_down(idx: int, pos: Vector2) -> void:
-	var mid_x := size.x * 0.5
-	var side := -1 if pos.x < mid_x else 1
+func _side_at(x: float) -> int:
+	return -1 if x < size.x * 0.5 else 1
 
-	# Check if both sides now have active touches
-	var has_left := false
-	var has_right := false
-	for tid in touches:
-		var p: Vector2 = touches[tid]
-		if p.x < mid_x:
-			has_left = true
-		else:
-			has_right = true
 
-	if has_left and has_right:
-		# Simultaneous two-zone touch -> engage brake immediately
-		_undo_recent_turn()
-		_suppress_all_current_touches()
-		if not _braking:
-			_braking = true
-			brake_changed.emit(true)
-		_left_down = false
-		_right_down = false
-		queue_redraw()
-		return
-
-	if _braking:
-		_suppressed_touch_ids[idx] = true
-		return
-
-	# If cooldown from a recent brake release is still running, suppress lingering finger
-	if _brake_release_cooldown > 0.0:
-		_suppressed_touch_ids[idx] = true
-		return
-
-	# Steering taps never spend nitro; only the dedicated button does.
-
-	# Turn at once. If the other thumb lands within CHORD_WINDOW this was the
-	# start of a brake chord and the turn is taken back (lane_undo).
-	_recent_turn_side = side
-	_recent_turn_timer = CHORD_WINDOW
-	_recent_turn_id = idx
-	if side == -1:
-		_left_down = true
-		_repeat_left = 0.28
-		lane_left.emit()
+func set_contact(id: int, side: int, down: bool, canceled := false) -> void:
+	if down:
+		if touches.has(id):
+			return
+		touches[id] = side
+		if _pending_id == NO_CONTACT and _held_side == 0 and not _braking:
+			_pending_id = id
+			_pending_time = CHORD_WINDOW
 	else:
-		_right_down = true
-		_repeat_right = 0.28
-		lane_right.emit()
-
-
-func _on_touch_up(idx: int) -> void:
-	# A finger that already lifted made a tap, not the first half of a chord.
-	if idx == _recent_turn_id:
-		_clear_recent_turn()
-
-
-func _clear_recent_turn() -> void:
-	_recent_turn_side = 0
-	_recent_turn_timer = 0.0
-	_recent_turn_id = -999
-
-
-func _undo_recent_turn() -> void:
-	if _recent_turn_side != 0 and _recent_turn_timer > 0.0:
-		lane_undo.emit(_recent_turn_side)
-	_clear_recent_turn()
-
-
-func _suppress_all_current_touches() -> void:
-	for tid in touches:
-		_braking_touch_ids[tid] = true
-		_suppressed_touch_ids[tid] = true
+		if id == _pending_id:
+			if not canceled:
+				_turn(int(touches[id]))
+			_pending_id = NO_CONTACT
+		touches.erase(id)
+		_suppressed_touch_ids.erase(id)
+	_evaluate_touches()
 
 
 func _evaluate_touches() -> void:
-	var mid_x := size.x * 0.5
-	var left := false
-	var right := false
-
-	for idx in touches:
-		var p: Vector2 = touches[idx]
-		if p.x < mid_x:
-			left = true
-		else:
-			right = true
-
-	var want_brake := left and right
+	var sides := touches.values()
+	var want_brake := sides.has(-1) and sides.has(1)
 	if want_brake:
-		_undo_recent_turn()
-		_suppress_all_current_touches()
-		if not _braking:
-			_braking = true
-			brake_changed.emit(true)
-		_left_down = false
-		_right_down = false
-	else:
-		if _braking:
-			# Braking ended because at least one thumb lifted
-			_braking = false
-			brake_changed.emit(false)
-			# Grace cooldown: touches that were held during brake MUST NOT steer
-			_suppress_all_current_touches()
-			_brake_release_cooldown = 0.15
-			_left_down = false
-			_right_down = false
-			_clear_recent_turn()
-
-		# Check for continuous steering only from unsuppressed touches
-		var valid_left := false
-		var valid_right := false
-		for idx in touches:
-			if _suppressed_touch_ids.has(idx):
-				continue
-			var p: Vector2 = touches[idx]
-			if p.x < mid_x:
-				valid_left = true
-			else:
-				valid_right = true
-
-		if not valid_left:
-			_left_down = false
-		if not valid_right:
-			_right_down = false
-
+		_pending_id = NO_CONTACT
+		for id in touches:
+			_suppressed_touch_ids[id] = true
+	if _braking != want_brake:
+		_braking = want_brake
+		brake_changed.emit(_braking)
+	var active_side := 0
+	for id in touches:
+		if not _suppressed_touch_ids.has(id):
+			active_side = int(touches[id])
+			break
+	if active_side != _held_side:
+		_held_side = active_side
+		_repeat_time = 0.28
+	_left_down = _held_side < 0
+	_right_down = _held_side > 0
 	queue_redraw()
 
 
+func _turn(side: int) -> void:
+	if side < 0:
+		lane_left.emit()
+	else:
+		lane_right.emit()
+
+
 func _process(delta: float) -> void:
-	if _brake_release_cooldown > 0.0:
-		_brake_release_cooldown = maxf(0.0, _brake_release_cooldown - delta)
-
-	if _recent_turn_timer > 0.0:
-		_recent_turn_timer -= delta
-		if _recent_turn_timer <= 0.0:
-			_clear_recent_turn()
-
-	# Handle held repeat
-	if not _braking:
-		if _left_down:
-			_repeat_left -= delta
-			if _repeat_left <= 0.0:
-				lane_left.emit()
-				_repeat_left = 0.18
-		if _right_down:
-			_repeat_right -= delta
-			if _repeat_right <= 0.0:
-				lane_right.emit()
-				_repeat_right = 0.18
+	if _pending_id != NO_CONTACT:
+		_pending_time -= delta
+		if _pending_time <= 0.0:
+			var side := int(touches[_pending_id])
+			_pending_id = NO_CONTACT
+			_turn(side)
+	if _held_side != 0:
+		_repeat_time -= delta
+		if _repeat_time <= 0.0:
+			_turn(_held_side)
+			_repeat_time = 0.18
 
 	var target_left := 1.0 if (_left_down or _braking) else 0.0
 	var target_right := 1.0 if (_right_down or _braking) else 0.0

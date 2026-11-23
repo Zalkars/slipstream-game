@@ -1,8 +1,7 @@
 class_name NitroButton
 extends Control
 
-# Press-to-fire nitro: configurable charge segments, a press spends one
-# segment. It fires on touch-down so a boost never waits for the release.
+# Press-to-fire nitro. The game handles a second press and reports full boost.
 # Three full charges also arm the Chrono-Shield crash rewind.
 
 signal tapped
@@ -12,6 +11,7 @@ const SEGMENTS := 3
 var segments := SEGMENTS
 var charge := 0.0
 var active := false
+var full_boost := false
 var shield_ready := false
 var label_font: Font
 var _down := false
@@ -30,6 +30,7 @@ func reset() -> void:
 	_touch_id = -1
 	_down = false
 	active = false
+	full_boost = false
 	shield_ready = false
 	_flash = 0.0
 	queue_redraw()
@@ -52,9 +53,10 @@ func set_charge(v: float) -> void:
 		queue_redraw()
 
 
-func set_active(v: bool) -> void:
-	if active != v:
+func set_active(v: bool, full := false) -> void:
+	if active != v or full_boost != full:
 		active = v
+		full_boost = full
 		queue_redraw()
 
 
@@ -87,8 +89,9 @@ func _draw() -> void:
 	draw_arc(c, r - 1.5, 0.0, TAU, 48, Color(0.42, 0.90, 0.98, 0.45) if shield_ready else Color(1, 1, 1, 0.13), 1.5, true)
 
 	if active:
-		draw_circle(c, r - 2.0, Color(0.95, 0.25, 0.16, 0.15))
-		draw_arc(c, r - 4.0, 0.0, TAU, 48, Color(1.0, 0.45, 0.30, 0.50), 3.0, true)
+		var active_tint := Color("#c591ff") if full_boost else Color("#ff734d")
+		draw_circle(c, r - 2.0, Color(active_tint, 0.15))
+		draw_arc(c, r - 4.0, 0.0, TAU, 48, Color(active_tint, 0.64), 3.0, true)
 
 	var ring_r := r - 10.0
 	var span := TAU / float(segments)
@@ -104,7 +107,7 @@ func _draw() -> void:
 			draw_arc(c, ring_r, a0, a0 + (a1 - a0) * frac, 24, col, 7.0, true)
 
 	var inner := ring_r - 14.0
-	var base := Color("#c22f27") if active else Color("#1b1f24")
+	var base := Color("#6735a8") if full_boost else (Color("#c22f27") if active else Color("#1b1f24"))
 	draw_circle(c, inner, base)
 	draw_arc(c, inner, 0.0, TAU, 40, Color(1, 1, 1, 0.07), 2.0, true)
 	if _down:
@@ -130,8 +133,8 @@ func _draw() -> void:
 	)
 
 	if label_font:
-		var txt := "ЩИТ" if (shield_ready and not active) else "НИТРО"
-		var fs := 15
+		var txt := "ФОРСАЖ" if full_boost else ("ЩИТ" if shield_ready and not active else "НИТРО")
+		var fs := 14
 		var tw := label_font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs).x
 		var tcol := Color(0.50, 0.95, 1.0, 0.88) if (shield_ready and not active) else Color(1, 1, 1, 0.58)
 		draw_string(label_font, c + Vector2(-tw * 0.5, inner * 0.82), txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs, tcol)
@@ -142,12 +145,12 @@ func _draw() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		if event.pressed and not _down:
+		if event.pressed and not event.canceled and not _down:
 			_touch_id = event.index
 			_down = true
 			queue_redraw()
 			tapped.emit()
-		elif not event.pressed and _down and event.index == _touch_id:
+		elif (not event.pressed or event.canceled) and _down and event.index == _touch_id:
 			_touch_id = -1
 			_down = false
 			queue_redraw()

@@ -19,8 +19,6 @@ class Stage extends SubViewport:
 		stage.car = Cars.get_car(car_index)
 		stage.size = Vector2(W, H)
 		add_child(stage)
-		stage.set_process(false)
-		stage.set_time(1.7)
 
 
 func _initialize() -> void:

@@ -166,6 +166,16 @@ func check_followup_render() -> void:
 		game.cars.append({"lane": k % 4, "x": game._lane_x(k % 4), "y": -150.0 + k * 150.0, "w": game.car_w, "h": game.car_h,
 			"kind": 0, "color": Color(0.5, 0.5, 0.5), "rel": 0.7, "cur_speed": 500.0, "braking": false, "silhouette": "sedan"})
 	game.lighting_fx.frame(1.0 / 60.0)
+	var lighting := game.lighting_fx
+	var player_lamp: PointLight2D = lighting._lights[0]
+	var ground_lamp: PointLight2D = lighting._road_shadow_lights[0]
+	check(player_lamp.enabled and not player_lamp.shadow_enabled
+		and player_lamp.range_item_cull_mask == (RenderStack.MASK_OBJECTS | RenderStack.MASK_AIR),
+		"Vehicle bodies receive the beam without the footprint shadow")
+	check(ground_lamp.enabled and ground_lamp.shadow_enabled and ground_lamp.range_item_cull_mask == RenderStack.MASK_ROAD
+		and ground_lamp.texture == player_lamp.texture and ground_lamp.position == player_lamp.position
+		and ground_lamp.energy == player_lamp.energy,
+		"The matching beam still projects the shadow once on the asphalt")
 	for c in game.cars:
 		var found := false
 		for ri in range(game.lighting_fx._req_count):
@@ -173,5 +183,10 @@ func check_followup_render() -> void:
 			if int(r.kind) == 0 and absf(float(r.pos.x) - float(c.x)) < 4.0 and absf(float(r.pos.y) - (float(c.y) - game.car_h * 0.5)) < game.car_h * 0.2:
 				found = true
 		check(found, "Traffic car at y=%.0f must have its headlight beam" % float(c.y))
+	game._snap_challenge_weather(0.15, Game.WEATHER_CLEAR)
+	game.lighting_fx.frame(1.0 / 60.0)
+	check(not ground_lamp.enabled, "Pooled headlight shadows turn off after sunrise")
+	game.set_graphics(GfxPresets.LOW)
+	check(lighting._road_shadow_lights.is_empty(), "Low preset does not allocate shadow lights")
 	game.queue_free()
 	await get_tree().process_frame

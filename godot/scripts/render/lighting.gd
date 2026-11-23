@@ -43,6 +43,7 @@ var _lp: Dictionary = {}  # scratch lamp points (CarLamps.points)
 
 var canvas_mod: CanvasModulate
 var _lights: Array = []        # PointLight2D pool
+var _road_shadow_lights: Array[PointLight2D] = []
 var _occluders: Array = []     # LightOccluder2D pool
 var _occ_used := 0
 var _car_poly: OccluderPolygon2D
@@ -104,7 +105,18 @@ func apply_params(p: Dictionary) -> void:
 		var l: PointLight2D = _lights.pop_back()
 		l.queue_free()
 	var filt := int(p.get("shadow_filter", 0))
-	for l in _lights:
+	var shadow_count := mini(want, int(p.get("shadow_lights", 0)))
+	while _road_shadow_lights.size() < shadow_count:
+		var l := PointLight2D.new()
+		l.blend_mode = Light2D.BLEND_MODE_ADD
+		l.range_item_cull_mask = RenderStack.MASK_ROAD
+		l.shadow_enabled = true
+		l.enabled = false
+		add_child(l)
+		_road_shadow_lights.append(l)
+	while _road_shadow_lights.size() > shadow_count:
+		_road_shadow_lights.pop_back().queue_free()
+	for l in _road_shadow_lights:
 		l.shadow_filter = [Light2D.SHADOW_FILTER_NONE, Light2D.SHADOW_FILTER_PCF5, Light2D.SHADOW_FILTER_PCF13][clampi(filt, 0, 2)]
 		l.shadow_filter_smooth = 1.5
 	if game != null and game.race_art != null:
@@ -287,9 +299,10 @@ func collect() -> void:
 		if braking:
 			_request(1, (tl + tr) * 0.5 + Vector2(0.0, g.car_h * 0.08), 0.0, Color(1.0, 0.12, 0.06), 0.85, 150.0, 800.0, false, -3)
 		if g.boosting:
+			var nitro_tint := Color("#b175ff") if g.full_nitro else Color("#ff8c33")
 			for tp in [tl, tr]:
-				_add(NITRO, tp.lerp((tl + tr) * 0.5, 0.25) + Vector2(0.0, g.car_h * 0.07), PI * 0.5, Color(1.0, 0.55, 0.20), 1.0, 90.0, -2)
-			_request(1, (tl + tr) * 0.5 + Vector2(0.0, g.car_h * 0.14), 0.0, Color(1.0, 0.55, 0.22), 0.9, 130.0, 790.0, false, -4)
+				_add(NITRO, tp.lerp((tl + tr) * 0.5, 0.25) + Vector2(0.0, g.car_h * 0.07), PI * 0.5, nitro_tint, 1.0, 90.0, -2)
+			_request(1, (tl + tr) * 0.5 + Vector2(0.0, g.car_h * 0.14), 0.0, nitro_tint, 0.9, 130.0, 790.0, false, -4)
 	# Traffic. Headlights are on from before a car enters the screen; the
 	# light pool is shared, and cars without a PointLight2D get an identical
 	# looking additive beam (paint_light_pools), so there is no pop-in.
@@ -421,7 +434,8 @@ func _assign_lights() -> void:
 		_order[i] = i
 	var reqs := _requests
 	_order.sort_custom(func(a: int, b: int) -> bool: return float(reqs[a].prio) > float(reqs[b].prio))
-	var shadows_left := int(params.get("shadow_lights", 0))
+	var shadow_used := 0
+	var full_mask := RenderStack.MASK_ROAD | RenderStack.MASK_OBJECTS | RenderStack.MASK_AIR
 	var n := _lights.size()
 	_had_light.clear()
 	for li in range(n):
@@ -459,10 +473,24 @@ func _assign_lights() -> void:
 			l.offset = Vector2.ZERO
 			l.rotation = 0.0
 			l.height = 170.0
-		var sh := bool(r.shadow) and shadows_left > 0
-		if sh:
-			shadows_left -= 1
-		l.shadow_enabled = sh
+		l.range_item_cull_mask = full_mask
+		if bool(r.shadow) and shadow_used < _road_shadow_lights.size():
+			# Ground occluders are flat footprints. Let the road receive their
+			# shadows without projecting the same sharp edge across the bodywork.
+			l.range_item_cull_mask = RenderStack.MASK_OBJECTS | RenderStack.MASK_AIR
+			var road_light := _road_shadow_lights[shadow_used]
+			road_light.enabled = true
+			road_light.position = l.position
+			road_light.color = l.color
+			road_light.energy = l.energy
+			road_light.texture = l.texture
+			road_light.texture_scale = l.texture_scale
+			road_light.offset = l.offset
+			road_light.rotation = l.rotation
+			road_light.height = l.height
+			shadow_used += 1
+	for i in range(shadow_used, _road_shadow_lights.size()):
+		_road_shadow_lights[i].enabled = false
 
 
 func _occluder() -> LightOccluder2D:
