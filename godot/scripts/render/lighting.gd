@@ -308,12 +308,13 @@ func collect() -> void:
 		var onscreen := cy > -ch and cy < H + ch
 		var tid := _tid(c)
 		var sprite: Dictionary = g._race_sprite(c)
-		CarLamps.points(CarLamps.anchors(c, sprite, false), Vector2(cx, cy), CarLamps.draw_box(sprite, cw, ch), 0.0, _lp)
+		var yaw := float(c.get("yaw", 0.0))
+		CarLamps.points(CarLamps.anchors(c, sprite, false), Vector2(cx, cy), CarLamps.draw_box(sprite, cw, ch), yaw, _lp)
 		var hl: Vector2 = _lp.head[0]
 		var hr: Vector2 = _lp.head[1]
 		if light > 0.02:
-			_add(HEAD, hl, -PI * 0.5, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
-			_add(HEAD, hr, -PI * 0.5, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
+			_add(HEAD, hl, -PI * 0.5 + yaw, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
+			_add(HEAD, hr, -PI * 0.5 + yaw, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
 			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0), 0.0, Color(1.0, 0.92, 0.78), 1.1 * light, 420.0 * k,
 				520.0 - dist * 0.18 + (60.0 if onscreen else -120.0), true, tid * 4, hl.distance_to(hr) / (420.0 * k) * 2.0)
 		var braking := bool(c.get("braking", false))
@@ -334,9 +335,9 @@ func collect() -> void:
 	# Street lamps.
 	var street := light * clampf(1.0 - float(g.blackout_amount), 0.0, 1.0)
 	if street > 0.04:
-		var period: float = g.DECOR_CYCLE
 		for di in g.decor_lamps:
 			var d: Dictionary = g.decor[di]
+			var period := float(d.get("cycle", g.DECOR_CYCLE))
 			var base_y := fposmod(float(d.y) + float(g.scroll), period)
 			for kk in range(-1, int(ceil(H / period)) + 1):
 				var y: float = base_y + float(kk) * period
@@ -490,7 +491,7 @@ func _update_occluders() -> void:
 			var o := _occluder()
 			o.occluder = _car_poly
 			o.position = Vector2(float(c.x), cy)
-			o.rotation = float(c.get("ram_rot", 0.0))
+			o.rotation = float(c.get("ram_rot", 0.0)) + float(c.get("yaw", 0.0))
 			o.scale = Vector2(float(c.w) * 0.84, float(c.h) * 0.90)
 		if g.running and not g.demo:
 			var o := _occluder()
@@ -499,9 +500,9 @@ func _update_occluders() -> void:
 			o.rotation = g.player_tilt
 			o.scale = Vector2(g.car_w * 0.84, g.car_h * 0.90)
 		# Lamp posts: their shadows fall across the lanes from the next lamp.
-		var period: float = g.DECOR_CYCLE
 		for di in g.decor_poles:
 			var d: Dictionary = g.decor[di]
+			var period := float(d.get("cycle", g.DECOR_CYCLE))
 			var base_y := fposmod(float(d.y) + float(g.scroll), period)
 			for kk in range(-1, int(ceil(H / period)) + 1):
 				var y: float = base_y + float(kk) * period

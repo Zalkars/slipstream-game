@@ -45,6 +45,8 @@ const MU_AQUAPLANE := 0.35
 # a sense of weight, not a harder game.
 const BRAKE_GRIP_WEIGHT := 0.75
 const STEER_GRIP_WEIGHT := 0.40
+# SLIP4+: the car answers a lane tap about a third faster.
+const STEER_RESPONSE := 1.35
 const AQUAPLANE_TIME := 0.45
 const CRUISE_KMH := 100.0
 const TOP_KMH_SCALE := 0.3
@@ -58,13 +60,17 @@ const CUTIN_WINDOW := 0.72
 const CUTIN_MAX_GAP := 230.0
 const ROAD_CYCLE := 3600.0
 const DECOR_CYCLE := 7800.0
+# Street lamps repeat over a longer stretch than the rest of the roadside.
+const LAMP_CYCLE := DECOR_CYCLE * 3.0
 const ROADSIDE_ART := preload("res://scripts/roadside_art.gd")
 const COIN_PICKUP := preload("res://art/roadside/pickup_coin.svg")
 const BATTERY_PICKUP := preload("res://art/roadside/pickup_battery.svg")
 const PICKUP_GLOW := 0.34
 const OVERHEAD_SPACING := 36000.0
-# One game minute per real second: dusk takes ~5 min, full night ~4 min.
-const DAY_LENGTH := 1440.0
+# Seconds before a weather change that the HUD starts showing it.
+const FORECAST_LEAD := 25.0
+# A full day takes 18 minutes; full night lasts about 4.5 of them.
+const DAY_LENGTH := 1080.0
 const WEATHER := ChallengeCodec.WEATHER
 const WEATHER_CLEAR := WEATHER.CLEAR
 const WEATHER_CLOUDY := WEATHER.CLOUDY
@@ -74,17 +80,17 @@ const WEATHER_FOG := WEATHER.FOG
 # t, ambient r/g/b, night factor. One full day takes DAY_LENGTH seconds.
 const SKY_KEYS := [
 	[0.00, 1.00, 1.00, 1.00, 0.00],
-	[0.24, 1.00, 1.00, 1.00, 0.00],
-	[0.37, 1.05, 0.97, 0.88, 0.00],
-	[0.44, 1.04, 0.90, 0.77, 0.08],
-	[0.49, 0.94, 0.80, 0.77, 0.28],
-	[0.55, 0.70, 0.65, 0.76, 0.60],
-	[0.60, 0.46, 0.49, 0.62, 0.88],
-	[0.64, 0.42, 0.46, 0.60, 1.00],
-	[0.80, 0.42, 0.46, 0.60, 1.00],
-	[0.86, 0.54, 0.52, 0.63, 0.66],
-	[0.92, 0.80, 0.68, 0.62, 0.22],
-	[0.97, 0.95, 0.90, 0.84, 0.03],
+	[0.20, 1.00, 1.00, 1.00, 0.00],
+	[0.31, 1.05, 0.97, 0.88, 0.00],
+	[0.38, 1.04, 0.90, 0.77, 0.08],
+	[0.44, 0.94, 0.80, 0.77, 0.28],
+	[0.50, 0.70, 0.65, 0.76, 0.60],
+	[0.555, 0.46, 0.49, 0.62, 0.88],
+	[0.59, 0.42, 0.46, 0.60, 1.00],
+	[0.82, 0.42, 0.46, 0.60, 1.00],
+	[0.875, 0.54, 0.52, 0.63, 0.66],
+	[0.94, 0.80, 0.68, 0.62, 0.22],
+	[0.98, 0.95, 0.90, 0.84, 0.03],
 	[1.00, 1.00, 1.00, 1.00, 0.00],
 ]
 const PALETTE := preload("res://scripts/traffic_palette.gd")
@@ -156,7 +162,14 @@ var slip := 0.0
 var time_of_day := 0.15
 var weather_state := WEATHER_CLEAR
 var weather_timer := 90.0
+# The weather that follows the current one (SLIP4+), shown as a forecast.
+var weather_next := -1
 var _weather_rng := RandomNumberGenerator.new()
+# The session clock. Driver training and challenges run at their own hour;
+# the world clock keeps going meanwhile and comes back for the next free run.
+var world_tod := 0.15
+var world_weather := WEATHER_CLEAR
+var _world_held := false
 var rain_amount := 0.0
 var fog_amount := 0.0
 var cloud_amount := 0.05
@@ -333,6 +346,7 @@ func _ready() -> void:
 	# Each session starts at a random hour and weather; after that the clock
 	# only moves forward, through the menu and every run.
 	_snap_challenge_weather(randf(), WEATHER.pick(randi_range(0, 99)))
+	weather_next = -1
 	start_demo()
 
 func _setup_render() -> void:
@@ -538,8 +552,6 @@ func _gen_decor() -> void:
 		for i in range(12):
 			_add_decor(rng, side, i * 650.0 + 120, 4, ROADSIDE_ART.DRAIN, 0.65, -9, 0)
 		# Infrastructure has deliberate spacing and stays clear of the trees.
-		for i in range(12):
-			_add_decor(rng, side, i * 650.0 + (210.0 if side > 0 else 0.0), 2, 0, 1.0, 0.0, 3)
 		for i in range(5):
 			_add_decor(rng, side, i * 1560.0 + 330.0, 3, 0, 1.0, 0.0, 3)
 	# Buildings sit on cleared plots, away from the shoulder and guardrail.
@@ -561,10 +573,49 @@ func _gen_decor() -> void:
 			if gap > bounds.position.y - float(plot.y) - margin and gap < bounds.end.y - float(plot.y) + margin:
 				return false
 		return true)
+	for side in [-1, 1]:
+		_gen_lamps(side, plots)
 	for plot in plots:
 		_add_decor(rng, int(plot.side), float(plot.y), 5, int(plot.prop), 1.0, 4.0, 2)
 	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a.layer) < int(b.layer))
 	_index_decor()
+
+
+# Street lamps come in irregular runs: uneven gaps, the odd close pair or
+# long dark stretch, and the two verges never step in time. A separate RNG
+# keeps every other decor draw where it was.
+func _gen_lamps(side: int, plots: Array) -> void:
+	var lrng := RandomNumberGenerator.new()
+	lrng.seed = 52711 if side < 0 else 80233
+	var y := lrng.randf_range(0.0, 260.0) + (0.0 if side < 0 else 330.0)
+	var stop := y + LAMP_CYCLE - 420.0
+	while y < stop:
+		# Buildings own their plots: slide the lamp on past the yard.
+		while y < stop and _in_building_plot(side, y, plots, 45.0):
+			y += 40.0
+		if y >= stop:
+			break
+		_add_decor(lrng, side, y, 2, 0, lrng.randf_range(0.93, 1.06), lrng.randf_range(0.0, 9.0), 3)
+		decor[decor.size() - 1]["y"] = fposmod(y, LAMP_CYCLE)
+		decor[decor.size() - 1]["cycle"] = LAMP_CYCLE
+		var roll := lrng.randf()
+		if roll < 0.14:
+			y += lrng.randf_range(250.0, 330.0)
+		elif roll < 0.22:
+			y += lrng.randf_range(900.0, 1150.0)
+		else:
+			y += lrng.randf_range(430.0, 760.0)
+
+
+func _in_building_plot(side: int, y: float, plots: Array, margin: float) -> bool:
+	for plot in plots:
+		if int(plot.side) != side:
+			continue
+		var gap := fposmod(y - float(plot.y) + DECOR_CYCLE * 0.5, DECOR_CYCLE) - DECOR_CYCLE * 0.5
+		var bounds := _building_plot_bounds(plot)
+		if gap > bounds.position.y - float(plot.y) - margin and gap < bounds.end.y - float(plot.y) + margin:
+			return true
+	return false
 
 
 # Spatial index of the decor (render cost, 0.8.0): y buckets along the cycle
@@ -592,7 +643,7 @@ func _index_decor() -> void:
 		var kind := int(d.kind)
 		if kind == 5:
 			_decor_tall.append(i)
-		else:
+		elif kind != 2:
 			var b := clampi(int(float(d.y) / bw), 0, DECOR_BUCKETS - 1)
 			_decor_buckets[b].append(i)
 		if kind == 2:
@@ -715,6 +766,24 @@ func _snap_challenge_weather(tod: float, w_state: int) -> void:
 	lightning_next = 7.0
 
 
+# Training and challenges set their own hour and weather; remember the
+# session's so that dying in them does not rewind the day.
+func _hold_world_clock() -> void:
+	if _world_held:
+		return
+	world_tod = time_of_day
+	world_weather = weather_state
+	_world_held = true
+
+
+func _restore_world_clock() -> void:
+	if not _world_held:
+		return
+	_world_held = false
+	_snap_challenge_weather(world_tod, world_weather)
+	weather_next = -1
+
+
 func start_run(training := false) -> void:
 	_fx_emission_t = 0.0
 	reset_swipe()
@@ -725,20 +794,26 @@ func start_run(training := false) -> void:
 		active_run_seed = int(challenge_config.get("seed", 1))
 		if active_run_seed == 0:
 			active_run_seed = 1
+		_hold_world_clock()
 		_snap_challenge_weather(float(challenge_config.get("tod", 0.15)), int(challenge_config.get("weather", WEATHER_CLEAR)))
 	else:
 		active_run_seed = (randi() & 0x7FFFFFFF) | 1
 		if training:
+			_hold_world_clock()
 			_snap_challenge_weather(0.15, WEATHER_CLEAR)
 		else:
-			# The race continues the menu's clock and sky: a new random hour
+			# The race continues the session clock and sky: a new random hour
 			# per run turned night into day within seconds of a restart.
+			_restore_world_clock()
 			_snap_challenge_weather(time_of_day, weather_state)
 	run_rng.seed = active_run_seed
+	weather_next = -1
 	if uses_random_weather():
 		_weather_rng.seed = active_run_seed ^ 0x57454154
-		var duration: Vector2 = WEATHER.DURATION[weather_state]
+		var duration := WEATHER.duration(weather_state, physics_version)
 		weather_timer = _weather_rng.randf_range(duration.x, duration.y)
+		if physics_version >= WEATHER.FORECAST_VERSION:
+			weather_next = WEATHER.pick(_weather_rng.randi_range(0, 99), physics_version)
 	start_tod = time_of_day
 	start_weather = weather_state
 
@@ -751,6 +826,11 @@ func start_run(training := false) -> void:
 	score = 0.0
 	record_target = 0
 	bonus = 0.0
+	score_pops.clear()
+	_rw_streak = 0
+	_rw_streak_t = 0.0
+	_undo_dir = 0
+	_undo_t = 0.0
 	near = 0
 	combo = 0
 	combo_t = 0.0
@@ -866,6 +946,7 @@ func start_demo() -> void:
 	running = false
 	demo = true
 	physics_version = PHYSICS_VERSION
+	_restore_world_clock()
 	paused = false
 	boosting = false
 	braking = false
@@ -885,6 +966,7 @@ func start_demo() -> void:
 	hyperdrive_active = false
 	road_event_type = EVENT_NONE
 	road_event.clear()
+	score_pops.clear()
 	blackout_amount = 0.0
 	score_mult = 1
 	closed_lane = -1
@@ -906,12 +988,32 @@ func move_lane(dir: int) -> void:
 		return
 	var old_lane := lane
 	lane = clampi(lane + dir, 0, LANES - 1)
+	_undo_dir = 0
 	if lane != old_lane:
+		_undo_dir = lane - old_lane
+		_undo_t = LANE_UNDO_WINDOW
 		_cutin_window = CUTIN_WINDOW * cutin_window_mult
 		_cutin_lane = lane
 		if slingshot_charge >= 0.99 and not tutorial_mode:
 			_fire_slingshot(lane - old_lane)
 		lane_changed.emit(lane)
+
+
+# Two-zone controls turn on touch-down; when the second thumb lands right
+# after (a brake chord) the turn it started is taken back.
+const LANE_UNDO_WINDOW := 0.16
+var _undo_dir := 0
+var _undo_t := 0.0
+
+
+func undo_lane(dir: int) -> void:
+	if not running or crashed or _undo_dir != dir or _undo_t <= 0.0:
+		return
+	_undo_dir = 0
+	_undo_t = 0.0
+	lane = clampi(lane - dir, 0, LANES - 1)
+	_cutin_window = 0.0
+	lane_changed.emit(lane)
 
 
 func _fire_slingshot(dir: int) -> void:
@@ -1456,6 +1558,8 @@ func _finish_rewind() -> void:
 func _update_weather(dt: float) -> void:
 	# One full day/night cycle lasts DAY_LENGTH seconds, independent of runs.
 	time_of_day = fposmod(time_of_day + dt / DAY_LENGTH, 1.0)
+	if _world_held:
+		world_tod = fposmod(world_tod + dt / DAY_LENGTH, 1.0)
 
 	weather_timer -= dt
 	if weather_timer <= 0.0:
@@ -1509,9 +1613,15 @@ func uses_random_weather() -> bool:
 
 func _next_weather() -> void:
 	if uses_random_weather():
-		var roll := randi_range(0, 99) if demo else _weather_rng.randi_range(0, 99)
-		weather_state = WEATHER.pick(roll)
-		var duration: Vector2 = WEATHER.DURATION[weather_state]
+		var v := physics_version
+		if v >= WEATHER.FORECAST_VERSION:
+			if weather_next < 0:
+				weather_next = WEATHER.pick(_weather_roll(), v)
+			weather_state = weather_next
+			weather_next = WEATHER.pick(_weather_roll(), v)
+		else:
+			weather_state = WEATHER.pick(_weather_roll(), v)
+		var duration := WEATHER.duration(weather_state, v)
 		weather_timer = randf_range(duration.x, duration.y) if demo else _weather_rng.randf_range(duration.x, duration.y)
 		return
 	# Old duel codes share the weather draws with the traffic RNG.
@@ -1539,6 +1649,17 @@ func _next_weather() -> void:
 			weather_timer = _rfr(38.0, 66.0)
 		_:
 			weather_timer = _rfr(50.0, 82.0)
+
+
+func _weather_roll() -> int:
+	return randi_range(0, 99) if demo else _weather_rng.randi_range(0, 99)
+
+
+# The weather coming next, or -1 while no change is due soon.
+func forecast_weather() -> int:
+	if weather_next < 0 or weather_next == weather_state or weather_timer > FORECAST_LEAD:
+		return -1
+	return weather_next
 
 
 func _weather_targets() -> Array:
@@ -1675,6 +1796,8 @@ func _tick(dt: float) -> void:
 		handle_k *= lerpf(1.0, grip_mu, STEER_GRIP_WEIGHT)
 		if aquaplane_t > 0.0:
 			handle_k *= 0.5
+		if physics_version >= 4:
+			handle_k *= STEER_RESPONSE
 		player_x = lerpf(player_x, target_x, 1.0 - exp(-dt * handle_k))
 		var yaw := 0.0022 * (1.0 + (1.0 - grip_mu) * 1.6)
 		var yaw_max := 0.10 + (1.0 - grip_mu) * 0.08
@@ -1683,6 +1806,9 @@ func _tick(dt: float) -> void:
 		player_x = lerpf(player_x, target_x, minf(1.0, dt * handle_k))
 		player_tilt = lerpf(player_tilt, clampf((target_x - player_x) * 0.0022, -0.10, 0.10), minf(1.0, dt * 9.0 * (2.5 if time_scale < 0.5 else 1.0)))
 
+	if _undo_t > 0.0:
+		_undo_t -= dt
+	_update_score_pops(dt)
 	if combo_t > 0.0:
 		combo_t -= dt
 		if combo_t <= 0.0:
@@ -1809,11 +1935,21 @@ func _move_traffic(dt: float, player_speed: float, ref_speed: float, is_demo: bo
 			if float(c.x) < -240.0 or float(c.x) > W + 240.0 or float(c.y) < -400.0 or float(c.y) > H + 340.0:
 				cars.remove_at(i)
 			continue
+		var prev_x := float(c.x)
 		if float(c.get("lane_move_t", 0.0)) > 0.0:
 			c["lane_move_t"] = maxf(0.0, float(c.lane_move_t) - dt)
-			c.x = lerpf(float(c.x), _lane_x(int(c.lane)), minf(1.0, dt * 6.5))
+			if physics_version >= 4 and c.has("lane_from_x"):
+				# An S-curve: the car eases out of its lane and into the next.
+				var p := 1.0 - float(c.lane_move_t) / LC_MOVE_TIME
+				c.x = lerpf(float(c.lane_from_x), _lane_x(int(c.lane)), smoothstep(0.0, LC_EASE_SHARE, p))
+			else:
+				c.x = lerpf(float(c.x), _lane_x(int(c.lane)), minf(1.0, dt * 6.5))
 			if float(c.lane_move_t) <= 0.0:
 				c["signal_dir"] = 0
+		# Visual only: the body yaws into the lane change and straightens out.
+		var vx := (float(c.x) - prev_x) / maxf(dt, 0.0001)
+		var yaw_goal := clampf(vx * LC_YAW_PER_SPEED, -LC_YAW_MAX, LC_YAW_MAX)
+		c["yaw"] = lerpf(float(c.get("yaw", 0.0)), yaw_goal, 1.0 - exp(-dt * 11.0))
 		var desired_speed: float = float(c.get("rel", 0.72)) * ref_speed
 		var target_speed := desired_speed
 		var wants_brake := false
@@ -2281,6 +2417,9 @@ func _lane_wall_safe(y_center: float, adding_lane: int) -> bool:
 
 # Seconds a traffic car takes to slide into its new lane once it commits.
 const LC_MOVE_TIME := 0.72
+const LC_EASE_SHARE := 0.80
+const LC_YAW_PER_SPEED := 0.00046
+const LC_YAW_MAX := 0.17
 # Time gap (s) a car keeps in front of the player when it moves into the
 # player's lane, on top of a fixed clearance; scaled by the closing speed.
 const LC_PLAYER_TIME_GAP := 1.3
@@ -2376,6 +2515,7 @@ func _update_traffic_signals(dt: float) -> void:
 			if st <= 0.0:
 				c["signal_t"] = 0.0
 				c["lane"] = cand
+				c["lane_from_x"] = float(c.x)
 				c["lane_move_t"] = LC_MOVE_TIME
 
 	# OFF-ROAD LED lightbar makes traffic ahead politely move aside if safe.
@@ -2535,8 +2675,14 @@ const RW_LEAD_MIN := 1500.0
 const RW_LEAD_MAX := 4600.0
 const RW_ZONE_LEN := 2600.0
 const RW_CONES := 9
-const RW_CONE_PTS := 40
-const RW_SIGN_PTS := 75
+const RW_CONE_PTS := 60
+const RW_SIGN_PTS := 120
+# Knocks in quick succession pay more: +50% per extra hit, up to x3.
+const RW_STREAK_WINDOW := 1.6
+const RW_STREAK_MAX := 5
+const RW_SWEEP_PTS := 500
+const RW_CONE_NITRO := 0.03
+const RW_SIGN_NITRO := 0.06
 const RW_STOP_DEPTH := 34.0
 const RW_BARRIER_SPACING := 110.0
 const RW_BARRIER_HALF_LENGTH := 31.0
@@ -2646,8 +2792,21 @@ func _knock_roadworks_object(o: Dictionary, pos: Vector2) -> void:
 	o["vx"] = side * randf_range(260.0, 460.0)
 	o["vy"] = -randf_range(380.0, 620.0)
 	o["spin"] = side * randf_range(7.0, 13.0)
-	var pts := (RW_CONE_PTS if is_cone else RW_SIGN_PTS) * _effective_score_mult()
+	_rw_streak = _rw_streak + 1 if _rw_streak_t > 0.0 else 1
+	_rw_streak_t = RW_STREAK_WINDOW
+	var pts := roadworks_knock_points(is_cone, _rw_streak) * _effective_score_mult()
 	bonus += pts
+	nitro = minf(max_nitro, nitro + (RW_CONE_NITRO if is_cone else RW_SIGN_NITRO))
+	var label := "+%d" % pts
+	if _rw_streak > 1:
+		label += "  ×%s" % _streak_factor_text(_rw_streak)
+	_add_score_pop(pos, label, Color("#ffb347") if is_cone else Color("#ffd447"))
+	if is_cone:
+		road_event["cones_hit"] = int(road_event.get("cones_hit", 0)) + 1
+		if int(road_event.cones_hit) == RW_CONES:
+			var sweep := RW_SWEEP_PTS * _effective_score_mult()
+			bonus += sweep
+			_add_score_pop(pos + Vector2(0.0, -46.0), "ВСЕ КОНУСЫ  +%d" % sweep, Color("#7fe9ff"), 1.4)
 	speed *= 0.97 if is_cone else 0.94
 	shake = maxf(shake, 5.0 if is_cone else 9.0)
 	Sfx.bump()
@@ -2662,6 +2821,53 @@ func _knock_roadworks_object(o: Dictionary, pos: Vector2) -> void:
 			"col": Color(1.0, 0.50, 0.12) if k % 2 == 0 else Color(0.96, 0.96, 0.94),
 			"size": randf_range(2.5, 5.5),
 		})
+
+
+static func roadworks_knock_points(is_cone: bool, streak: int) -> int:
+	var base := RW_CONE_PTS if is_cone else RW_SIGN_PTS
+	return int(float(base * (1 + clampi(streak, 1, RW_STREAK_MAX))) / 2.0)
+
+
+static func _streak_factor_text(streak: int) -> String:
+	var k := float(1 + clampi(streak, 1, RW_STREAK_MAX)) / 2.0
+	return str(int(k)) if is_equal_approx(k, roundf(k)) else ("%.1f" % k).replace(".", ",")
+
+
+var _rw_streak := 0
+var _rw_streak_t := 0.0
+# Floating "+points" labels over the road (screen space, rising).
+var score_pops: Array = []
+
+
+func _add_score_pop(pos: Vector2, label: String, col: Color, life := 1.0) -> void:
+	if score_pops.size() >= 8:
+		score_pops.pop_front()
+	score_pops.append({"p": pos + Vector2(0.0, -26.0), "text": label, "col": col, "t": 0.0, "life": life})
+
+
+func _update_score_pops(dt: float) -> void:
+	if _rw_streak_t > 0.0:
+		_rw_streak_t -= dt
+	for i in range(score_pops.size() - 1, -1, -1):
+		var sp: Dictionary = score_pops[i]
+		sp.t = float(sp.t) + dt
+		sp.p = Vector2(sp.p) + Vector2(0.0, -70.0 * dt)
+		if float(sp.t) >= float(sp.life):
+			score_pops.remove_at(i)
+
+
+func _draw_score_pops() -> void:
+	if score_pops.is_empty() or _hud_font == null:
+		return
+	for sp in score_pops:
+		var k := float(sp.t) / float(sp.life)
+		var alpha := smoothstep(0.0, 0.08, k) * (1.0 - smoothstep(0.65, 1.0, k))
+		var fs := int(lerpf(30.0, 26.0, k))
+		var label := str(sp.text)
+		var tw := _hud_font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs).x
+		var at := Vector2(clampf(Vector2(sp.p).x - tw * 0.5, 12.0, W - tw - 12.0), Vector2(sp.p).y)
+		draw_string_outline(_hud_font, at, label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs, 6, Color(0, 0, 0, 0.70 * alpha))
+		draw_string(_hud_font, at, label, HORIZONTAL_ALIGNMENT_LEFT, -1.0, fs, Color(sp.col, alpha))
 
 
 # Closest road-works obstacle ahead of a traffic car in the closed lane (its
@@ -2772,11 +2978,13 @@ func build_challenge_payload(player_name: String) -> Dictionary:
 
 func _draw() -> void:
 	var t_draw := Time.get_ticks_usec()
+	update_sun()
 	draw_set_transform(Vector2(_sx, _sy))
 
 	_draw_rails()
 	_draw_cloud_shadows()
 	_draw_scenery()
+	_draw_overhead_lamps(Art.PART_SHADOW)
 	_draw_overhead_decor(Art.PART_SHADOW)
 	_draw_road_event_under()
 	_draw_items()
@@ -2785,6 +2993,7 @@ func _draw() -> void:
 	_draw_overhead_decor(Art.PART_BODY)
 	_draw_speed_streaks()
 	_draw_road_event_over()
+	_draw_score_pops()
 	_draw_rear_hazards()
 
 	draw_set_transform(Vector2.ZERO)
@@ -2827,6 +3036,47 @@ func get_sky_ambient() -> Color:
 		clampf(amb.g * (dim - cool * 0.08), 0.0, 1.3),
 		clampf(amb.b * (dim + cool * 0.22), 0.0, 1.3)
 	)
+
+
+# The sun crosses the sky off screen: it rises on the right, stands high
+# behind the top edge at noon and sets on the left, so shadows swing from
+# long and leftward to short to long and rightward. A faint moon takes over
+# at night. Clouds, rain and fog soften and then remove the shadows.
+const SUNRISE_TOD := -0.05
+const SUNSET_TOD := 0.565
+const SUN_MAX_ELEVATION := 1.05
+var sun_is_moon := false
+
+
+static func sun_state(tod: float) -> Dictionary:
+	var day_len := SUNSET_TOD - SUNRISE_TOD
+	var day := fposmod(tod - SUNRISE_TOD, 1.0) / day_len
+	var moon := day > 1.0
+	var arc := day
+	if moon:
+		arc = (fposmod(tod - SUNRISE_TOD, 1.0) - day_len) / (1.0 - day_len)
+	var lift := sin(clampf(arc, 0.0, 1.0) * PI)
+	var elevation := maxf(0.06, lift * SUN_MAX_ELEVATION)
+	var length := clampf(1.0 / tan(elevation), 0.55, 2.3)
+	var dir := Vector2(-cos(arc * PI), 0.46).normalized()
+	var strength := smoothstep(0.0, 0.16, lift) * lerpf(1.0, 0.62, inverse_lerp(0.55, 2.3, length))
+	if moon:
+		strength *= 0.30
+		length = minf(length, 1.4)
+	return {"offset": dir * length, "strength": strength, "moon": moon, "arc": arc}
+
+
+func update_sun() -> void:
+	var s := sun_state(time_of_day)
+	var overcast := clampf(cloud_amount * 0.72 + fog_amount * 0.85 + rain_amount * 0.45 + storm_amount * 0.35, 0.0, 0.94)
+	var strength := float(s.strength) * (1.0 - overcast)
+	if bool(s.moon):
+		strength *= get_night_factor()
+	else:
+		strength *= 1.0 - get_night_factor() * 0.85
+	sun_is_moon = bool(s.moon)
+	Art.sun = s.offset
+	Art.sun_alpha = clampf(strength, 0.0, 1.0)
 
 
 func get_night_factor() -> float:
@@ -2915,9 +3165,7 @@ func _draw_scenery() -> void:
 			var kind: int = d.kind
 			var size: float = d.size
 			if kind == 5:
-				roadside_art.draw_building(self, p, int(d.prop), int(d.variant), size * car_w / 86.0, side, ambient, Vector2(_sx, _sy), (1.0 - get_light_factor()) * (1.0 - cloud_amount * 0.7))
-			elif kind == 2:
-				Art.streetlight(self, p, -side, 0.9 * size, Lighting.STREET_ARM, Art.PART_SHADOW)
+				roadside_art.draw_building(self, p, int(d.prop), int(d.variant), size * car_w / 86.0, side, ambient, Vector2(_sx, _sy), 0.25 + 0.75 * Art.sun_alpha)
 			elif kind == 3:
 				Art.road_sign(self, p, side)
 			elif not roadside_art.draw_prop(self, p, int(d.prop), int(d.variant), size, ambient):
@@ -2927,18 +3175,21 @@ func _draw_scenery() -> void:
 				elif kind == 1:
 					Art.bush(self, p, 34.0 * size)
 
-# Lamp arms reach over the road, so the posts go on top of the cars.
-func _draw_overhead_lamps() -> void:
+# Lamp arms reach over the road, so the posts go on top of the cars; their
+# shadows are drawn with the scenery, under the cars.
+func _draw_overhead_lamps(part := Art.PART_BODY) -> void:
+	var margin := 100.0 + (Art.sun.length() * 66.0 if part == Art.PART_SHADOW else 0.0)
 	for di in decor_lamps:
 		var d: Dictionary = decor[di]
-		var base_y := fposmod(float(d.y) + scroll, DECOR_CYCLE)
-		for k in range(-1, int(ceil(H / DECOR_CYCLE)) + 1):
-			var y: float = base_y + k * DECOR_CYCLE
-			if y < -100.0 or y > H + 100.0:
+		var period := float(d.get("cycle", DECOR_CYCLE))
+		var base_y := fposmod(float(d.y) + scroll, period)
+		for k in range(-1, int(ceil(H / period)) + 1):
+			var y: float = base_y + k * period
+			if y < -margin or y > H + margin:
 				continue
 			var side: float = d.side
 			var x: float = (road_x - 52.0 - float(d.off)) if side < 0 else (road_x + road_w + 52.0 + float(d.off))
-			Art.streetlight(self, Vector2(x, y), -side, 0.9 * float(d.size), Lighting.STREET_ARM, Art.PART_BODY)
+			Art.streetlight(self, Vector2(x, y), -side, 0.9 * float(d.size), Lighting.STREET_ARM, part)
 
 
 func _draw_overhead_decor(part: int) -> void:
@@ -2956,6 +3207,17 @@ func _draw_overhead_decor(part: int) -> void:
 
 
 func _draw_items() -> void:
+	# Pickups hover above the road: a contact shade plus a sun-cast shadow.
+	var sun_a := Art.sun_alpha
+	for it in items:
+		var p := Vector2(float(it.x), float(it.y))
+		if p.y < -60.0 or p.y > H + 60.0:
+			continue
+		var coin := int(it.kind) == 0
+		var r := 18.0 if coin else 16.0
+		_glow(p + Vector2(0.0, 4.0), r * 1.1, Color(0, 0, 0, 0.16), Vector2(1.0, 0.62 if coin else 1.1))
+		if sun_a > 0.01:
+			_glow(p + Art.sun_offset(22.0), r * 1.2, Color(0, 0, 0, 0.30 * sun_a), Vector2(1.0, 0.7 if coin else 1.25))
 	for it in items:
 		var p := Vector2(float(it.x), float(it.y))
 		var coin := int(it.kind) == 0
@@ -3017,7 +3279,7 @@ func _draw_cars() -> void:
 			_draw_player()
 			player_drawn = true
 		var center := Vector2(float(c.x), float(c.y))
-		var ram_rot := float(c.get("ram_rot", 0.0))
+		var ram_rot := float(c.get("ram_rot", 0.0)) + float(c.get("yaw", 0.0))
 		if ram_rot != 0.0:
 			draw_set_transform(center + Vector2(_sx, _sy), ram_rot)
 			center = Vector2.ZERO
@@ -3038,7 +3300,7 @@ func _draw_cars() -> void:
 				"accent": c.get("accent", Color(0.86, 0.27, 0.22)),
 			})
 		else:
-			_draw_vehicle_shadow(center, float(c.w), float(c.h))
+			_draw_vehicle_shadow(center, float(c.w), float(c.h), ram_rot)
 			race_art.draw(self, center, float(c.w), float(c.h), sprite)
 		# Stop lights and indicators are light sources: see render/lighting.gd.
 		if ram_rot != 0.0:
@@ -3085,7 +3347,7 @@ func _draw_player() -> void:
 			"light": get_light_factor(),
 		})
 	else:
-		_draw_vehicle_shadow(Vector2.ZERO, car_w, car_h)
+		_draw_vehicle_shadow(Vector2.ZERO, car_w, car_h, player_tilt)
 		race_art.draw(self, Vector2.ZERO, car_w, car_h, sprite)
 		# Stop lights come from render/lighting.gd; brake-disc heat stays here.
 		if brake_heat > 0.35:
@@ -3106,9 +3368,13 @@ func _race_sprite(car: Dictionary) -> Dictionary:
 	return car["_race_sprite"]
 
 
-func _draw_vehicle_shadow(center: Vector2, w: float, h: float) -> void:
-	_glow(center + Vector2(0.0, h * 0.02), w * 0.82,
-		Color(0.0, 0.0, 0.0, 0.30), Vector2(0.62, 1.02))
+func _draw_vehicle_shadow(center: Vector2, w: float, h: float, rot := 0.0) -> void:
+	_glow(center + Vector2(0.0, h * 0.02), w * 0.80,
+		Color(0.0, 0.0, 0.0, 0.24), Vector2(0.62, 1.02))
+	if Art.sun_alpha > 0.01:
+		# The body is about a fifth of its length tall; draw space is rotated.
+		var off := Art.sun_offset(h * 0.13).rotated(-rot)
+		_glow(center + off, w * 0.82, Color(0.0, 0.0, 0.0, 0.20 * Art.sun_alpha), Vector2(0.64, 1.02))
 
 # Distance haze, sunset wash and vignette. Drawn on the unshaded FX overlay
 # (render/render_stack.gd), pre-tinted by the ambient light, so these large
@@ -3131,6 +3397,16 @@ func paint_haze(ci: CanvasItem) -> void:
 		var wc := Color(1.0 * lit.r, 0.54 * lit.g, 0.24 * lit.b, warmth * 0.14)
 		Fx.vgrad(ci, Rect2(0.0, 0.0, W, 520.0), wc, Color(wc.r, wc.g, wc.b, 0.0))
 		ci.draw_rect(Rect2(0.0, 0.0, W, H), Color(1.0 * lit.r, 0.58 * lit.g, 0.30 * lit.b, warmth * 0.045))
+
+	# The sun itself stays off screen; its warm glare drifts along the edge
+	# it shines from, opposite the shadows.
+	if not sun_is_moon and Art.sun_alpha > 0.03 and glow_tex != null:
+		var away := -Art.sun.normalized()
+		var sp := Vector2(W * 0.5, H * 0.42) + away * Vector2(W * 0.95, H * 0.62)
+		var sun_low := clampf((Art.sun.length() - 0.55) / 1.75, 0.0, 1.0)
+		var glare := Color(1.0 * lit.r, lerpf(0.94, 0.70, sun_low) * lit.g, lerpf(0.82, 0.46, sun_low) * lit.b, 0.13 * Art.sun_alpha)
+		var rad := 760.0 + sun_low * 160.0
+		ci.draw_texture_rect(glow_tex, Rect2(sp - Vector2(rad, rad), Vector2(rad, rad) * 2.0), false, glare)
 
 	var vig := 0.13 + night * 0.12 + storm_amount * 0.08
 	Fx.hgrad(ci, Rect2(0.0, 0.0, 120.0, H), Color(0.0, 0.0, 0.0, vig), Color(0.0, 0.0, 0.0, 0.0))
@@ -3246,7 +3522,12 @@ func _draw_road_event_under() -> void:
 		var y1 := minf(H + 40.0, barrier_head)
 		if y1 > y0:
 			var lx := road_x + float(closed_lane) * lane_w
-			draw_rect(Rect2(lx + 4.0, y0, lane_w - 8.0, y1 - y0), Color(0.37, 0.24, 0.14, 0.12))
+			# The closed lane is milled down: darker, with fine machine grooves.
+			draw_rect(Rect2(lx + 4.0, y0, lane_w - 8.0, y1 - y0), Color(0.10, 0.09, 0.08, 0.22))
+			var gy := tail_y + ceilf((y0 - tail_y) / 9.0) * 9.0
+			while gy < y1:
+				draw_line(Vector2(lx + 8.0, gy), Vector2(lx + lane_w - 8.0, gy), Color(0.0, 0.0, 0.0, 0.10), 1.0)
+				gy += 9.0
 			var mid_y := (tail_y + barrier_head) * 0.5
 			_draw_excavation(Vector2(_rw_x(0.45), mid_y - 240.0), Vector2(lane_w * 0.30, 105.0), 0.0)
 			_draw_excavation(Vector2(_rw_x(0.48), mid_y + 35.0), Vector2(lane_w * 0.34, 151.0), 1.0)
@@ -3261,26 +3542,99 @@ func _draw_road_event_under() -> void:
 # --- road-works art (procedural, top-down, drawn on the objects pass) --------
 
 func _draw_excavation(p: Vector2, radius: Vector2, variant: float) -> void:
-	if p.y + radius.y < -35.0 or p.y - radius.y > H + 35.0:
+	if p.y + radius.y * 1.3 < -35.0 or p.y - radius.y * 1.3 > H + 35.0:
 		return
-	var edge := PackedVector2Array()
-	var inside := PackedVector2Array()
-	for i in range(12):
-		var dir := Vector2.from_angle(TAU * float(i) / 12.0)
-		var cut := radius * dir * (0.91 + 0.09 * sin(float(i) * 5.2 + variant))
-		edge.append(p + cut)
-		inside.append(p + cut * Vector2(0.77, 0.91) + Vector2(2.0, 5.0))
-	draw_colored_polygon(edge, Color("#927456"))
-	draw_colored_polygon(inside, Color("#3b2d25"))
-	for i in range(5):
-		var y := p.y + radius.y * (-0.48 + float(i) * 0.23)
-		var x := p.x + sin(float(i) * 3.4 + variant) * radius.x * 0.26
-		draw_line(Vector2(x - radius.x * 0.3, y), Vector2(x + radius.x * 0.3, y - 12.0), Color("#564034"), 3.0, true)
-	for i in range(8):
-		var angle := float(i) * 2.4 + variant
-		var stone := p + Vector2.from_angle(angle) * radius * (0.88 + 0.10 * sin(angle * 2.7))
-		draw_circle(stone, 2.0 + float(i % 3), Color("#b29876"), true, -1.0, true)
+	var v := int(variant)
+	var sun_a := Art.sun_alpha
+	var sun_dir := Art.sun.normalized() if Art.sun.length() > 0.01 else Vector2(0.4, 0.6)
+	# Spoil spread around the cut, with loose clods.
+	draw_colored_polygon(_pit_shape(p, radius * 1.17, variant, 0.10), Color("#80634a"))
+	draw_colored_polygon(_pit_shape(p, radius * 1.08, variant + 0.7, 0.07), Color("#94775a"))
+	for i in range(16):
+		var a := float(i) * 2.39996 + variant * 1.3
+		var q := p + Vector2(cos(a), sin(a)) * radius * (1.04 + 0.16 * fposmod(float(i) * 0.618, 1.0))
+		var cr := 2.2 + float((i * 7 + v) % 4)
+		draw_circle(q + sun_dir * 1.5, cr, Color(0, 0, 0, 0.20))
+		draw_circle(q, cr, Color("#a88a66") if i % 3 else Color("#6b5038"))
+	# Saw-cut asphalt lip, then the stepped earth walls.
+	draw_colored_polygon(_pit_shape(p, radius, variant, 0.05), Color("#4b4946"))
+	draw_colored_polygon(_pit_shape(p, radius * 0.95, variant, 0.05), Color("#7b5b40"))
+	draw_colored_polygon(_pit_shape(p, radius * 0.86, variant, 0.05), Color("#5f4530"))
+	draw_colored_polygon(_pit_shape(p, radius * 0.74, variant, 0.04), Color("#3a2a1f"))
+	# The floor: the wall nearest the sun throws its shadow onto it.
+	var lit_shift := sun_dir * radius.x * 0.16 * (0.35 + 0.65 * sun_a)
+	draw_colored_polygon(_pit_shape(p + lit_shift, radius * 0.60, variant + 2.0, 0.04), Color("#4d3828"))
+	for i in range(4):
+		var ly := p.y + radius.y * (-0.42 + float(i) * 0.28)
+		var lx := p.x + sin(float(i) * 2.1 + variant) * radius.x * 0.18
+		draw_line(Vector2(lx - radius.x * 0.28, ly), Vector2(lx + radius.x * 0.28, ly + 5.0), Color("#33251b"), 2.0, true)
+	if wetness > 0.15:
+		var water := _pit_shape(p + lit_shift * 0.5 + Vector2(0.0, radius.y * 0.12), radius * Vector2(0.44, 0.38), variant + 4.0, 0.06)
+		draw_colored_polygon(water, Color(0.22, 0.27, 0.30, 0.85 * clampf(wetness * 1.4, 0.0, 1.0)))
+		draw_line(water[3], water[7], Color(0.70, 0.78, 0.84, 0.30 * wetness), 2.0, true)
+	match v:
+		0:
+			# Orange cable duct crossing the pit, bedded in sand.
+			var a := p + Vector2(-radius.x * 0.98, radius.y * 0.06)
+			var b := p + Vector2(radius.x * 0.98, radius.y * 0.16)
+			draw_line(a + sun_dir * 5.0, b + sun_dir * 5.0, Color(0, 0, 0, 0.35), 11.0, true)
+			draw_line(a, b, Color("#d8692a"), 10.0, true)
+			draw_line(a + Vector2(0, -2.5), b + Vector2(0, -2.5), Color("#f3a15e"), 2.5, true)
+			for k in range(3):
+				var q := a.lerp(b, 0.25 + 0.25 * float(k))
+				draw_line(q + Vector2(0, -6), q + Vector2(0, 6), Color("#7c3a15"), 2.0, true)
+		1:
+			# Timber shoring along both long walls and a water main along the cut.
+			for side in [-1.0, 1.0]:
+				var sx: float = p.x + side * radius.x * 0.80
+				var board := Rect2(sx - 5.0, p.y - radius.y * 0.66, 10.0, radius.y * 1.32)
+				draw_rect(board, Color("#9b7b4f"))
+				var by := board.position.y + 14.0
+				while by < board.end.y:
+					draw_line(Vector2(board.position.x, by), Vector2(board.end.x, by), Color("#6f5434"), 1.5)
+					by += 16.0
+			for strut in [-0.35, 0.05, 0.45]:
+				var sy := p.y + radius.y * float(strut)
+				draw_line(Vector2(p.x - radius.x * 0.76, sy), Vector2(p.x + radius.x * 0.76, sy), Color("#8a8f94"), 4.0, true)
+			var top := p + Vector2(-radius.x * 0.12, -radius.y * 0.95)
+			var bot := p + Vector2(-radius.x * 0.06, radius.y * 0.95)
+			draw_line(top + sun_dir * 6.0, bot + sun_dir * 6.0, Color(0, 0, 0, 0.35), 18.0, true)
+			draw_line(top, bot, Color("#2f5878"), 17.0, true)
+			draw_line(top + Vector2(-4.5, 0), bot + Vector2(-4.5, 0), Color("#5b8db5"), 3.0, true)
+			for k in range(4):
+				var q := top.lerp(bot, 0.2 + 0.2 * float(k))
+				draw_rect(Rect2(q.x - 10.0, q.y - 3.0, 20.0, 6.0), Color("#5c6268"))
+		_:
+			# A steel road plate laid over half of the cut.
+			var plate := PackedVector2Array([
+				p + Vector2(-radius.x * 1.05, -radius.y * 1.02), p + Vector2(radius.x * 1.02, -radius.y * 0.94),
+				p + Vector2(radius.x * 1.06, radius.y * 0.06), p + Vector2(-radius.x * 1.01, -radius.y * 0.02),
+			])
+			Art.lifted_shadow(self, plate, 4.0, 0.45)
+			draw_colored_polygon(plate, Color("#6d7378"))
+			draw_polyline(PackedVector2Array([plate[0], plate[1], plate[2], plate[3], plate[0]]), Color("#4a4f53"), 2.0, true)
+			for k in range(7):
+				var f := (float(k) + 0.5) / 7.0
+				var l0 := plate[0].lerp(plate[3], f)
+				var l1 := plate[1].lerp(plate[2], f)
+				draw_line(l0.lerp(l1, 0.04), l0.lerp(l1, 0.96), Color("#80878c"), 1.0)
+			for corner in plate:
+				draw_circle(p + (corner - p) * 0.86, 2.5, Color("#3f4448"))
 
+
+func _pit_shape(c: Vector2, r: Vector2, seed_v: float, jag: float) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	var n := 28
+	pts.resize(n)
+	for i in range(n):
+		var a := TAU * float(i) / float(n)
+		var ca := cos(a)
+		var sa := sin(a)
+		# A rounded rectangle, as dug by a machine, with an uneven edge.
+		var d := Vector2(signf(ca) * pow(absf(ca), 0.55), signf(sa) * pow(absf(sa), 0.55))
+		var k := 1.0 + jag * (0.6 * sin(float(i) * 2.7 + seed_v * 3.1) + 0.4 * sin(float(i) * 5.3 + seed_v))
+		pts[i] = c + d * r * k
+	return pts
 
 # (a) Roadside sign beyond the guard rail on the closed side.
 func _draw_roadworks_warning_sign(y: float) -> void:
@@ -3340,7 +3694,11 @@ func _draw_cone(pos: Vector2, rot: float, alpha: float, knocked: bool) -> void:
 		draw_rect(Rect2(-2.0, -6.0, 7.0, 12.0), Color(0.96, 0.96, 0.94, alpha))
 		draw_set_transform(Vector2(_sx, _sy))
 		return
-	draw_circle(pos + Vector2(3.0, 5.0), 16.0, Color(0, 0, 0, 0.25))
+	draw_circle(pos + Vector2(1.0, 2.0), 15.0, Color(0, 0, 0, 0.16))
+	if Art.sun_alpha > 0.01:
+		var tip := pos + Art.sun_offset(26.0)
+		draw_colored_polygon(PackedVector2Array([pos + Vector2(-12, 0).rotated(Art.sun.angle() + PI * 0.5), tip,
+			pos + Vector2(12, 0).rotated(Art.sun.angle() + PI * 0.5)]), Color(0, 0, 0, 0.26 * Art.sun_alpha))
 	draw_rect(Rect2(pos.x - 14.0, pos.y - 14.0, 28.0, 28.0), Color(0.90, 0.36, 0.08))
 	draw_circle(pos, 12.0, Color(0.98, 0.46, 0.10))
 	draw_arc(pos, 8.0, 0.0, TAU, 18, Color(0.97, 0.97, 0.95), 3.5)

@@ -1,7 +1,8 @@
 class_name NitroButton
 extends Control
 
-# Tap-to-fire nitro: configurable charge segments, tap spends one segment.
+# Press-to-fire nitro: configurable charge segments, a press spends one
+# segment. It fires on touch-down so a boost never waits for the release.
 # Three full charges also arm the Chrono-Shield crash rewind.
 
 signal tapped
@@ -145,12 +146,11 @@ func _gui_input(event: InputEvent) -> void:
 			_touch_id = event.index
 			_down = true
 			queue_redraw()
+			tapped.emit()
 		elif not event.pressed and _down and event.index == _touch_id:
 			_touch_id = -1
 			_down = false
 			queue_redraw()
-			if not event.canceled and Rect2(Vector2.ZERO, size).has_point(event.position):
-				tapped.emit()
 		accept_event()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		# With touch emulation the corresponding ScreenTouch owns the press.
@@ -160,11 +160,10 @@ func _gui_input(event: InputEvent) -> void:
 			_touch_id = -1
 			_down = true
 			queue_redraw()
+			tapped.emit()
 		elif not event.pressed and _down and _touch_id == -1:
 			_down = false
 			queue_redraw()
-			if Rect2(Vector2.ZERO, size).has_point(event.position):
-				tapped.emit()
 		accept_event()
 
 

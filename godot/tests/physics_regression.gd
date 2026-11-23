@@ -154,7 +154,12 @@ func check_weather_schedule(game: Game) -> void:
 	var counts := [0, 0, 0, 0, 0]
 	for roll in range(100):
 		counts[Game.WEATHER.pick(roll)] += 1
-	check(counts == [75, 15, 5, 1, 4], "Clear and cloudy weather dominate, with separate rain, storm and fog odds")
+	check(counts == [38, 22, 20, 7, 13], "Rain, storms and fog come up regularly next to clear and cloudy skies")
+	var counts_v3 := [0, 0, 0, 0, 0]
+	for roll in range(100):
+		counts_v3[Game.WEATHER.pick(roll, 3)] += 1
+	check(counts_v3 == [75, 15, 5, 1, 4] and Game.WEATHER.duration(Game.WEATHER_CLEAR, 3) == Vector2(90.0, 135.0),
+		"SLIP3 codes keep their original weather odds and durations")
 	var sequences: Array = []
 	for tod in [0.2, 0.72]:
 		game.challenge_config = {"type": "daily", "seed": 441, "tod": tod, "weather": Game.WEATHER_CLEAR}
@@ -170,6 +175,24 @@ func check_weather_schedule(game: Game) -> void:
 			"Both rain and fog occur at every time of day")
 		sequences.append(sequence)
 	check(sequences[0] == sequences[1], "The weather sequence does not depend on the time of day")
+	# SLIP4 announces the next weather: the forecast is what comes next.
+	game.challenge_config = {"type": "daily", "seed": 77, "tod": 0.2, "weather": Game.WEATHER_CLEAR}
+	game.start_run()
+	var changes := 0
+	var forecast_ok := true
+	for i in range(60):
+		var promised := game.weather_next
+		game.weather_timer = Game.FORECAST_LEAD - 1.0
+		var shown := game.forecast_weather()
+		if promised != game.weather_state and shown != promised:
+			forecast_ok = false
+		var before := game.weather_state
+		game._next_weather()
+		if game.weather_state != promised:
+			forecast_ok = false
+		if game.weather_state != before:
+			changes += 1
+	check(forecast_ok and changes >= 30, "The forecast shows the weather that follows (%d changes in 60 draws)" % changes)
 	game._snap_challenge_weather(0.72, Game.WEATHER_CLOUDY)
 	check(game.rain_amount == 0.0 and game.fog_fx.density_now() == 0.0, "Cloudy nights have no drizzle or fog")
 	game._snap_challenge_weather(0.2, Game.WEATHER_RAIN)

@@ -28,7 +28,7 @@ var combo_label: Label
 var coins_label: Label
 var speed_label: Label
 var slip_label: Label
-var weather_label: Label
+var weather_clock: WeatherClock
 var challenge_hud_panel: PanelContainer
 var challenge_hud_label: Label
 var event_banner: PanelContainer
@@ -72,6 +72,7 @@ var g_desc: Label
 var g_price: Label
 var g_hint: Label
 var g_action: Button
+var g_race: Button
 var g_vals: Array = []
 var g_bars: Array = []
 var g_perk_title: Label
@@ -257,6 +258,9 @@ func _ready() -> void:
 	if "--qa-traffic-2d" in OS.get_cmdline_user_args():
 		_shots = true
 		_qa_traffic_seq(true)
+	if "--qa-scene" in OS.get_cmdline_user_args():
+		_shots = true
+		_qa_scene_seq()
 
 
 func _process(delta: float) -> void:
@@ -852,8 +856,8 @@ func _on_hud(score: int, kmh: int, nitro: float, combo: int, run_coins: int, boo
 	nitro_btn.set_charge(nitro)
 	nitro_btn.set_active(boosting)
 	nitro_btn.set_shield_ready(not tutorial_active and nitro >= 1.0 - 0.002)
-	if weather_label != null:
-		weather_label.text = game.weather_status_text()
+	if weather_clock != null:
+		weather_clock.set_state(game.weather_state, game.get_night_factor() > 0.5, game.get_clock_text(), game.forecast_weather())
 	coins_label.text = ("МОНЕТЫ  " + _fmt(run_coins)) if run_coins > 0 else ""
 	if combo > 1:
 		combo_label.text = "×%d СЕРИЯ" % combo
@@ -1167,7 +1171,8 @@ func _input(event: InputEvent) -> void:
 func _sync_ads_banner() -> void:
 	var want := (in_game and race_banner_on) or (not in_game and not revive_open and (
 		(menu != null and menu.visible) or (garage != null and garage.visible)
-		or (result_panel != null and result_panel.visible)))
+		or (result_panel != null and result_panel.visible) or (settings != null and settings.visible)
+		or (how != null and how.visible) or (challenges_panel != null and challenges_panel.visible)))
 	if want == _banner_shown:
 		return
 	_banner_shown = want
@@ -1178,7 +1183,7 @@ func _sync_ads_banner() -> void:
 # Screens that share the banner start below its real, measured height.
 func _apply_banner_layout() -> void:
 	var top := AdsService.banner_height_in(get_viewport()) if _banner_shown else 0.0
-	for c in [menu, garage, result_panel]:
+	for c in [menu, garage, result_panel, settings, how, challenges_panel]:
 		if c != null:
 			c.offset_top = top
 	# The race HUD uses the height reserved at race start, never the live one.
@@ -1620,9 +1625,10 @@ func _build_hud() -> void:
 	slip_label.visible = false
 	hud.add_child(slip_label)
 
-	weather_label = _label("", 15, Color(0.64, 0.71, 0.78), font_bold)
-	_place(weather_label, 46, 216, 350, 20)
-	hud.add_child(weather_label)
+	weather_clock = WeatherClock.new()
+	weather_clock.font = font_num
+	_place(weather_clock, 300, 38, 290, 66)
+	hud.add_child(weather_clock)
 
 	var heat_cap := _label("ТОРМОЗА", 14, Color(0.68, 0.72, 0.74), font_bold, HORIZONTAL_ALIGNMENT_RIGHT)
 	_place(heat_cap, 430, 202, 244, 16)
@@ -1712,6 +1718,7 @@ func _build_hud() -> void:
 	zones_pad.font_ui = font_ui
 	zones_pad.lane_left.connect(func(): game.move_lane(-1))
 	zones_pad.lane_right.connect(func(): game.move_lane(1))
+	zones_pad.lane_undo.connect(func(side: int): game.undo_lane(side))
 	zones_pad.brake_changed.connect(func(on: bool): game.set_braking(on))
 	_place_bottom(zones_pad, 0, 0, 720, 260)
 	hud.add_child(zones_pad)
@@ -1871,12 +1878,19 @@ func _build_garage() -> void:
 	_place_bottom(g_price, 52, 250, 616, 34)
 	garage.add_child(g_price)
 
-	g_action = _button("", true)
+	g_action = _button("", false)
 	g_action.custom_minimum_size = Vector2(0, 92)
-	g_action.add_theme_font_size_override("font_size", 32)
+	g_action.add_theme_font_size_override("font_size", 28)
 	g_action.pressed.connect(_garage_action)
-	_place_bottom(g_action, 52, 148, 616, 92)
+	_place_bottom(g_action, 52, 148, 340, 92)
 	garage.add_child(g_action)
+
+	g_race = _button("ПОЕХАЛИ", true)
+	g_race.custom_minimum_size = Vector2(0, 92)
+	g_race.add_theme_font_size_override("font_size", 32)
+	g_race.pressed.connect(_garage_race)
+	_place_bottom(g_race, 408, 148, 260, 92)
+	garage.add_child(g_race)
 
 	g_hint = _label("", 16, Color(0.52, 0.57, 0.60), font_bold, HORIZONTAL_ALIGNMENT_CENTER)
 	_place_bottom(g_hint, 52, 100, 616, 26)
@@ -1907,6 +1921,15 @@ func _garage_action() -> void:
 		_save()
 		Sfx.record()
 		_update_all_labels()
+
+
+# Races straight from the garage. An owned car on show is picked first;
+# otherwise the race uses the car already selected.
+func _garage_race() -> void:
+	if owned.has(garage_index) and selected != garage_index:
+		selected = garage_index
+		_save()
+	_start_solo_game()
 
 
 func _update_garage() -> void:
@@ -3227,6 +3250,61 @@ func _qa_traffic_seq(use2d := false) -> void:
 	await get_tree().create_timer(0.2).timeout
 	get_tree().quit()
 
+
+# Scene QA: sun and shadows over a day, road-works pits, the footbridge,
+# a lane-changing car, pickups, score pops and the HUD weather clock.
+func _qa_scene_seq() -> void:
+	await get_tree().create_timer(1.0).timeout
+	tutorial_done = true
+	show_garage()
+	await get_tree().create_timer(0.6).timeout
+	await _shot("qa_garage")
+	start_game()
+	await get_tree().create_timer(1.2).timeout
+	var spacing := game.overhead_spacing
+	var section := 3
+	while (hash(Vector2i(section, game.active_run_seed % 2147483647)) & 0xFFFF) % 3 != 1:
+		section += 1
+	var roll := hash(Vector2i(section, game.active_run_seed % 2147483647)) & 0xFFFF
+	var offset := lerpf(0.20, 0.80, float(roll) / 65535.0)
+	for scene in [["dawn", 0.02, 0], ["noon", 0.26, 0], ["dusk", 0.50, 0], ["night", 0.70, 0], ["rain", 0.26, 2]]:
+		game.paused = false
+		game._rewind_invuln = 9999.0
+		game._snap_challenge_weather(float(scene[1]), int(scene[2]))
+		game.weather_next = Game.WEATHER_RAIN if int(scene[2]) != Game.WEATHER_RAIN else Game.WEATHER_CLEAR
+		game.weather_timer = 12.0
+		game.scroll = 380.0 + (float(section) + offset) * spacing
+		game.cars.clear()
+		game.items.clear()
+		game.closed_lane = 0
+		game.road_event_type = Game.EVENT_ROADWORKS
+		game.road_event = Game.roadworks_layout(0, game.speed)
+		game.road_event["warned"] = true
+		game.road_event["y"] = 820.0 + float(game.road_event.lead) + Game.RW_ZONE_LEN * 0.5
+		var c := _qa_traffic_car(2, 520.0, "sedan", 0, Color("#5e2b2b"))
+		c["lane"] = 3
+		c["x"] = lerpf(game._lane_x(2), game._lane_x(3), 0.45)
+		c["yaw"] = Game.LC_YAW_MAX * 0.9
+		game.cars.append(c)
+		game.items.append({"lane": 2, "kind": 0, "x": game._lane_x(2), "y": 1000.0, "phase": 0.0})
+		game.items.append({"lane": 3, "kind": 1, "x": game._lane_x(3), "y": 980.0, "phase": 0.0})
+		game.score_pops.clear()
+		game._add_score_pop(Vector2(game._lane_x(1), 1180.0), "+90  ×1,5", Color("#ffb347"))
+		game.lane = 2
+		game.player_x = game._lane_x(2)
+		await get_tree().process_frame
+		game.paused = true
+		await get_tree().create_timer(0.5).timeout
+		await _shot("qa_scene_" + str(scene[0]))
+	game.paused = false
+	game.road_event["y"] = 1200.0 + float(game.road_event.lead) - float(game.road_event.taper_len) * 0.5
+	game._snap_challenge_weather(0.30, 0)
+	await get_tree().process_frame
+	game.paused = true
+	await get_tree().create_timer(0.4).timeout
+	await _shot("qa_scene_cones")
+	game.paused = false
+	get_tree().quit()
 
 func _shot(shot_name: String) -> void:
 	await RenderingServer.frame_post_draw

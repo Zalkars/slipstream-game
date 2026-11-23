@@ -3,6 +3,7 @@ extends Node
 var failures := 0
 var turns := 0
 var boosts := 0
+var undos := 0
 
 func check(ok: bool, message: String) -> void:
 	if not ok:
@@ -32,38 +33,42 @@ func run() -> void:
 	zones.lane_left.connect(func(): turns += 1; game.move_lane(-1))
 	zones.lane_right.connect(func(): turns += 1; game.move_lane(1))
 	zones.brake_changed.connect(game.set_braking)
+	zones.lane_undo.connect(func(side: int): undos += 1; game.undo_lane(side))
 	var initial_nitro := game.nitro
 	for i in range(4):
 		touch(zones, 0, true)
 		touch(zones, 0, false)
 	check(turns == 4 and game.nitro == initial_nitro and not game.boosting, "Fast steering taps must not spend nitro")
-	touch(zones, 0, true)
-	touch(zones, 1, true, Vector2(680, 40))
-	check(game.braking and turns == 4, "Two sides must brake without a buffered turn")
-	touch(zones, 1, false, Vector2(680, 40))
+	var lane_before := game.lane
+	touch(zones, 0, true, Vector2(680, 40))
+	check(turns == 5 and game.lane == lane_before + 1, "A zone turns on touch-down, without a buffer delay")
+	touch(zones, 1, true)
+	check(game.braking and undos == 1 and game.lane == lane_before, "A brake chord takes back the turn of its first thumb")
+	touch(zones, 1, false)
 	zones._process(0.4)
-	touch(zones, 0, false)
-	check(not game.braking and turns == 4, "Brake release must not steer")
+	touch(zones, 0, false, Vector2(680, 40))
+	check(not game.braking and turns == 5 and game.lane == lane_before, "Brake release must not steer")
 
 	var button := NitroButton.new()
 	add_child(button)
 	button.size = Vector2(148, 148)
 	button.tapped.connect(func(): boosts += 1; game.tap_nitro())
 	touch(button, 2, true)
+	check(boosts == 1 and game.boosting, "Nitro fires on the press, not the release")
 	touch(button, 3, true)
 	touch(button, 3, false)
-	check(boosts == 0 and button._down, "Another finger release must not fire nitro")
+	check(boosts == 1 and button._down, "Another finger must not fire nitro again")
 	touch(button, 2, false)
-	check(boosts == 1 and game.boosting, "Dedicated nitro button must fire once")
+	check(boosts == 1, "Releasing the nitro button does not fire it again")
 	touch(button, 2, true)
 	touch(button, 2, false, Vector2(40, 40), true)
 	touch(button, 2, true)
 	touch(button, 2, false, Vector2(200, 40))
-	check(boosts == 1, "Canceled or outside releases must not fire nitro")
+	check(boosts == 3, "Every press fires once; canceled or outside releases fire nothing")
 	touch(button, 2, true)
 	button.reset()
 	touch(button, 2, false)
-	check(boosts == 1, "Reset must clear pending nitro press")
+	check(boosts == 4 and not button._down, "Reset clears the press without firing again")
 
 	var art = game.race_art
 	for car: Dictionary in Cars.LIST:
@@ -226,17 +231,17 @@ func swipe_drag(game: Game, id: int, pos: Vector2) -> void:
 
 func check_controls_and_tutorial(game: Game, zones: ZonesPad, button: NitroButton) -> void:
 	zones.reset()
-	var before := turns
-	touch(zones, 8, true)
-	touch(zones, 8, false, Vector2(40, 40), true)
+	var lane0 := game.lane
+	touch(zones, 8, true, Vector2(680, 40))
+	touch(zones, 8, false, Vector2(680, 40), true)
 	zones._process(0.5)
-	check(turns == before and zones.touches.is_empty(), "Canceled zone tap must not steer")
-	touch(zones, 8, true)
-	touch(zones, 9, true, Vector2(680, 40))
-	touch(zones, 9, false, Vector2(680, 40), true)
+	check(game.lane == lane0 and zones.touches.is_empty(), "A canceled zone tap takes its turn back")
+	touch(zones, 8, true, Vector2(680, 40))
+	touch(zones, 9, true)
+	touch(zones, 9, false, Vector2(40, 40), true)
 	zones._process(0.5)
-	touch(zones, 8, false)
-	check(turns == before and not game.braking, "Canceled braking finger must not trigger a turn")
+	touch(zones, 8, false, Vector2(680, 40))
+	check(game.lane == lane0 and not game.braking, "A canceled braking finger leaves no turn behind")
 
 	var brake := PadButton.new()
 	brake.kind = "brake"

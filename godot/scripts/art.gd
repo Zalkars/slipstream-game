@@ -11,6 +11,34 @@ const PART_ALL := 0
 const PART_SHADOW := 1
 const PART_BODY := 2
 
+# Sun (or moon) for cast shadows, set by the game every frame: the ground
+# offset of a point one unit above the road, and the shadow strength 0..1.
+static var sun := Vector2(0.34, 0.52)
+static var sun_alpha := 1.0
+
+
+static func sun_offset(height: float) -> Vector2:
+	return sun * height
+
+
+# Ground shadow of a thin vertical post of the given height.
+static func post_shadow(ci: CanvasItem, base: Vector2, height: float, width: float, strength := 0.22) -> void:
+	if sun_alpha <= 0.01:
+		return
+	ci.draw_line(base, base + sun * height, Color(0, 0, 0, strength * sun_alpha), width, true)
+
+
+# Ground shadow of a flat shape held at the given height above the road.
+static func lifted_shadow(ci: CanvasItem, poly: PackedVector2Array, height: float, strength := 0.22) -> void:
+	if sun_alpha <= 0.01:
+		return
+	var off := sun * height
+	var moved := PackedVector2Array()
+	moved.resize(poly.size())
+	for i in range(poly.size()):
+		moved[i] = poly[i] + off
+	ci.draw_colored_polygon(moved, Color(0, 0, 0, strength * sun_alpha))
+
 
 static func _sb(color: Color, radius: int, border_color: Color, border_w: int) -> StyleBoxFlat:
 	var key := color.to_html(true) + "|" + str(radius) + "|" + border_color.to_html(true) + "|" + str(border_w)
@@ -906,18 +934,26 @@ static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font
 	var mid := (left + right) * 0.5
 	var beam := Color("#657581")
 	var height := 16.0
+	var lift := 64.0
 	if variant == 1:
 		beam = Color("#8a8276")
-		height = 32.0
+		height = 58.0
+		lift = 56.0
 	elif variant == 2:
 		beam = Color("#546e78")
 		height = 22.0
 	if part != PART_BODY:
-		ci.draw_colored_polygon(PackedVector2Array([
-			Vector2(left, y + 8.0), Vector2(right, y + 8.0),
-			Vector2(right + 21.0, y + height + 20.0), Vector2(left + 21.0, y + height + 20.0)
-		]), Color(0.06, 0.07, 0.09, 0.22))
+		# Soft occlusion straight below, then the sun-cast structure.
+		ci.draw_rect(Rect2(left, y - 4.0, w, height + 8.0), Color(0.04, 0.05, 0.07, 0.07))
+		lifted_shadow(ci, PackedVector2Array([
+			Vector2(left, y), Vector2(right, y), Vector2(right, y + height), Vector2(left, y + height)
+		]), lift, 0.26)
+		for x in [left, right]:
+			post_shadow(ci, Vector2(x, y + height * 0.5), lift, 18.0 if variant == 1 else 14.0, 0.24)
 	if part == PART_SHADOW:
+		return
+	if variant == 1:
+		_footbridge(ci, left, right, y, height, beam, font)
 		return
 	for x in [left, right]:
 		ci.draw_rect(Rect2(x - 11.0, y - 10.0, 22.0, height + 22.0), beam.darkened(0.42))
@@ -943,6 +979,46 @@ static func overhead_decor(ci: CanvasItem, span: Rect2, variant: int, font: Font
 		ci.draw_rect(face, sign_color)
 		ci.draw_string(font, Vector2(mid - tw * 0.5, face.position.y + 17.0), sign,
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 16, Color("#edf0de"))
+
+
+# Pedestrian footbridge seen from above: stair towers, a wide deck with
+# paving, handrails along both edges and a sign facing the traffic.
+static func _footbridge(ci: CanvasItem, left: float, right: float, y: float, height: float, beam: Color, font: Font) -> void:
+	var w := right - left
+	var mid := (left + right) * 0.5
+	for x in [left, right]:
+		var tower := Rect2(x - 22.0, y - 16.0, 44.0, height + 32.0)
+		ci.draw_rect(tower, beam.darkened(0.45))
+		ci.draw_rect(tower.grow(-4.0), beam.darkened(0.12))
+		for s in range(6):
+			var sy := tower.position.y + 6.0 + float(s) * (tower.size.y - 12.0) / 6.0
+			ci.draw_line(Vector2(tower.position.x + 6.0, sy), Vector2(tower.end.x - 6.0, sy), beam.darkened(0.38), 2.0)
+	var deck := Rect2(left, y, w, height)
+	ci.draw_rect(deck, beam.darkened(0.30))
+	var walk := deck.grow_individual(0.0, -7.0, 0.0, -7.0)
+	ci.draw_rect(walk, Color("#9d978c"))
+	var tile := 26.0
+	var tx := left + tile
+	while tx < right - 2.0:
+		ci.draw_line(Vector2(tx, walk.position.y), Vector2(tx, walk.end.y), Color("#857f75"), 1.5)
+		tx += tile
+	ci.draw_line(Vector2(left, walk.get_center().y), Vector2(right, walk.get_center().y), Color("#8b857b"), 1.0)
+	for ry in [y + 3.5, y + height - 3.5]:
+		ci.draw_line(Vector2(left, ry), Vector2(right, ry), Color("#c9ced0"), 3.0)
+		ci.draw_line(Vector2(left, ry + 1.5), Vector2(right, ry + 1.5), Color("#59605f"), 1.0)
+	var post := left + 18.0
+	while post < right - 6.0:
+		for ry in [y + 3.5, y + height - 3.5]:
+			ci.draw_rect(Rect2(post - 2.0, ry - 2.5, 4.0, 5.0), Color("#6f7677"))
+		post += 36.0
+	if font != null:
+		var sign := "ПЕШЕХОДНЫЙ ПЕРЕХОД"
+		var tw := font.get_string_size(sign, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
+		var face := Rect2(mid - tw * 0.5 - 14.0, y + height - 14.0, tw + 28.0, 26.0)
+		ci.draw_rect(face.grow(2.0), Color("#dfe4e4"))
+		ci.draw_rect(face, Color("#1d5fa8"))
+		ci.draw_string(font, Vector2(mid - tw * 0.5, face.position.y + 19.0), sign,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color("#f4f6f2"))
 
 
 static var _works_barrier: ImageTexture
@@ -1000,16 +1076,13 @@ static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm
 	var arm_len := arm * s
 	var lamp_x := base.x + arm_len * dir
 	if part != PART_BODY:
-		ci.draw_polygon(
-			PackedVector2Array([
-				Vector2(base.x, base.y + 6.0 * s),
-				Vector2(lamp_x, base.y + 10.0 * s),
-				Vector2(lamp_x + dir * 30.0 * s, base.y + 46.0 * s),
-				Vector2(base.x + dir * 24.0 * s, base.y + 38.0 * s),
-			]),
-			PackedColorArray([Color(0, 0, 0, 0.13), Color(0, 0, 0, 0.10), Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.0)])
-		)
-		ci.draw_circle(base + Vector2(2, 6), 9.0 * s, Color(0, 0, 0, 0.16))
+		# The pole stands at base; the arm and head hang at its top.
+		ci.draw_circle(base + Vector2(1, 2), 9.0 * s, Color(0, 0, 0, 0.14))
+		if sun_alpha > 0.01:
+			var off := sun * 66.0 * s
+			var col := Color(0, 0, 0, 0.21 * sun_alpha)
+			ci.draw_polyline(PackedVector2Array([base, base + off, Vector2(lamp_x, base.y) + off]), col, 5.0 * s, true)
+			rr(ci, Rect2(Vector2(lamp_x - 14.0 * s, base.y - 6.0 * s) + off, Vector2(28.0 * s, 12.0 * s)), col, 4)
 	if part == PART_SHADOW:
 		return
 	ci.draw_circle(base, 8.0 * s, Color(0.44, 0.45, 0.43))
@@ -1024,6 +1097,14 @@ static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm
 
 static func road_sign(ci: CanvasItem, p: Vector2, side: float) -> void:
 	# small blue plate beside the road
+	if sun_alpha > 0.01:
+		var ground := p + Vector2(0, 26)
+		post_shadow(ci, ground, 30.0, 4.0, 0.24)
+		var lo := ground + sun * 30.0
+		var hi := ground + sun * 54.0
+		ci.draw_colored_polygon(PackedVector2Array([
+			lo + Vector2(-15, 0), lo + Vector2(15, 0), hi + Vector2(15, 0), hi + Vector2(-15, 0)
+		]), Color(0, 0, 0, 0.22 * sun_alpha))
 	ci.draw_rect(Rect2(p.x - 2, p.y, 4, 26), Color(0.35, 0.36, 0.36))
 	rr(ci, Rect2(p.x - 15, p.y - 22, 30, 24), Color(0.12, 0.28, 0.48), 4, Color(0.88, 0.90, 0.92), 2)
 	var dir := 1.0 if side > 0 else -1.0

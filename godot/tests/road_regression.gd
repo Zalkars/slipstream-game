@@ -35,9 +35,50 @@ func run() -> void:
 	check_roadworks_determinism(game)
 	check_roadworks_rewind(game)
 	check_blackout_only_after_dark(game)
+	check_traffic_yaw(game)
+	check_streetlight_spacing(game)
 	check_auto_preset()
 	print("[road] lane-change rate, indicator commits/cancels, no cut-in near player, road-works layout/knocks/STOP/traffic/determinism/rewind, night-only blackout, auto preset tiers: ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	get_tree().quit(1 if failures else 0)
+
+
+# A lane change eases across in an S-curve and the body yaws with it.
+func check_traffic_yaw(game: Game) -> void:
+	_fresh(game)
+	var c := _car(game, 1, 700.0)
+	game.cars.append(c)
+	c["lane"] = 2
+	c["lane_from_x"] = float(c.x)
+	c["lane_move_t"] = Game.LC_MOVE_TIME
+	var peak := 0.0
+	var first_step := 0.0
+	for i in range(90):
+		var x0 := float(c.x)
+		game._move_traffic(1.0 / 60.0, game.speed, game.speed, false)
+		if i == 0:
+			first_step = float(c.x) - x0
+		peak = maxf(peak, float(c.get("yaw", 0.0)))
+	check(peak > 0.08 and peak <= Game.LC_YAW_MAX + 0.001, "Traffic turns its nose into a lane change (peak yaw %.3f)" % peak)
+	check(first_step < game.lane_w * 0.02, "A lane change eases out of the lane instead of jumping (%.2f px)" % first_step)
+	check(absf(float(c.x) - game._lane_x(2)) < 0.5 and absf(float(c.yaw)) < 0.02, "The car ends straight in its new lane")
+
+
+# Street lamps keep irregular gaps on both verges.
+func check_streetlight_spacing(game: Game) -> void:
+	for side in [-1, 1]:
+		var ys: Array = []
+		for di in game.decor_lamps:
+			var d: Dictionary = game.decor[di]
+			if int(d.side) == side:
+				ys.append(float(d.y))
+		ys.sort()
+		var gaps: Array = []
+		for i in range(ys.size()):
+			var next: float = ys[(i + 1) % ys.size()] + (Game.LAMP_CYCLE if i == ys.size() - 1 else 0.0)
+			gaps.append(next - float(ys[i]))
+		var lo: float = gaps.min()
+		var hi: float = gaps.max()
+		check(ys.size() >= 14 and lo >= 240.0 and hi - lo > 500.0, "Lamps on side %d vary their spacing (%d lamps, gaps %d..%d)" % [side, ys.size(), int(lo), int(hi)])
 
 
 func _car(game: Game, lane: int, y: float, rel := 0.7) -> Dictionary:
@@ -246,13 +287,20 @@ func check_roadworks_collisions(game: Game) -> void:
 	game.player_x = game.roadworks_object_pos(cone).x
 	var bonus0 := game.bonus
 	var speed0 := game.speed
+	game._rw_streak_t = 0.0
 	game._update_road_events(1.0 / 60.0, 0.0)
 	check(bool(cone.hit) and not game.crashed, "Driving into a cone knocks it over without a crash")
 	var knocked := 0
 	for o in game.road_event.objs:
 		if bool(o.hit):
 			knocked += 1
-	check(knocked >= 1 and knocked <= 3 and game.bonus == bonus0 + knocked * Game.RW_CONE_PTS * game._effective_score_mult(), "Each knocked cone gives bonus points (%d knocked)" % knocked)
+	var expected := 0
+	for k in range(knocked):
+		expected += Game.roadworks_knock_points(true, k + 1) * game._effective_score_mult()
+	check(knocked >= 1 and knocked <= 3 and game.bonus == bonus0 + expected, "Each knocked cone gives bonus points, more in a streak (%d knocked)" % knocked)
+	check(game.score_pops.size() >= knocked, "Knocked cones show their points on the road")
+	check(Game.roadworks_knock_points(true, 1) == Game.RW_CONE_PTS and Game.roadworks_knock_points(true, 2) == Game.RW_CONE_PTS * 3 / 2
+		and Game.roadworks_knock_points(false, 9) == Game.RW_SIGN_PTS * 3, "A streak adds 50% per knock, up to x3")
 	check(game.speed < speed0 and game.speed > speed0 * 0.9, "A cone costs a little speed")
 	var bonus1 := game.bonus
 	game._update_road_events(1.0 / 60.0, 0.0)
@@ -266,6 +314,7 @@ func check_roadworks_collisions(game: Game) -> void:
 	game.player_x = game.roadworks_object_pos(arrow).x
 	bonus0 = game.bonus
 	speed0 = game.speed
+	game._rw_streak_t = 0.0
 	game._update_road_events(1.0 / 60.0, 0.0)
 	check(bool(arrow.hit) and not game.crashed and game.bonus == bonus0 + Game.RW_SIGN_PTS * game._effective_score_mult(), "An arrow sign can be knocked over for points")
 	check(game.speed < speed0 * 0.97, "A sign costs more speed than a cone")

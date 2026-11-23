@@ -159,12 +159,23 @@ func check_main_banner_and_revive() -> void:
 	main.show_garage()
 	main._sync_ads_banner()
 	check(native.banner_visible and is_equal_approx(main.garage.offset_top, 120.0), "Garage shows the banner and makes room")
-	main._start_solo_game()
+	main._show_settings(false)
+	main._sync_ads_banner()
+	check(native.banner_visible and is_equal_approx(main.settings.offset_top, 120.0), "Settings move below the banner, clear of the back button")
+	main.show_garage()
+	main._sync_ads_banner()
+	check(main.g_race != null and main.g_race.is_visible_in_tree() and not main.g_race.disabled, "The garage has a start-race button")
+	main._garage_race()
+	check(main.in_game and main.hud.visible, "The garage button starts a race")
 	main._sync_ads_banner()
 	# 0.8.0: the banner stays during the race, the HUD sits below it.
 	check(native.banner_visible and main.race_banner_on, "A banner measured before the race shows during it")
 	check(is_equal_approx(main.hud.offset_top, 120.0), "Race HUD moves below the banner")
 	check(is_equal_approx(main.tutorial_panel.position.y, main.TUTORIAL_PANEL_Y + 120.0), "Race prompts move below the banner")
+	main._show_settings(true)
+	main._sync_ads_banner()
+	check(native.banner_visible and is_equal_approx(main.settings.offset_top, 120.0), "Settings opened from pause stay below the race banner")
+	main.settings.visible = false
 	var pause_top := INF
 	for b in main.hud.find_children("*", "Button", true, false):
 		if b.visible:

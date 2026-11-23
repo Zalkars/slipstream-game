@@ -299,6 +299,36 @@ func check_day_night(game: Game) -> void:
 			night_s += 1.0
 		tod += step
 	check(night_s >= 180.0, "A night lasts minutes, not seconds (%d s)" % int(night_s))
+	check(game.DAY_LENGTH <= 1200.0 and night_s >= 240.0, "Night comes round within 20 minutes and lasts at least 4")
+	# Training and challenges run at their own hour; the session clock goes on.
+	game.challenge_config = {}
+	game.start_demo()
+	game.time_of_day = 0.70
+	game.start_run(true)
+	check(is_equal_approx(game.time_of_day, 0.15), "Driver training runs at its own morning hour")
+	game._update_weather(60.0)
+	game.start_demo()
+	check(is_equal_approx(game.time_of_day, 0.70 + 60.0 / game.DAY_LENGTH), "A training crash does not rewind the session clock")
+	game.challenge_config = {"type": "daily", "seed": 5, "car_index": 0, "tod": 0.2, "weather": 0}
+	game.start_run()
+	game.challenge_config = {}
+	game.start_run()
+	check(game.time_of_day > 0.69 and game.get_night_factor() > 0.9, "The next free run is back at the session's hour")
+	# The sun swings the shadows across the day and the moon takes over.
+	var dawn := Game.sun_state(0.02)
+	var noon := Game.sun_state(0.26)
+	var dusk := Game.sun_state(0.50)
+	var midnight := Game.sun_state(0.70)
+	check(Vector2(dawn.offset).x < -0.3 and Vector2(dusk.offset).x > 0.3, "Shadows point away from a rising and a setting sun")
+	check(Vector2(noon.offset).length() < Vector2(dawn.offset).length() and float(noon.strength) > 0.8, "Noon shadows are short and strong")
+	check(bool(midnight.moon) and float(midnight.strength) < 0.35, "Night shadows are faint moon shadows")
+	game.time_of_day = 0.26
+	game._snap_challenge_weather(0.26, Game.WEATHER_STORM)
+	game.update_sun()
+	var storm_a := Art.sun_alpha
+	game._snap_challenge_weather(0.26, Game.WEATHER_CLEAR)
+	game.update_sun()
+	check(storm_a < Art.sun_alpha * 0.5, "Overcast skies soften the shadows")
 
 
 func check_main_duel_and_daily_rewards() -> void:

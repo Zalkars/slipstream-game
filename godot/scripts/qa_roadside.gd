@@ -73,7 +73,7 @@ func _run() -> void:
 	game._gen_decor()
 	assert(original == game.decor, "Decor generation must be deterministic")
 	for d in game.decor:
-		assert(d.y >= 0 and d.y < game.DECOR_CYCLE)
+		assert(d.y >= 0 and d.y < float(d.get("cycle", game.DECOR_CYCLE)))
 		assert(d.prop >= 0 and d.prop < 20)
 		if d.kind == 0 or d.kind == 1:
 			for i in range(6):

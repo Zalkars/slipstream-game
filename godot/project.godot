@@ -35,6 +35,8 @@ enabled=PackedStringArray("res://addons/slipstream_ads/plugin.cfg")
 
 [input_devices]
 
+buffering/agile_event_flushing=true
+buffering/android/use_accumulated_input=false
 pointing/emulate_touch_from_mouse=true
 
 [rendering]

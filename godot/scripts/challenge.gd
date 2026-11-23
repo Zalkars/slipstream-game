@@ -7,12 +7,13 @@ extends RefCounted
 const MAGIC_0 := 0x53  # 'S'
 const MAGIC_1 := 0x4C  # 'L'
 # The version also selects simulation rules. SLIP1 uses dry grip, SLIP2
-# adds wet grip, and SLIP3 introduces separate seeded weather scheduling.
-const VERSION := 3
+# adds wet grip, SLIP3 introduces separate seeded weather scheduling and
+# SLIP4 a livelier forecast-based weather schedule and quicker steering.
+const VERSION := 4
 const WEATHER_VERSION := 3
 const LEGACY_VERSION := 1
-const PREFIX := "SLIP3-"
-const PREFIXES := [PREFIX, "SLIP2-", "SLIP1-"]
+const PREFIX := "SLIP4-"
+const PREFIXES := [PREFIX, "SLIP3-", "SLIP2-", "SLIP1-"]
 const WEATHER := preload("res://scripts/weather_schedule.gd")
 const BASE_STEP_MS := 200
 const MAX_SAMPLES := 900
