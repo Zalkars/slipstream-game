@@ -300,6 +300,7 @@ var contact_fx: ContactFx
 var weather_fx: WeatherFx
 var fog_fx: FogFx
 var gfx_level := GfxPresets.MEDIUM
+var use_session_audio := true
 var gfx_target_fps := 60
 var draw_cpu_ms := 0.0  # CPU time of the last _draw (QA perf mode)
 
@@ -349,7 +350,7 @@ func _ready() -> void:
 	_setup_render()
 	get_viewport().size_changed.connect(_layout)
 	# Audio reads speed, traffic, weather and road state from here (0.8.0).
-	if Sfx.has_method("bind_game"):
+	if use_session_audio and Sfx.has_method("bind_game"):
 		Sfx.bind_game(self)
 	# Each session starts at a random hour and weather; after that the clock
 	# only moves forward, through the menu and every run.
@@ -1592,9 +1593,10 @@ func _update_weather(dt: float) -> void:
 
 	wind = clampf(0.12 + rain_amount * 0.42 + storm_amount * 0.72 + cloud_amount * 0.10, 0.0, 1.2)
 
-	Sfx.set_rain_intensity((rain_amount * 0.85 + storm_amount * 0.35) * (1.0 if running else 0.35))
-	if Sfx.has_method("set_weather"):
-		Sfx.set_weather(wetness, wind, storm_amount)
+	if use_session_audio:
+		Sfx.set_rain_intensity((rain_amount * 0.85 + storm_amount * 0.35) * (1.0 if running else 0.35))
+		if Sfx.has_method("set_weather"):
+			Sfx.set_weather(wetness, wind, storm_amount)
 
 	# --- rain -------------------------------------------------------------
 	# The wind vector below is the single source of truth for the rain:

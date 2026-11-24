@@ -53,6 +53,20 @@ func apply_params(p: Dictionary) -> void:
 	params = p
 
 
+func reset() -> void:
+	sparks.clear()
+	smoke.clear()
+	_bursts.clear()
+	_prev_wheels.clear()
+	_have_prev = false
+	_was_crashed = false
+	_wet_feet = 0.0
+	_scrape_t = 0.0
+	_launch_t = 0.0
+	_was_boosting = false
+	rng.seed = 5150
+
+
 static func _make_tread() -> void:
 	if _tread_tex != null:
 		return

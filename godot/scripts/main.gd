@@ -7,6 +7,10 @@ var version := str(ProjectSettings.get_setting("application/config/version", "de
 const SAVE_PATH := "user://slipstream.cfg"
 const START_COINS := 300
 const VolumeSlider = preload("res://scripts/volume_slider.gd")
+const GarageSkin = preload("res://scripts/garage_skin.gd")
+const GarageCarousel = preload("res://scripts/garage_carousel.gd")
+const GaragePerkDemo = preload("res://scripts/garage_perk_demo.gd")
+const GARAGE_THUMBNAILS := preload("res://art/garage/cars.webp")
 
 var game: Game
 var ui: CanvasLayer
@@ -67,14 +71,29 @@ var menu_best: Label
 var menu_car: Label
 var menu_coins: Label
 
+var _garage_skin: GarageSkin
 var garage_coins: Label
+var g_owned_count: Label
 var g_stage: CarStage
 var g_name: Label
 var g_sub: Label
+var g_counter: Label
+var g_purchase_info: VBoxContainer
+var g_price_caption: Label
+var g_price_row: HBoxContainer
 var g_price: Label
 var g_action: Button
 var g_race: Button
+var g_carousel: GarageCarousel
+var g_catalog: Control
+var g_ability: Control
+var _garage_demo_suspended_background := false
+var g_demo: GaragePerkDemo
+var g_demo_title: Label
 var g_slots: Array[Button] = []
+var g_catalog_slots: Array[Button] = []
+var g_slot_status: Array[Label] = []
+var g_catalog_status: Array[Label] = []
 var g_vals: Array = []
 var g_bars: Array = []
 var g_perk_title: Label
@@ -474,6 +493,7 @@ func _save() -> void:
 # --- screens ----------------------------------------------------------------
 
 func _hide_screens() -> void:
+	_close_garage_overlay()
 	for s in [menu, garage, settings, how, challenges_panel]:
 		if s != null:
 			s.visible = false
@@ -534,6 +554,7 @@ func show_garage() -> void:
 	Sfx.set_paused(false)
 	Sfx.play_music()
 	_update_all_labels()
+	g_carousel.reveal_tile.call_deferred(garage_index)
 
 
 func _show_how() -> void:
@@ -1160,7 +1181,8 @@ func _on_back() -> void:
 		show_menu()
 		return
 	if garage != null and garage.visible:
-		show_menu()
+		if not _close_garage_overlay():
+			show_menu()
 		return
 	if result_open:
 		show_menu()
@@ -1195,6 +1217,11 @@ func _input(event: InputEvent) -> void:
 		_on_back()
 		get_viewport().set_input_as_handled()
 		return
+	if garage != null and garage.visible and not g_catalog.visible and not g_ability.visible:
+		if event.pressed and event.keycode in [KEY_LEFT, KEY_RIGHT]:
+			_step_garage_car(-1 if event.keycode == KEY_LEFT else 1)
+			get_viewport().set_input_as_handled()
+			return
 	if not in_game or paused or result_open:
 		return
 	match event.keycode:
@@ -1873,117 +1900,426 @@ func _build_hud() -> void:
 # --- garage -----------------------------------------------------------------
 
 func _build_garage() -> void:
+	_garage_skin = GarageSkin.new()
 	garage = Control.new()
 	_full(garage)
-	garage.visible = false
+	garage.hide()
 	garage.mouse_filter = Control.MOUSE_FILTER_STOP
 	ui.add_child(garage)
-	garage.add_child(_screen_bg())
-	var column := _portrait_column(garage)
-
-	var back := IconButton.new()
-	back.kind = "back"
-	back.pressed.connect(show_menu)
-	_place(back, 34, 32, 76, 76)
-	column.add_child(back)
-	var title := _label("ГАРАЖ", 40, ink, font_bold)
-	_place(title, 126, 32, 290, 76)
-	column.add_child(title)
-	garage_coins = _coin_chip(column, 438.0, 43.0, 246.0)
-
-	var scroll := _screen_scroll(column, 118.0, 172.0)
+	garage.add_child(_vgrad(Color("#202735"), Color("#171b24"), Color("#101319")))
 	var content := VBoxContainer.new()
-	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	content.add_theme_constant_override("separation", 12)
-	scroll.add_child(content)
+	garage.add_child(content)
+	garage.resized.connect(_fit_garage_width.bind(content))
+	_fit_garage_width(content)
 
-	var heading := VBoxContainer.new()
-	heading.add_theme_constant_override("separation", 0)
-	content.add_child(heading)
-	g_name = _label("", 42, ink, font_num, HORIZONTAL_ALIGNMENT_CENTER)
-	heading.add_child(g_name)
-	g_sub = _label("", 20, dim_col, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
-	heading.add_child(g_sub)
+	_build_garage_header(content)
+	_build_garage_preview(content)
+	_build_garage_picker(content)
+	_build_garage_stats(content)
+	_build_garage_perk_button(content)
+	_build_garage_actions(content)
+	_build_garage_catalog()
+	_build_garage_ability()
 
+
+func _fit_garage_width(content: VBoxContainer) -> void:
+	var width := clampf(garage.size.x - 36.0, 0.0, 960.0)
+	var ui_scale := clampf(width / 720.0, 1.0, 1.22)
+	content.scale = Vector2.ONE * ui_scale
+	content.position = Vector2((garage.size.x - width) * 0.5, 18.0)
+	content.size = Vector2(width, maxf(0.0, garage.size.y - 40.0)) / ui_scale
+
+
+func _garage_label(text: String, font_size: int, tint := GarageSkin.INK, bold := false) -> Label:
+	return _label(text, font_size, tint, _garage_skin.bold if bold else _garage_skin.body)
+
+
+func _garage_panel(style: StyleBox, horizontal := 0.0, vertical := 0.0) -> PanelContainer:
+	style.content_margin_left = horizontal
+	style.content_margin_right = horizontal
+	style.content_margin_top = vertical
+	style.content_margin_bottom = vertical
+	var panel := PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_theme_stylebox_override("panel", style)
+	return panel
+
+
+func _garage_center_button_content(button: Button, child: Control) -> void:
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(center)
+	button.add_child(center)
+	center.add_child(child)
+
+
+func _build_garage_header(content: Control) -> void:
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 17)
+	header.alignment = BoxContainer.ALIGNMENT_CENTER
+	content.add_child(header)
+	var back := _garage_button("", 70, 24)
+	back.custom_minimum_size.x = 70
+	back.tooltip_text = "Назад"
+	_garage_center_button_content(back, GarageSkin.Icon.new("back", GarageSkin.INK, 30))
+	back.pressed.connect(show_menu)
+	header.add_child(back)
+	var title := _garage_label("Гараж", 50, GarageSkin.INK, true)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+
+	var wallet := _garage_panel(_garage_skin.flat(Color("#171b22"), Color("#735238"), 32), 18, 8)
+	wallet.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	header.add_child(wallet)
+	var balance := HBoxContainer.new()
+	balance.add_theme_constant_override("separation", 11)
+	wallet.add_child(balance)
+	var coin := CoinIcon.new()
+	coin.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	balance.add_child(coin)
+	garage_coins = _garage_label("", 28, GarageSkin.WARM_TEXT, true)
+	balance.add_child(garage_coins)
+
+
+func _build_garage_preview(content: Control) -> void:
 	g_stage = CarStage.new()
-	g_stage.custom_minimum_size.y = 500
+	g_stage.custom_minimum_size.y = 250
+	g_stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	content.add_child(g_stage)
-	var angles := HBoxContainer.new()
-	angles.add_theme_constant_override("separation", 8)
-	content.add_child(angles)
-	for view in [["СПЕРЕДИ", CarStage.FRONT], ["СБОКУ", CarStage.SIDE], ["СЗАДИ", CarStage.REAR]]:
-		var angle := _compact_button(str(view[0]), 50, 21)
-		angle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		angle.pressed.connect(g_stage.set_view.bind(view[1]))
-		angles.add_child(angle)
-	var drag_hint := _label("Проведи по машине, чтобы повернуть её", 19, dim_col, font_ui, HORIZONTAL_ALIGNMENT_CENTER)
-	content.add_child(drag_hint)
 
-	var picker := GridContainer.new()
-	picker.columns = 3
-	picker.add_theme_constant_override("h_separation", 8)
-	picker.add_theme_constant_override("v_separation", 6)
+	var heading := HBoxContainer.new()
+	heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	heading.anchor_right = 1.0
+	heading.offset_left = 24
+	heading.offset_right = -24
+	heading.offset_top = 19
+	g_stage.add_child(heading)
+	var identity := VBoxContainer.new()
+	identity.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	identity.add_theme_constant_override("separation", 4)
+	heading.add_child(identity)
+	g_sub = _garage_label("", 20, Color("#ffd8bc"), true)
+	identity.add_child(g_sub)
+	g_name = _label("", 53, GarageSkin.INK, _garage_skin.display)
+	identity.add_child(g_name)
+
+	var counter_plate := _garage_panel(_garage_skin.flat(Color("#181825e0"), Color("#ffffff40"), 12), 12, 8)
+	counter_plate.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	heading.add_child(counter_plate)
+	g_counter = _label("", 19, GarageSkin.INK, _garage_skin.display)
+	counter_plate.add_child(g_counter)
+
+	var controls := HBoxContainer.new()
+	controls.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	controls.anchor_top = 1.0
+	controls.anchor_bottom = 1.0
+	controls.anchor_right = 1.0
+	controls.offset_left = 14
+	controls.offset_right = -14
+	controls.offset_top = -86
+	controls.offset_bottom = -14
+	g_stage.add_child(controls)
+	var previous := _garage_arrow(-1)
+	controls.add_child(previous)
+	var hint_center := CenterContainer.new()
+	hint_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hint_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	controls.add_child(hint_center)
+	var hint_plate := _garage_panel(_garage_skin.flat(Color("#121623bc"), Color.TRANSPARENT, 20), 16, 5)
+	hint_center.add_child(hint_plate)
+	hint_plate.add_child(_garage_label("↔  Потяни влево или вправо", 22))
+	controls.add_child(_garage_arrow(1))
+
+
+func _garage_arrow(side: int) -> Button:
+	var arrow := _garage_button("", 72, 24)
+	arrow.name = "PreviousCar" if side < 0 else "NextCar"
+	arrow.custom_minimum_size.x = 72
+	arrow.tooltip_text = "Предыдущая машина" if side < 0 else "Следующая машина"
+	_garage_center_button_content(arrow, GarageSkin.Icon.new("previous" if side < 0 else "next", GarageSkin.INK, 28))
+	arrow.pressed.connect(_step_garage_car.bind(side))
+	return arrow
+
+
+func _build_garage_picker(content: Control) -> void:
+	var picker := VBoxContainer.new()
+	picker.add_theme_constant_override("separation", 8)
 	content.add_child(picker)
-	for i in range(Cars.LIST.size()):
-		var slot := _compact_button(str(Cars.get_car(i).name), 43, 19)
-		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		slot.pressed.connect(_select_garage_slot.bind(i))
-		picker.add_child(slot)
-		g_slots.append(slot)
+	var heading := HBoxContainer.new()
+	picker.add_child(heading)
+	var label := _garage_label("Машины", 26, GarageSkin.INK, true)
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	heading.add_child(label)
+	g_owned_count = _garage_label("", 21, GarageSkin.MUTED)
+	heading.add_child(g_owned_count)
 
-	var stat_card := _card(0)
-	var stat_style := stat_card.get_theme_stylebox("panel").duplicate() as StyleBoxFlat
-	stat_style.content_margin_top = 13
-	stat_style.content_margin_bottom = 15
-	stat_style.content_margin_left = 24
-	stat_style.content_margin_right = 24
-	stat_style.shadow_size = 0
-	stat_card.add_theme_stylebox_override("panel", stat_style)
-	content.add_child(stat_card)
-	var stat_rows := VBoxContainer.new()
-	stat_rows.add_theme_constant_override("separation", 8)
-	stat_card.add_child(stat_rows)
-	for caption in ["СКОРОСТЬ", "РАЗГОН", "МАНЁВРЕННОСТЬ"]:
-		var metric := VBoxContainer.new()
-		metric.add_theme_constant_override("separation", 2)
-		stat_rows.add_child(metric)
-		var row := HBoxContainer.new()
-		metric.add_child(row)
-		var lab := _label(caption, 19, dim_col, font_bold)
-		lab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(lab)
-		var val := _label("", 21, ink, font_bold, HORIZONTAL_ALIGNMENT_RIGHT)
-		row.add_child(val)
-		g_vals.append(val)
-		g_bars.append(_stat_bar(metric))
+	g_carousel = GarageCarousel.new()
+	g_carousel.custom_minimum_size.y = 164
+	g_carousel.car_picked.connect(_select_garage_slot)
+	g_carousel.car_picked.connect(func(_index: int): Sfx.click())
+	picker.add_child(g_carousel)
+	for i in Cars.LIST.size():
+		g_carousel.add_tile(_garage_tile(i, g_slots, g_slot_status))
+	var catalog_button := _garage_button("", 70, 26)
+	catalog_button.name = "GarageCatalogButton"
+	catalog_button.tooltip_text = "Все машины"
+	var caption := HBoxContainer.new()
+	caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	caption.add_theme_constant_override("separation", 12)
+	caption.add_child(GarageSkin.Icon.new("catalog", GarageSkin.INK, 24))
+	caption.add_child(_garage_label("Все машины", 26, GarageSkin.INK, true))
+	caption.add_child(_garage_label(str(Cars.LIST.size()), 24, GarageSkin.WARM_TEXT, true))
+	_garage_center_button_content(catalog_button, caption)
+	catalog_button.pressed.connect(func(): g_catalog.show())
+	picker.add_child(catalog_button)
 
-	var perk_card := _accent_card(amber)
-	content.add_child(perk_card)
-	var perk := VBoxContainer.new()
-	perk.add_theme_constant_override("separation", 2)
-	perk_card.add_child(perk)
-	g_perk_title = _label("", 22, amber, font_bold)
-	perk.add_child(g_perk_title)
-	g_perk_desc = _label("", 20, ink, font_ui)
-	g_perk_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	perk.add_child(g_perk_desc)
 
-	g_price = _label("", 22, amber, font_bold, HORIZONTAL_ALIGNMENT_CENTER)
-	_place_bottom(g_price, 36, 124, 648, 34)
-	column.add_child(g_price)
-	g_action = _compact_button("", 86, 27)
+func _build_garage_perk_button(content: Control) -> void:
+	var button := _garage_button("", 90, 24)
+	button.add_theme_stylebox_override("normal",
+		_garage_skin.gradient(Color("#3d2e32"), Color("#231f2a"), Color("#715043"), 19))
+	button.add_theme_stylebox_override("hover",
+		_garage_skin.gradient(Color("#4a3437"), Color("#2a2330"), Color("#bd845e"), 19))
+	button.add_theme_stylebox_override("pressed",
+		_garage_skin.gradient(Color("#302429"), Color("#211e28"), Color("#9b664d"), 19))
+	content.add_child(button)
+
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(row)
+	row.offset_left = 18
+	row.offset_right = -16
+	button.add_child(row)
+	var copy := VBoxContainer.new()
+	copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	copy.add_theme_constant_override("separation", 0)
+	row.add_child(copy)
+	copy.add_child(_garage_label("Способность · демо", 20, Color("#ffc394"), true))
+	g_perk_title = _garage_label("", 25, GarageSkin.INK, true)
+	copy.add_child(g_perk_title)
+	var play := GarageSkin.Icon.new("play", Color("#ffc594"), 57)
+	play.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(play)
+	button.pressed.connect(_show_garage_ability)
+
+
+func _build_garage_actions(content: Control) -> void:
+	var panel := _garage_panel(_garage_skin.flat(Color("#181d25"), Color("#343c48"), 22), 10, 9)
+	content.add_child(panel)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 12)
+	panel.add_child(actions)
+	g_purchase_info = VBoxContainer.new()
+	g_purchase_info.add_theme_constant_override("separation", 0)
+	g_purchase_info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	g_purchase_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	g_purchase_info.size_flags_stretch_ratio = 0.88
+	actions.add_child(g_purchase_info)
+	g_price_caption = _garage_label("", 21, GarageSkin.MUTED)
+	g_purchase_info.add_child(g_price_caption)
+	g_price_row = HBoxContainer.new()
+	g_price_row.add_theme_constant_override("separation", 9)
+	g_purchase_info.add_child(g_price_row)
+	var coin := CoinIcon.new()
+	coin.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	g_price_row.add_child(coin)
+	g_price = _garage_label("", 46, GarageSkin.WARM_TEXT, true)
+	g_price_row.add_child(g_price)
+	g_action = _garage_button("", 73, 28, true)
+	g_action.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	g_action.pressed.connect(_garage_action)
-	_place_bottom(g_action, 36, 29, 308, 86)
-	column.add_child(g_action)
-	g_race = _compact_button("ПОЕХАЛИ", 86, 30, true)
+	actions.add_child(g_action)
+	g_race = _garage_button("Поехали", 73, 28, true)
+	g_race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	g_race.pressed.connect(_garage_race)
-	_place_bottom(g_race, 360, 29, 324, 86)
-	column.add_child(g_race)
+	actions.add_child(g_race)
+
+
+func _garage_button(caption: String, height: float, font_size: int, primary := false) -> Button:
+	var button := _compact_button(caption, height, font_size)
+	button.add_theme_font_override("font", _garage_skin.bold)
+	var fill := GarageSkin.ACCENT if primary else Color("#202633")
+	var stroke := Color("#ffc294") if primary else Color("#4b5566")
+	var normal := _garage_skin.flat(fill, stroke, 17)
+	normal.content_margin_left = 10
+	normal.content_margin_right = 10
+	button.add_theme_stylebox_override("normal", normal)
+	for state in ["hover", "pressed", "disabled"]:
+		var style := normal.duplicate() as StyleBoxFlat
+		match state:
+			"hover": style.bg_color = fill.lightened(0.12)
+			"pressed": style.bg_color = fill.darkened(0.10)
+			"disabled":
+				style.bg_color = Color("#303641")
+				style.border_color = Color("#3b4352")
+		button.add_theme_stylebox_override(state, style)
+	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+		button.add_theme_color_override(state, Color("#241508") if primary else GarageSkin.INK)
+	button.add_theme_color_override("font_disabled_color", GarageSkin.MUTED)
+	return button
+
+
+func _garage_tile(index: int, slots: Array[Button], states: Array[Label]) -> Button:
+	var car := Cars.get_car(index)
+	var tile := _garage_button("", 164, 22)
+	tile.custom_minimum_size.x = 178
+	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tile.toggle_mode = true
+	tile.tooltip_text = str(car.name)
+	tile.add_theme_stylebox_override("normal",
+		_garage_skin.gradient(Color("#373a4a"), Color("#1a202a"), Color("#414a58"), 18))
+	tile.add_theme_stylebox_override("hover",
+		_garage_skin.gradient(Color("#474b5c"), Color("#252b35"), Color("#606981"), 18))
+	tile.add_theme_stylebox_override("pressed",
+		_garage_skin.gradient(Color("#604236"), Color("#282532"), GarageSkin.ACCENT, 18))
+	tile.pressed.connect(_select_garage_slot.bind(index))
+
+	var art := AtlasTexture.new()
+	art.atlas = GARAGE_THUMBNAILS
+	art.region = Rect2((index % 3) * 192, floori(index / 3.0) * 104, 192, 104)
+	art.filter_clip = true
+	var thumb := TextureRect.new()
+	thumb.texture = art
+	thumb.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	thumb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	thumb.anchor_right = 1.0
+	thumb.offset_left = 10
+	thumb.offset_right = -10
+	thumb.offset_top = 9
+	thumb.offset_bottom = 97
+	tile.add_child(thumb)
+	var name_label := _garage_label(str(car.name), 22, GarageSkin.INK, true)
+	_place(name_label, 13, 98, 160, 30)
+	tile.add_child(name_label)
+	var status := _garage_label("", 21, GarageSkin.MUTED)
+	_place(status, 13, 128, 160, 25)
+	tile.add_child(status)
+	slots.append(tile)
+	states.append(status)
+	return tile
+
+
+func _build_garage_stats(content: Control) -> void:
+	var panel := _garage_panel(_garage_skin.flat(Color("#181d25"), Color("#343c48"), 22), 17, 11)
+	content.add_child(panel)
+	var stats := HBoxContainer.new()
+	stats.add_theme_constant_override("separation", 15)
+	panel.add_child(stats)
+	for caption in ["Скорость", "Разгон", "Манёвренность"]:
+		var metric := VBoxContainer.new()
+		metric.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		metric.add_theme_constant_override("separation", 3)
+		stats.add_child(metric)
+		metric.add_child(_garage_label(caption, 20, GarageSkin.MUTED))
+		var value := _garage_label("", 25, GarageSkin.INK, true)
+		metric.add_child(value)
+		g_vals.append(value)
+		var meter := _stat_bar(metric)
+		meter.custom_minimum_size.y = 9
+		var track := _garage_skin.flat(Color("#3c4352"), Color.TRANSPARENT, 5)
+		track.set_border_width_all(0)
+		meter.add_theme_stylebox_override("background", track)
+		meter.add_theme_stylebox_override("fill",
+			_garage_skin.gradient(Color("#ea7d51"), Color("#ffc68d"), Color.TRANSPARENT, 5))
+		g_bars.append(meter)
+
+
+func _garage_modal(title: String, contents: VBoxContainer) -> Control:
+	var overlay := ColorRect.new()
+	overlay.color = Color(0.025, 0.03, 0.05, 0.82)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	_full(overlay)
+	overlay.hide()
+	garage.add_child(overlay)
+	var center := CenterContainer.new()
+	_full(center)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(center)
+	var panel := _garage_panel(_garage_skin.flat(Color("#181d27"), Color("#505969"), 24), 23, 19)
+	panel.custom_minimum_size.x = 650
+	center.add_child(panel)
+	panel.add_child(contents)
+	contents.add_theme_constant_override("separation", 13)
+	var header := HBoxContainer.new()
+	var heading := _garage_label(title, 31, GarageSkin.INK, true)
+	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(heading)
+	var close := _garage_button("×", 58, 33)
+	close.custom_minimum_size.x = 58
+	close.pressed.connect(overlay.hide)
+	header.add_child(close)
+	contents.add_child(header)
+	return overlay
+
+
+func _build_garage_catalog() -> void:
+	var contents := VBoxContainer.new()
+	g_catalog = _garage_modal("Все машины", contents)
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	contents.add_child(grid)
+	for i in Cars.LIST.size():
+		var tile := _garage_tile(i, g_catalog_slots, g_catalog_status)
+		tile.pressed.connect(g_catalog.hide)
+		grid.add_child(tile)
+
+
+func _build_garage_ability() -> void:
+	var contents := VBoxContainer.new()
+	g_ability = _garage_modal("Способность", contents)
+	g_ability.visibility_changed.connect(_sync_garage_demo_background)
+	g_demo = GaragePerkDemo.new()
+	g_demo.caption_font = _garage_skin.bold
+	g_demo.body_font = _garage_skin.body
+	contents.add_child(g_demo)
+	g_demo_title = _garage_label("", 28, Color("#ffc394"), true)
+	contents.add_child(g_demo_title)
+	g_perk_desc = _garage_label("", 23)
+	g_perk_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	contents.add_child(g_perk_desc)
+	var replay := _garage_button("Повторить демо", 65, 25)
+	replay.pressed.connect(_show_garage_ability)
+	contents.add_child(replay)
+
+
+func _show_garage_ability() -> void:
+	g_ability.show()
+	g_demo.play(Cars.get_car(garage_index))
+
+
+func _sync_garage_demo_background() -> void:
+	if g_ability.is_visible_in_tree():
+		_garage_demo_suspended_background = game.is_processing()
+		game.set_process(false)
+	elif _garage_demo_suspended_background:
+		_garage_demo_suspended_background = false
+		game.set_process(true)
+
+
+func _close_garage_overlay() -> bool:
+	for overlay in [g_ability, g_catalog]:
+		if overlay != null and overlay.visible:
+			overlay.hide()
+			return true
+	return false
+
+
+func _step_garage_car(direction: int) -> void:
+	_select_garage_slot(posmod(garage_index + direction, Cars.LIST.size()))
 
 
 func _select_garage_slot(index: int) -> void:
 	garage_index = index
 	_update_garage()
+	g_carousel.reveal_tile.call_deferred(index)
 
 
 func _garage_action() -> void:
@@ -2022,47 +2358,51 @@ func _update_garage() -> void:
 	g_stage.car = car
 	g_name.text = str(car.name)
 	g_sub.text = str(car.sub)
-	g_perk_title.text = str(car.perk_name)
+	g_counter.text = "%02d / %02d" % [garage_index + 1, Cars.LIST.size()]
+	var perk_name := str(car.perk_name).to_lower()
+	g_perk_title.text = perk_name.left(1).to_upper() + perk_name.substr(1)
+	g_demo_title.text = g_perk_title.text
 	g_perk_desc.text = str(car.perk_desc)
 	var top_kmh := Game.top_kmh(float(car.top))
 	var sr := Cars.speed_rating(car)
 	var ar := Cars.accel_rating(car)
 	var gr := Cars.grip_rating(car)
-	g_vals[0].text = "%d КМ/Ч" % top_kmh
+	g_vals[0].text = "%d км/ч" % top_kmh
 	g_vals[1].text = "%d / 10" % ar
 	g_vals[2].text = "%d / 10" % gr
 	g_bars[0].value = float(sr) / 10.0
 	g_bars[1].value = float(ar) / 10.0
 	g_bars[2].value = float(gr) / 10.0
 
+	g_owned_count.text = "В гараже %d из %d" % [owned.size(), Cars.LIST.size()]
+	for i in Cars.LIST.size():
+		g_slots[i].set_pressed_no_signal(i == garage_index)
+		g_catalog_slots[i].set_pressed_no_signal(i == garage_index)
+		var status := _fmt(int(Cars.get_car(i).price)) + " ◉"
+		if owned.has(i):
+			status = "Выбрана" if i == selected else "В гараже"
+		var tint := GarageSkin.WARM_TEXT if i == garage_index else GarageSkin.MUTED
+		for label in [g_slot_status[i], g_catalog_status[i]]:
+			label.text = status
+			label.add_theme_color_override("font_color", tint)
+
 	var is_owned := owned.has(garage_index)
-	g_race.disabled = not is_owned
-	for i in range(g_slots.size()):
-		var tint := Color("#273441") if i == garage_index else Color("#141b21")
-		var style := _btn_sb(tint, false)
-		style.set_border_width_all(1)
-		style.border_color = Color(str(Cars.get_car(i).color)).lightened(0.22) if i == garage_index else Color("#2d3840")
-		g_slots[i].add_theme_stylebox_override("normal", style)
-		g_slots[i].add_theme_color_override("font_color", ink if owned.has(i) or i == garage_index else dim_col)
+	var is_selected := garage_index == selected
 	var price := int(car.price)
-	if is_owned and selected == garage_index:
-		g_action.text = "ВЫБРАНО"
-		g_action.disabled = true
-		g_price.text = "ВАША МАШИНА"
-		g_price.add_theme_color_override("font_color", amber)
-	elif is_owned:
-		g_action.text = "ВЫБРАТЬ"
-		g_action.disabled = false
-		g_price.text = "УЖЕ В ГАРАЖЕ"
-		g_price.add_theme_color_override("font_color", Color(0.70, 0.75, 0.78))
+	g_race.disabled = not is_owned
+	g_race.visible = is_owned
+	g_action.visible = not is_owned or not is_selected
+	g_action.disabled = not is_owned and coins < price
+	g_purchase_info.visible = not is_owned or is_selected
+	g_price_row.visible = not is_owned
+	g_price_caption.text = "Ваша машина · выбрана" if is_owned else "Стоимость"
+	g_price.text = _fmt(price)
+	if is_owned:
+		g_action.text = "Выбрать"
+	elif coins >= price:
+		g_action.text = "Купить"
 	else:
-		g_price.text = "ЦЕНА  %s МОНЕТ" % _fmt(price)
-		if coins >= price:
-			g_action.text = "КУПИТЬ"
-			g_action.disabled = false
-		else:
-			g_action.text = "НЕ ХВАТАЕТ %s" % _fmt(price - coins)
-			g_action.disabled = true
+		g_action.text = "Не хватает %s" % _fmt(price - coins)
 
 
 # --- settings ---------------------------------------------------------------
@@ -2403,6 +2743,8 @@ func _gfx_run_benchmark(delay := 0.0) -> void:
 	_update_gfx_settings_ui()
 	if delay > 0.0:
 		await get_tree().create_timer(delay).timeout
+	if g_ability != null and g_ability.is_visible_in_tree():
+		await g_ability.visibility_changed
 	if in_game or game == null:
 		# A race started meanwhile: test again on the next menu visit.
 		gfx_benchmarking = false

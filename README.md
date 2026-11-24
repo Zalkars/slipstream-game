@@ -1,6 +1,6 @@
 # SLIPSTREAM
 
-**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.5**
+**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.6**
 
 [![Godot](https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org/)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](https://www.android.com/)
@@ -16,7 +16,16 @@
 
 ---
 
-## Что нового в 0.7.5
+## Что нового в 0.7.6
+
+- В гараже появилась карусель с миниатюрами, стрелки переключения и каталог «Все машины».
+- Экран гаража помещается в портретной ориентации. Цена стоит крупно рядом с кнопкой покупки.
+- Машины вращаются по горизонтали на 360° с фиксированной дистанцией камеры.
+- Нажатие на способность открывает одну из девяти коротких сцен с механикой заезда.
+
+[Заметки к версии 0.7.6](docs/releases/0.7.6.md).
+
+## Что было в 0.7.5
 
 - Две кнопки поворота включают тормоз при втором касании без рывка. Скорость после торможения набирается плавнее.
 - Двойное нажатие нитро расходует весь запас и продлевает ускорение.
@@ -143,13 +152,13 @@
 
 ## APK
 
-Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.5.apk`**.
+Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.6.apk`**.
 Опубликованные сборки доступны в разделе [**Releases**](../../releases/latest).
 
 | | |
 |---|---|
 | Пакет | `com.slipstream.game` |
-| Версия | 0.7.5 (versionCode 22) |
+| Версия | 0.7.6 (versionCode 23) |
 | Android | 7.0+ (minSdk 24), targetSdk 36 |
 | Архитектура | arm64-v8a (64-бит) |
 | Подпись | debug-ключом проекта; обновления должны быть подписаны тем же ключом |
@@ -164,7 +173,7 @@
 Если подключён по USB с включённой отладкой:
 
 ```powershell
-adb install -r Slipstream-0.7.5.apk
+adb install -r Slipstream-0.7.6.apk
 ```
 
 ## Возможности
@@ -354,7 +363,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare_android_build.
 
 # релизная сборка (ключ задаётся в export_presets.cfg / диалоге экспорта)
 New-Item -ItemType Directory -Force build | Out-Null
-& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.5.apk"
+& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.6.apk"
 ```
 
 Путь экспорта передавай **сразу после** имени пресета и обязательно с расширением
@@ -364,13 +373,13 @@ New-Item -ItemType Directory -Force build | Out-Null
 
 ```powershell
 # пакет, версия, minSdk, arm64
-aapt2 dump badging Slipstream-0.7.5.apk
+aapt2 dump badging Slipstream-0.7.6.apk
 
 # подпись и схемы v1/v2/v3
-apksigner verify --verbose --print-certs Slipstream-0.7.5.apk
+apksigner verify --verbose --print-certs Slipstream-0.7.6.apk
 
 # выравнивание
-zipalign -c 4 Slipstream-0.7.5.apk
+zipalign -c 4 Slipstream-0.7.6.apk
 ```
 
 Иконки: `godot/icons/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` (адаптивная иконка).
@@ -428,6 +437,7 @@ Slipstream/
 
 ## История версий
 
+- **0.7.6** — [карусель в гараже, вращение с фиксированной камерой и демо способностей](docs/releases/0.7.6.md).
 - **0.7.5** — [полное нитро, плавный разгон, обновлённый гараж и локальные 3D-дуэли](docs/releases/0.7.5.md).
 - **0.7.4** — [солнце и тени, время суток, погода, часы, управление, трафик, дорожные работы и гараж](docs/releases/0.7.4.md).
 - **0.7.3** — [время суток, уведомления, фары автобуса, асфальт, фонари, перемотка и баннер](docs/releases/0.7.3.md).
