@@ -10,6 +10,8 @@ const FRONT := Vector2(32.0, 22.0)
 const SIDE := Vector2(90.0, 22.0)
 const REAR := Vector2(148.0, 22.0)
 const NO_DRAG := -2
+const HOME_DELAY := 2.5
+const ROTATION_PER_PIXEL := 0.65
 const ROOM_SIZE := Vector2(656.0, 500.0)
 const WARM_LIGHT := Color("#ff966a")
 const COOL_LIGHT := Color("#a4a3ff")
@@ -32,6 +34,10 @@ var _angles := FRONT
 var _orbit: Tween
 var _drag_id := NO_DRAG
 var _last_drag := Vector2.ZERO
+var _last_drag_us := 0
+var _target_yaw := FRONT.x
+var _drag_velocity := 0.0
+var _idle_left := 0.0
 var _plate := StyleBoxFlat.new()
 var _shadow: GradientTexture2D
 var _warm_glow: GradientTexture2D
@@ -43,6 +49,7 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	mouse_default_cursor_shape = Control.CURSOR_DRAG
 	clip_contents = true
+	set_process(false)
 	_plate.bg_color = Color("#181c29")
 	_plate.border_color = Color("#596475")
 	_plate.set_border_width_all(2)
@@ -134,18 +141,30 @@ func _sync_car() -> void:
 	# and the canvas scale stay fixed throughout the orbit.
 	var footprint := Vector2(_bounds.size.x, _bounds.size.z)
 	_camera_distance = maxf(5.0, footprint.length() * 1.675)
-	if _orbit != null:
-		_orbit.kill()
+	_stop_motion()
 	_angles = FRONT
+	_target_yaw = FRONT.x
 	_frame_camera()
 
 
 func set_view(angles: Vector2) -> void:
+	_stop_motion()
+	_tween_yaw(angles.x, 0.26)
+
+
+func _tween_yaw(yaw: float, seconds: float) -> void:
+	var target := Vector2(_angles.x + wrapf(yaw - _angles.x, -180.0, 180.0), FRONT.y)
+	_orbit = create_tween()
+	_orbit.tween_method(_set_angles, _angles, target, seconds).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+
+
+func _stop_motion() -> void:
 	if _orbit != null:
 		_orbit.kill()
-	var target := Vector2(_angles.x + wrapf(angles.x - _angles.x, -180.0, 180.0), FRONT.y)
-	_orbit = create_tween()
-	_orbit.tween_method(_set_angles, _angles, target, 0.26).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_orbit = null
+	_idle_left = 0.0
+	_drag_id = NO_DRAG
+	set_process(false)
 
 
 func _set_angles(angles: Vector2) -> void:
@@ -169,13 +188,13 @@ func _frame_camera() -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
-		_drag_contact(event.index, event.position, event.pressed and not event.canceled)
+		_drag_contact(event.index, event.position, event.pressed, event.canceled)
 	elif event is InputEventScreenDrag:
 		_drag(event.index, event.position)
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if Input.emulate_touch_from_mouse or event.device == InputEvent.DEVICE_ID_EMULATION:
 			return
-		_drag_contact(-1, event.position, event.pressed)
+		_drag_contact(-1, event.position, event.pressed, event.canceled)
 	elif event is InputEventMouseMotion:
 		_drag(-1, event.position)
 	else:
@@ -183,35 +202,62 @@ func _gui_input(event: InputEvent) -> void:
 	accept_event()
 
 
-func _drag_contact(id: int, pos: Vector2, down: bool) -> void:
-	if down and _drag_id == NO_DRAG:
-		if _orbit != null:
-			_orbit.kill()
+func _drag_contact(id: int, pos: Vector2, down: bool, canceled := false) -> void:
+	if down and not canceled and _drag_id == NO_DRAG:
+		_stop_motion()
 		_drag_id = id
 		_last_drag = pos
-	elif not down and _drag_id == id:
+		_last_drag_us = Time.get_ticks_usec()
+		_target_yaw = _angles.x
+		_drag_velocity = 0.0
+		set_process(true)
+	elif (not down or canceled) and _drag_id == id:
 		_drag_id = NO_DRAG
+		if canceled or Time.get_ticks_usec() - _last_drag_us > 110000:
+			_drag_velocity = 0.0
+		_target_yaw += clampf(_drag_velocity * 0.085, -37.0, 37.0)
+		_idle_left = HOME_DELAY
 
 
 func _drag(id: int, pos: Vector2) -> void:
 	if id != _drag_id:
 		return
-	var movement := pos.x - _last_drag.x
+	var movement := (_last_drag.x - pos.x) * ROTATION_PER_PIXEL
+	var now := Time.get_ticks_usec()
+	var seconds := maxf(0.006, float(now - _last_drag_us) / 1000000.0)
 	_last_drag = pos
+	_last_drag_us = now
 	if not is_zero_approx(movement):
-		_set_angles(Vector2(fposmod(_angles.x - movement * 0.65, 360.0), _angles.y))
+		_target_yaw += movement
+		_drag_velocity = lerpf(_drag_velocity, clampf(movement / seconds, -540.0, 540.0),
+			1.0 - exp(-seconds * 28.0))
+
+
+func _process(delta: float) -> void:
+	if absf(_angles.x - _target_yaw) > 0.02:
+		_set_angles(Vector2(lerpf(_angles.x, _target_yaw, 1.0 - exp(-delta * 26.0)), FRONT.y))
+	if _drag_id != NO_DRAG:
+		return
+	_idle_left -= delta
+	if _idle_left <= 0.0:
+		var travel := absf(wrapf(FRONT.x - _angles.x, -180.0, 180.0))
+		set_process(false)
+		if travel > 0.06:
+			_tween_yaw(FRONT.x, lerpf(0.68, 1.05, travel / 180.0))
 
 
 func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and _drag_id != NO_DRAG:
+		_drag_contact(_drag_id, _last_drag, false, true)
 	if what != NOTIFICATION_VISIBILITY_CHANGED or _vp == null:
 		return
 	if is_visible_in_tree():
 		_sync_car()
 		_frame_camera()
 	else:
-		_drag_id = NO_DRAG
-		if _orbit != null:
-			_orbit.kill()
+		_stop_motion()
+		_angles = FRONT
+		_target_yaw = FRONT.x
 		_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 

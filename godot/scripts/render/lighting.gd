@@ -21,6 +21,7 @@ const TRAIL_STEP := 1.0 / 60.0
 # Lamp arm length (art units): long enough that the head hangs over the outer
 # lane, so the pool reads as light from above, not from the verge.
 const STREET_ARM := 150.0
+const STREET_POOL_GAIN := 0.52
 const TRAIL_POINTS := 14
 const TAIL_TRAIL_WIDTH := 6.0
 const TAIL_RIBBON_INDICES := [0, 3, 1, 1, 3, 4, 1, 4, 2, 2, 4, 5]
@@ -325,11 +326,15 @@ func collect() -> void:
 		CarLamps.points(CarLamps.anchors(c, sprite, false), Vector2(cx, cy), CarLamps.draw_box(sprite, cw, ch), yaw, _lp)
 		var hl: Vector2 = _lp.head[0]
 		var hr: Vector2 = _lp.head[1]
+		var bus := int(c.get("kind", 0)) == 4
 		if light > 0.02:
-			_add(HEAD, hl, -PI * 0.5 + yaw, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
-			_add(HEAD, hr, -PI * 0.5 + yaw, Color(1.0, 0.92, 0.76), light * 0.85, 320.0 * k, i)
-			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0), 0.0, Color(1.0, 0.92, 0.78), 1.1 * light, 420.0 * k,
-				520.0 - dist * 0.18 + (60.0 if onscreen else -120.0), true, tid * 4, hl.distance_to(hr) / (420.0 * k) * 2.0)
+			var beam := (485.0 if bus else 420.0) * k
+			var lens := light * (1.03 if bus else 0.85)
+			_add(HEAD, hl, -PI * 0.5 + yaw, Color(1.0, 0.92, 0.76), lens, beam, i)
+			_add(HEAD, hr, -PI * 0.5 + yaw, Color(1.0, 0.92, 0.76), lens, beam, i)
+			_request(0, (hl + hr) * 0.5 + Vector2(0.0, -4.0).rotated(yaw), yaw,
+				Color(1.0, 0.92, 0.78), (1.4 if bus else 1.1) * light, beam,
+				520.0 - dist * 0.18 + (60.0 if onscreen else -120.0), true, tid * 4, hl.distance_to(hr) / beam * 2.0)
 		var braking := bool(c.get("braking", false))
 		var tl: Vector2 = _lp.tail[0]
 		var tr: Vector2 = _lp.tail[1]
@@ -366,7 +371,7 @@ func collect() -> void:
 					continue
 				var led: bool = (int(di) % 3) == 0
 				var col := Color(0.80, 0.88, 1.0) if led else Color(1.0, 0.70, 0.34)
-				_add(STREET, lamp, 0.0, col, street * flick, 300.0 * s, di)
+				_add(STREET, lamp, 0.0, col, street * flick, 320.0 * s, di)
 				# Overhead lamp: the pool lies right under the head, stretched
 				# along the road; no shadows - a lamp above the carriageway does
 				# not throw its post or a passing car across the lanes.
@@ -474,6 +479,8 @@ func _assign_lights() -> void:
 			l.rotation = 0.0
 			l.height = 170.0
 		l.range_item_cull_mask = full_mask
+		if int(r.kind) == 2:
+			l.range_item_cull_mask = RenderStack.MASK_OBJECTS | RenderStack.MASK_AIR
 		if bool(r.shadow) and shadow_used < _road_shadow_lights.size():
 			# Ground occluders are flat footprints. Let the road receive their
 			# shadows without projecting the same sharp edge across the bodywork.
@@ -520,13 +527,17 @@ func _update_occluders() -> void:
 			o.occluder = _car_poly
 			o.position = Vector2(float(c.x), cy)
 			o.rotation = float(c.get("ram_rot", 0.0)) + float(c.get("yaw", 0.0))
-			o.scale = Vector2(float(c.w) * 0.84, float(c.h) * 0.90)
+			# Tall sprites may be shorter than their traffic box. A longer
+			# shadow footprint would enclose the lenses and block their beam.
+			var box := CarLamps.draw_box(g._race_sprite(c), float(c.w), float(c.h))
+			o.scale = box * Vector2(0.84, 0.90)
 		if g.running and not g.demo:
 			var o := _occluder()
 			o.occluder = _car_poly
 			o.position = Vector2(g.player_x, g.player_y)
 			o.rotation = g.player_tilt
-			o.scale = Vector2(g.car_w * 0.84, g.car_h * 0.90)
+			var box := CarLamps.draw_box(g._race_sprite(g._player_art), g.car_w, g.car_h)
+			o.scale = box * Vector2(0.84, 0.90)
 		# Lamp posts: their shadows fall across the lanes from the next lamp.
 		for di in g.decor_poles:
 			var d: Dictionary = g.decor[di]
@@ -659,7 +670,8 @@ func _bulb(ci: CanvasItem, pos: Vector2, r: float, col: Color, a: float) -> void
 		Color(col.r * a, col.g * a, col.b * a, 1.0))
 
 
-# Lamp cores over the cars. Small and hot; the halo comes from bloom.
+# Exposed lamp cores over the cars. Street bulbs sit beneath their housings;
+# their visible light is painted below the geometry by paint_light_pools.
 func paint_emissive(ci: CanvasItem) -> void:
 	for i in range(count):
 		var s: Dictionary = sources[i]
@@ -675,9 +687,6 @@ func paint_emissive(ci: CanvasItem) -> void:
 			BRAKE:
 				_bulb(ci, p, 16.0, col, 0.75 * e)
 				_bulb(ci, p, 6.0, Color(1.0, 0.45, 0.35), 0.9 * e)
-			STREET:
-				_bulb(ci, p, 22.0, col, 0.55 * e)
-				_bulb(ci, p, 8.0, Color(1, 1, 1), 0.85 * e)
 			SIGNAL:
 				_bulb(ci, p, 12.0, col, 0.9 * e)
 			NITRO:
@@ -699,8 +708,6 @@ func paint_bloom(ci: CanvasItem) -> void:
 				_bulb(ci, p, 24.0, col, 0.5 * e)
 			BRAKE:
 				_bulb(ci, p, 34.0, col, 0.8 * e)
-			STREET:
-				_bulb(ci, p, 40.0, col, 0.6 * e)
 			SIGNAL:
 				_bulb(ci, p, 26.0, col, 0.7 * e)
 			NITRO:
@@ -709,9 +716,18 @@ func paint_bloom(ci: CanvasItem) -> void:
 				_bulb(ci, p, maxf(10.0, float(s.radius) * 0.3), col, 0.8 * e)
 
 
-# Low preset fallback: lights that did not get a PointLight2D still leave a
-# faint pool on the road (additive), so a distant car is never unlit.
+# A street lamp keeps the same road pool even when its dynamic light for
+# cars and rain goes in or out of the budget.
 func paint_light_pools(ci: CanvasItem) -> void:
+	for i in range(count):
+		var s: Dictionary = sources[i]
+		if int(s.kind) != STREET:
+			continue
+		var size := Vector2.ONE * float(s.radius)
+		var tint: Color = s.col * (STREET_POOL_GAIN * float(s.energy))
+		tint.a = 1.0
+		ci.draw_texture_rect(_overhead_tex, Rect2(Vector2(s.pos) - size, size * 2.0), false, tint)
+
 	var assigned := mini(_lights.size(), _req_count)
 	if _req_count <= assigned:
 		return
@@ -721,6 +737,8 @@ func paint_light_pools(ci: CanvasItem) -> void:
 	var albedo := 0.28 * (1.0 - float(game.wetness) * 0.25)
 	for oi in range(assigned, _req_count):
 		var r: Dictionary = _requests[_order[oi]]
+		if int(r.kind) == 2:
+			continue
 		var e := float(r.energy) * albedo
 		var col: Color = r.col
 		var tint := Color(col.r * e, col.g * e, col.b * e, 1.0)
@@ -732,7 +750,5 @@ func paint_light_pools(ci: CanvasItem) -> void:
 				ci.draw_set_transform(p, float(r.rot), Vector2.ONE)
 				ci.draw_texture_rect(cone_for(float(r.get("spread", 0.14))), Rect2(-64.0 * sc, -256.0 * sc, 128.0 * sc, 256.0 * sc), false, tint)
 				ci.draw_set_transform(Vector2.ZERO)
-			2:
-				ci.draw_texture_rect(_overhead_tex, Rect2(p - Vector2(sz, sz), Vector2(sz, sz) * 2.0), false, tint)
 			_:
 				ci.draw_texture_rect(_point_tex, Rect2(p - Vector2(sz, sz), Vector2(sz, sz) * 2.0), false, tint)

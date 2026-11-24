@@ -1126,7 +1126,7 @@ static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm
 			var off := sun_offset(lift)
 			post_shadow(ci, base, lift, 5.0 * s, 0.25)
 			shadow_line(ci, base + off, Vector2(lamp_x, base.y) + off, 5.0 * s, 0.24)
-			rect_shadow(ci, Rect2(lamp_x - 14.0 * s, base.y - 6.0 * s, 28.0 * s, 12.0 * s), lift, 0.25)
+			rect_shadow(ci, Rect2(lamp_x - 17.0 * s, base.y - 8.0 * s, 34.0 * s, 16.0 * s), lift, 0.25)
 	if part == PART_SHADOW:
 		return
 	ci.draw_circle(base, 8.0 * s, Color(0.44, 0.45, 0.43))
@@ -1135,8 +1135,12 @@ static func streetlight(ci: CanvasItem, base: Vector2, dir: float, s: float, arm
 	var x1 := maxf(base.x, lamp_x)
 	ci.draw_rect(Rect2(x0, base.y - 3.0 * s, x1 - x0, 6.0 * s), Color(0.40, 0.41, 0.40))
 	ci.draw_rect(Rect2(x0, base.y - 3.0 * s, x1 - x0, 2.0 * s), Color(0.60, 0.61, 0.59))
-	rr(ci, Rect2(lamp_x - 14.0 * s, base.y - 6.0 * s, 28.0 * s, 12.0 * s), Color(0.28, 0.29, 0.28), 4)
-	rr(ci, Rect2(lamp_x - 10.0 * s, base.y - 3.0 * s, 20.0 * s, 5.0 * s), Color(0.88, 0.86, 0.76), 2)
+	# The closed housing hides the diffuser in a top-down view.
+	rr(ci, Rect2(lamp_x - 17.0 * s, base.y - 8.0 * s, 34.0 * s, 16.0 * s), Color("#151b21"), 5.0 * s)
+	rr(ci, Rect2(lamp_x - 15.0 * s, base.y - 6.0 * s, 30.0 * s, 12.0 * s), Color("#687985"), 4.0 * s)
+	rr(ci, Rect2(lamp_x - 13.0 * s, base.y - 3.5 * s, 26.0 * s, 7.0 * s), Color("#3c4b55"), 3.0 * s)
+	ci.draw_line(Vector2(lamp_x - 10.0 * s, base.y - 4.5 * s),
+		Vector2(lamp_x + 10.0 * s, base.y - 4.5 * s), Color("#92a0a8"), 1.4 * s, true)
 
 
 static func road_sign(ci: CanvasItem, p: Vector2, side: float) -> void:

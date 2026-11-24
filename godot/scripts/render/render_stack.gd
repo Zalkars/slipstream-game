@@ -10,6 +10,7 @@ extends Node2D
 #   z -14 puddles     puddle water                           lit, mask 1
 #   z -12 road glow   wet reflections of every lamp          unshaded, add
 #   z   0 Game._draw  rails, scenery, cars, items, events    lit, mask 2
+#   z   2 fixtures    lamp housings above their light pools ambient only
 #   z   4 particles   spray, smoke, debris                   lit, mask 4
 #   z   8 emissive    lamps, light trails, sparks            unshaded, add
 #   z   9 air         falling rain                           lit, mask 4
@@ -44,6 +45,7 @@ var decal_layer: DrawLayer
 var puddle_layer: DrawLayer
 var road_glow_layer: DrawLayer
 var duel_ghost_layer: DrawLayer
+var fixture_layer: DrawLayer
 var particle_layer: DrawLayer
 var emissive_layer: DrawLayer
 var air_layer: DrawLayer
@@ -91,6 +93,7 @@ func setup(p_game) -> void:
 	road_glow_layer.material = DrawLayer.unshaded_material(CanvasItemMaterial.BLEND_MODE_ADD)
 	duel_ghost_layer = _layer("DuelGhost", -1, game.paint_duel_ghost, 0)
 	duel_ghost_layer.material = DrawLayer.unshaded_material()
+	fixture_layer = _layer("StreetFixtures", 2, game.paint_street_fixtures, 0)
 	particle_layer = _layer("Particles", 4, _paint_list.bind(particle_painters), MASK_AIR)
 	emissive_layer = _layer("Emissive", 8, _paint_list.bind(emissive_painters), MASK_OBJECTS)
 	emissive_layer.material = DrawLayer.unshaded_material(CanvasItemMaterial.BLEND_MODE_ADD)
@@ -197,7 +200,7 @@ func frame(delta: float) -> void:
 	bloom.frame(Vector2(game.W, game.H), bloom_on)
 	bloom.composite.position = position
 	for l in [ground_layer, road_layer, decal_layer, puddle_layer, road_glow_layer,
-			duel_ghost_layer, particle_layer, emissive_layer, air_layer, overlay_layer]:
+			duel_ghost_layer, fixture_layer, particle_layer, emissive_layer, air_layer, overlay_layer]:
 		l.queue_redraw()
 	for st in road_strips:
 		st.queue_redraw()

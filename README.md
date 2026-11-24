@@ -1,6 +1,6 @@
 # SLIPSTREAM
 
-**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.6**
+**Аркадный трафик-рейсер для Android · книжная ориентация · версия 0.7.7**
 
 [![Godot](https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org/)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](https://www.android.com/)
@@ -16,7 +16,15 @@
 
 ---
 
-## Что нового в 0.7.6
+## Что нового в 0.7.7
+
+- В гараже машина мягко вращается за пальцем и сама возвращается в ракурс в три четверти. У карусели появилась инерция и мягкое прилипание к карточкам.
+- Свет уличных фонарей ложится под металлические крышки. Фары автобусов освещают дорогу перед собой.
+- Обычный дождь различим и между фонарями. Ливень остаётся плотнее.
+
+[Заметки к версии 0.7.7](docs/releases/0.7.7.md).
+
+## Что было в 0.7.6
 
 - В гараже появилась карусель с миниатюрами, стрелки переключения и каталог «Все машины».
 - Экран гаража помещается в портретной ориентации. Цена стоит крупно рядом с кнопкой покупки.
@@ -142,23 +150,25 @@
 
 ### Карточки и материалы для RuStore
 
-Готовые материалы для консоли разработчика находятся в каталоге [`docs/rustore/`](docs/rustore/):
+Готовые материалы для консоли разработчика находятся в каталоге [`docs/rustore/`](docs/rustore/).
+
+- [Текст «Что нового?» для перехода с 0.2.1](docs/rustore/whats_new_0.7.7.txt).
 - [`icon_512.png`](docs/rustore/icon_512.png) — *Иконка приложения 512×512 px (Full Bleed квадрат без артефактов маскирования)*
-- [`card_1_gameplay.png`](docs/rustore/card_1_gameplay.png) — *Скорость до 400+ км/ч и плотный трафик (1080×1920 px)*
-- [`card_2_bullet_time.png`](docs/rustore/card_2_bullet_time.png) — *Bullet-Time и нитро-ускорение (1080×1920 px)*
-- [`card_3_garage.png`](docs/rustore/card_3_garage.png) — *Гараж с машинами разных классов (1080×1920 px)*
-- [`card_4_controls.png`](docs/rustore/card_4_controls.png) — *3 типа управления и комфорт (1080×1920 px)*
+- [`card_1_gameplay.png`](docs/rustore/card_1_gameplay.png) — *Ночная трасса и движение в потоке (1080×1920 px)*
+- [`card_2_bullet_time.png`](docs/rustore/card_2_bullet_time.png) — *Нитро и обгоны (1080×1920 px)*
+- [`card_3_garage.png`](docs/rustore/card_3_garage.png) — *Девять машин и обзор гаража (1080×1920 px)*
+- [`card_4_controls.png`](docs/rustore/card_4_controls.png) — *Кнопки и три схемы управления (1080×1920 px)*
 - [`overview_cards.png`](docs/rustore/overview_cards.png) — *Сводный коллаж 2×2*
 
 ## APK
 
-Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.6.apk`**.
+Локальная сборка версии из этого репозитория создаёт **`Slipstream-0.7.7.apk`**.
 Опубликованные сборки доступны в разделе [**Releases**](../../releases/latest).
 
 | | |
 |---|---|
 | Пакет | `com.slipstream.game` |
-| Версия | 0.7.6 (versionCode 23) |
+| Версия | 0.7.7 (versionCode 24) |
 | Android | 7.0+ (minSdk 24), targetSdk 36 |
 | Архитектура | arm64-v8a (64-бит) |
 | Подпись | debug-ключом проекта; обновления должны быть подписаны тем же ключом |
@@ -173,7 +183,7 @@
 Если подключён по USB с включённой отладкой:
 
 ```powershell
-adb install -r Slipstream-0.7.6.apk
+adb install -r Slipstream-0.7.7.apk
 ```
 
 ## Возможности
@@ -363,7 +373,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare_android_build.
 
 # релизная сборка (ключ задаётся в export_presets.cfg / диалоге экспорта)
 New-Item -ItemType Directory -Force build | Out-Null
-& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.6.apk"
+& $godot --headless --path godot --export-release "Android" "$PWD\build\Slipstream-0.7.7.apk"
 ```
 
 Путь экспорта передавай **сразу после** имени пресета и обязательно с расширением
@@ -373,13 +383,13 @@ New-Item -ItemType Directory -Force build | Out-Null
 
 ```powershell
 # пакет, версия, minSdk, arm64
-aapt2 dump badging Slipstream-0.7.6.apk
+aapt2 dump badging Slipstream-0.7.7.apk
 
 # подпись и схемы v1/v2/v3
-apksigner verify --verbose --print-certs Slipstream-0.7.6.apk
+apksigner verify --verbose --print-certs Slipstream-0.7.7.apk
 
 # выравнивание
-zipalign -c 4 Slipstream-0.7.6.apk
+zipalign -c 4 Slipstream-0.7.7.apk
 ```
 
 Иконки: `godot/icons/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` (адаптивная иконка).
@@ -437,6 +447,7 @@ Slipstream/
 
 ## История версий
 
+- **0.7.7** — [плавный гараж, фонари, фары автобусов и дождь](docs/releases/0.7.7.md).
 - **0.7.6** — [карусель в гараже, вращение с фиксированной камерой и демо способностей](docs/releases/0.7.6.md).
 - **0.7.5** — [полное нитро, плавный разгон, обновлённый гараж и локальные 3D-дуэли](docs/releases/0.7.5.md).
 - **0.7.4** — [солнце и тени, время суток, погода, часы, управление, трафик, дорожные работы и гараж](docs/releases/0.7.4.md).

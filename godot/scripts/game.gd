@@ -3027,7 +3027,6 @@ func _draw() -> void:
 	_draw_cars()
 	if road_event_type == EVENT_ROADWORKS and closed_lane >= 0:
 		_draw_roadworks_props()
-	_draw_overhead_lamps()
 	_draw_overhead_decor(Art.PART_BODY)
 	_draw_speed_streaks()
 	_draw_road_event_over()
@@ -3222,7 +3221,12 @@ func _draw_scenery() -> void:
 
 # Lamp arms reach over the road, so the posts go on top of the cars; their
 # shadows are drawn with the scenery, under the cars.
-func _draw_overhead_lamps(part := Art.PART_BODY) -> void:
+func paint_street_fixtures(canvas: CanvasItem) -> void:
+	_draw_overhead_lamps(Art.PART_BODY, canvas)
+
+
+func _draw_overhead_lamps(part: int, canvas: CanvasItem = null) -> void:
+	var surface := canvas if canvas != null else self
 	var margin := 100.0 + (Art.sun.length() * 66.0 if part == Art.PART_SHADOW else 0.0)
 	for di in decor_lamps:
 		var d: Dictionary = decor[di]
@@ -3234,7 +3238,7 @@ func _draw_overhead_lamps(part := Art.PART_BODY) -> void:
 				continue
 			var side: float = d.side
 			var x: float = (road_x - 52.0 - float(d.off)) if side < 0 else (road_x + road_w + 52.0 + float(d.off))
-			Art.streetlight(self, Vector2(x, y), -side, 0.9 * float(d.size), Lighting.STREET_ARM, part)
+			Art.streetlight(surface, Vector2(x, y), -side, 0.9 * float(d.size), Lighting.STREET_ARM, part)
 
 
 func _draw_overhead_decor(part: int) -> void:

@@ -8,9 +8,8 @@ extends Node2D
 # here comes from its own RandomNumberGenerator, never from Game.run_rng, so
 # visuals cannot change a seeded race.
 #
-#   air rain     3 MultiMesh layers (near: big, blurred; far: thin), slanted by
-#                wind and car speed; lit by the 2D lights, so at night the
-#                drops are only seen inside headlight cones and lamp pools.
+#   air rain     3 MultiMesh layers, slanted by wind and car speed. Near
+#                streaks stay visible at night and distant rain catches light.
 #   splashes     MultiMesh of crowns on the asphalt, animated in the shader.
 #   puddles      noise-shaped water quads, fill with rain and dry after it,
 #                ripple rings while it rains, mirror-like light highlights.
@@ -200,9 +199,9 @@ func setup(p_game, p_stack) -> void:
 	_make_textures()
 	var layer_cfg := [
 		# far, mid, near: count, width, length scale, speed, alpha
-		[520, 1.2, 0.8, 0.80, 0.36],
-		[300, 1.8, 1.0, 1.00, 0.46],
-		[110, 3.0, 1.35, 1.30, 0.50],
+		[520, 1.4, 0.8, 0.80, 0.38],
+		[320, 2.2, 1.0, 1.00, 0.53],
+		[160, 3.2, 1.35, 1.30, 0.63],
 	]
 	for i in range(3):
 		var mm := MultiMesh.new()
@@ -220,6 +219,9 @@ func setup(p_game, p_stack) -> void:
 		mi.name = "Rain%d" % i
 		var sh := Shader.new()
 		sh.code = RAIN_SHADER
+		# Nearby streaks remain legible even between pools of light at night.
+		if i == 2:
+			sh.code = RAIN_SHADER.replace("shader_type canvas_item;", "shader_type canvas_item;\nrender_mode unshaded;")
 		var mat := ShaderMaterial.new()
 		mat.shader = sh
 		mi.material = mat
@@ -331,6 +333,9 @@ func frame(dt: float) -> void:
 	var nlayers := int(params.get("rain_layers", 3))
 	var night: float = g.get_night_factor()
 	var tint := Color(0.72, 0.78, 0.88).lerp(Color(0.80, 0.84, 0.90), 1.0 - night)
+	var intensity := clampf(rain, 0.0, 1.0)
+	var coverage := lerpf(intensity, sqrt(intensity), 0.64)
+	var visibility := coverage * smoothstep(0.02, 0.18, intensity)
 	for i in range(3):
 		var mi: MultiMeshInstance2D = _rain_layers[i]
 		var cfg: Array = mi.get_meta("cfg")
@@ -338,7 +343,7 @@ func frame(dt: float) -> void:
 		mi.visible = on
 		if not on:
 			continue
-		var count := int(float(cfg[0]) * density * clampf(rain * 1.15, 0.0, 1.0))
+		var count := int(float(cfg[0]) * density * coverage)
 		mi.multimesh.visible_instance_count = count
 		var spd := vel * float(cfg[3])
 		_rain_offsets[i] = Vector2(_rain_offsets[i]) + spd * dt
@@ -351,9 +356,9 @@ func frame(dt: float) -> void:
 		m.set_shader_parameter("dir", dir)
 		# Motion blur: a streak is as long as the path its drop covers in a
 		# 1/60 s shutter, so the near layer smears longest.
-		m.set_shader_parameter("len", clampf(vel.length() * float(cfg[3]) * 0.024 * float(cfg[2]), 10.0, 70.0))
+		m.set_shader_parameter("len", clampf(vel.length() * float(cfg[3]) * 0.027 * float(cfg[2]), 12.0, 80.0))
 		m.set_shader_parameter("width", float(cfg[1]))
-		m.set_shader_parameter("alpha", float(cfg[4]) * clampf(rain * 1.4, 0.0, 1.0))
+		m.set_shader_parameter("alpha", float(cfg[4]) * visibility)
 		m.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
 	# Splashes.
 	var ns := int(float(params.get("splashes", 90)) * clampf(rain * 1.2, 0.0, 1.0))
